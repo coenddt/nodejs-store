@@ -22,8 +22,12 @@
  */
 
 const crud = require('./crud');
+const datasource = require('./datasource');
+const executors = require('./executors');
+const introspect = require('./introspect');
 const permission = require('./permission');
 const schema = require('./schema');
+const { syncSchema } = require('./sync');
 
 class Store {
   // ── Schema 管理 ──
@@ -54,6 +58,11 @@ class Store {
 
   async queryWithCount(gql, params) {
     return crud.queryWithCount(gql, params);
+  }
+
+  /** 跨库联邦查询（一条 GQL 跨多数据源：各源取数 → 内存 join → 统一后处理） */
+  async queryFederated(gql, params) {
+    return crud.queryFederated(gql, params);
   }
 
   async insert(schemaName, data) {
@@ -98,6 +107,11 @@ class Store {
     return crud.aggregate(schemaName, pl);
   }
 
+  // ── 结构同步（SQL 数据源：introspect → schemaFromRows → mergeSchema → register） ──
+  async syncSchema(opts) {
+    return syncSchema(opts);
+  }
+
   // ── 底层工具（调试/高级用法） ──
   /** 解析 GQL 并构建 pipeline，返回 `{tokens, ast, pipeline, projection}` */
   buildPipeline(gql, params) {
@@ -127,11 +141,19 @@ Store.prototype.PermissionError = permission.PermissionError;
 
 const store = new Store();
 
-/** 索引名对齐 MongoDB 自动命名（k1_v1_k2_v2），用于幂等创建 */
-async function _createIndexesIfNeeded(db) {
+/**
+ * 索引名对齐 MongoDB 自动命名（k1_v1_k2_v2），用于幂等创建。
+ *
+ * 按 source 分派：Mongo 源执行 `_createIndexesIfNeeded`；SQL 后端**不建索引**
+ * （`schema.indexes` 仅作元数据，见执行文档 Phase 3 动作 5）。
+ */
+async function _createIndexesIfNeeded() {
   const names = schema.list();
   for (const name of names) {
     const s = schema.get(name);
+    const db = datasource.connectionOfSchema(name);
+    if (typeof db.collection !== 'function') continue; // SQL 后端不建索引
+
     const coll = db.collection(s.collection);
 
     let existingIndexes;
@@ -166,15 +188,22 @@ async function _createIndexesIfNeeded(db) {
   }
 }
 
-/** 初始化 store — 传入 MongoDB Node 驱动的 db 实例 */
-async function init(db) {
-  if (!db || typeof db.collection !== 'function') {
-    throw new TypeError('init(db) 需要 MongoDB Node 驱动的 db 实例');
+/**
+ * 初始化 store — 传入数据源连接映射
+ *
+ *   - 多源：`init({ default: db, mysql_a: { kind: 'mysql', exec }, ... })`
+ *   - 单源简写：`init(db)`（Mongo db 实例，自动归一为 `{ default: db }`）
+ *
+ * 连接按 schema 的 `datasource` 绑定路由；缺省绑定回落 `default`。
+ */
+async function init(connections) {
+  if (!connections || typeof connections !== 'object') {
+    throw new TypeError('init(connections) 需要数据源连接映射（或单个 MongoDB db 实例）');
   }
-  crud.setDb(db);
+  datasource.setConnections(connections);
 
-  // 自动创建索引 — 幂等安全
-  await _createIndexesIfNeeded(db);
+  // 自动创建索引（仅 Mongo 源）— 幂等安全
+  await _createIndexesIfNeeded();
 
   return store;
 }
@@ -185,7 +214,11 @@ module.exports = {
   Store,
   aggregate: crud.aggregate,
   PermissionError: permission.PermissionError,
+  datasource,
   schema,
   permission,
   crud,
+  executors,
+  introspect,
+  syncSchema,
 };

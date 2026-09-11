@@ -11,7 +11,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { schema: _sc, crud: _crud_mod, permission: perm } = require('../src');
+const { schema: _sc, crud: _crud_mod, permission: perm, init: _init } = require('../src');
 
 // ─────────────────────────────────────────────────────────────
 // 内置最小 schema（与业务工程 CommercialLedger 同构）
@@ -140,7 +140,7 @@ function _crudMock() {
   const docs = [{ unit: 'a', income: 100.0, _id: '1' }];
   const coll = new _MemColl(docs);
   perm.setContext(undefined);
-  _crud_mod.setDb(new _FakeDb(coll));
+  _crud_mod.setConnections(new _FakeDb(coll));
   return [coll, docs];
 }
 
@@ -148,7 +148,7 @@ function _crudMock() {
 function _crudWMock(docs) {
   const coll = new _MemColl(docs);
   perm.setContext(undefined);
-  _crud_mod.setDb(new _FakeDb(coll));
+  _crud_mod.setConnections(new _FakeDb(coll));
   return coll;
 }
 
@@ -293,4 +293,64 @@ test('crud.aggregate', async () => {
   _crudWMock([{ unit: 'a' }]);
   const out = await _crud_mod.aggregate('CommercialLedger', [{ $match: { unit: 'a' } }]);
   assert.ok(out.length && out[0].unit === 'a');
+});
+
+// ---------- 数据源路由（Phase 3） ----------
+
+test('datasource 多源路由 + 索引策略（Mongo 建索引 / SQL 不建）', async () => {
+  _sc.register({
+    name: 'DsMongoThing', collection: 'ds_mongo_thing', timestamps: false,
+    fields: { a: 'number' }, relations: {}, computes: {},
+    indexes: [{ keys: { a: 1 } }],
+  });
+  _sc.register({
+    name: 'DsSqlThing', collection: 'ds_sql_thing', timestamps: false,
+    fields: { name: 'string' }, relations: {}, computes: {},
+    datasource: 'sqlite_a', indexes: [{ keys: { name: 1 } }],
+  });
+
+  // 记录 createIndex 调用的 Mongo mock（listIndexes 返回空 → 全部新建）
+  const created = [];
+  const db = {
+    _colls: {},
+    collection(name) {
+      if (!this._colls[name]) {
+        const coll = new _MemColl(name === 'ds_mongo_thing' ? [{ _id: '1', a: 7 }] : []);
+        coll.createIndex = async (keys, options) => {
+          created.push({ coll: name, keys, options });
+          return 'idx';
+        };
+        this._colls[name] = coll;
+      }
+      return this._colls[name];
+    },
+  };
+
+  // SQL 连接：只提供 translate 后的执行器（桩），记录命令
+  // 执行器返回中立包络 `{docs, rows, affectedRows}`，由 executors.shapeResult 塑形
+  let seenPlan = null;
+  const sqlConn = {
+    kind: 'sqlite',
+    exec: (plan) => {
+      seenPlan = plan;
+      return { docs: [{ _id: 's1', name: 'n' }], rows: null, affectedRows: 0 };
+    },
+  };
+
+  await _init({ default: db, sqlite_a: sqlConn });
+  perm.setContext(undefined);
+
+  // 索引策略：Mongo 建索引，SQL 不建（schema.indexes 仅元数据）
+  assert.ok(created.some((c) => c.coll === 'ds_mongo_thing'), 'Mongo 源应建索引');
+  assert.ok(!created.some((c) => c.coll === 'ds_sql_thing'), 'SQL 源不应建索引');
+
+  // 路由：SQL schema → core translate → 连接 exec
+  const sqlOut = await _crud_mod.query('DsSqlThing{name}');
+  assert.ok(seenPlan && seenPlan.backend === 'sqlite', 'SQL 源应经 dialectTranslate');
+  assert.ok(Array.isArray(seenPlan.stmts) && seenPlan.stmts.length, 'translate 应产出语句序列');
+  assert.equal(sqlOut[0].name, 'n');
+
+  // 路由：Mongo schema → 原生驱动（单库行为零回归）
+  const mOut = await _crud_mod.query('DsMongoThing{a}');
+  assert.equal(mOut[0].a, 7);
 });

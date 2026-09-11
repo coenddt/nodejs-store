@@ -1,0 +1,100 @@
+'use strict';
+
+/**
+ * 写路径 —— 单条/批量插入、更新、删除归档、存在性与计数
+ */
+
+const { core: _core, get: _getSchema } = require('../schema');
+const { _call, _ctx, _exec, _now } = require('./exec');
+const { _generateId } = require('./id');
+
+/** creator 写权限探针：先规划，若 needsProbe 则执行探针命令后重入 */
+async function _planWithProbe(planFn) {
+  let out = planFn(null, null);
+  if (out.needsProbe) {
+    const probeDoc = await _exec(out.needsProbe);
+    out = planFn(probeDoc !== null && probeDoc !== undefined, probeDoc ?? null);
+  }
+  return out;
+}
+
+/** 插入一条 */
+async function insert(schemaName, data) {
+  const s = _getSchema(schemaName);
+  const plan = _call(() =>
+    _core.planInsert(schemaName, data ?? null, _now(), s.idPrefix ? _generateId(s) : '', _ctx()));
+  await _exec(plan.command);
+  return plan.returns;
+}
+
+/** 批量插入（带权限检查，自动生成 _id 和时间戳；空数组直接返回空） */
+async function insertMany(schemaName, docs) {
+  if (!Array.isArray(docs) || !docs.length) return [];
+
+  const s = _getSchema(schemaName);
+  const plan = _call(() => _core.planInsertMany(
+    schemaName,
+    docs,
+    _now(),
+    // core 按需消费（仅无 _id 的文档取用），多备无害
+    docs.map(() => (s.idPrefix ? _generateId(s) : '')),
+    _ctx(),
+  ));
+  if (plan.command) await _exec(plan.command);
+  return plan.returns;
+}
+
+/**
+ * 更新一条（支持原生操作符，不触发默认值）
+ *
+ * data 的 key 以 '$' 开头 → 原生 MongoDB 操作符（$set/$inc/$unset 等）直接透传。
+ * 否则自动包装为 $set 模式。
+ */
+async function update(schemaName, condition, data, options = null) {
+  const out = await _planWithProbe((found, doc) => _call(() =>
+    _core.planUpdate(schemaName, condition ?? null, data ?? null, options ?? null, _now(), _ctx(), found, doc)));
+  const result = await _exec(out.command);
+  return result ? _call(() => _core.applyWriteDefaults(schemaName, result)) : null;
+}
+
+/** 批量更新（支持原生操作符） */
+async function updateMany(schemaName, condition, data) {
+  const out = _call(() =>
+    _core.planUpdateMany(schemaName, condition ?? null, data ?? null, _now(), _ctx()));
+  const result = await _exec(out.command);
+  return { modifiedCount: result.modifiedCount };
+}
+
+/** 删除 —— 原表数据先归档到对应 `_deleted` 附表（附 deletedAt），再物理删除原表数据 */
+async function remove(schemaName, condition) {
+  const out = await _planWithProbe((found, doc) => _call(() =>
+    _core.planRemove(schemaName, condition ?? null, _ctx(), found, doc)));
+
+  let archivedCount = 0;
+  if (out.findCommand) {
+    const docs = await _exec(out.findCommand);
+    if (docs.length) {
+      const arch = _call(() => _core.planArchiveDocs(schemaName, docs, _now()));
+      await _exec(arch.command);
+      archivedCount = docs.length;
+    }
+  }
+
+  const result = await _exec(out.deleteCommand);
+  return { deletedCount: result.deletedCount, archivedCount };
+}
+
+/** 判断是否存在 */
+async function exists(schemaName, condition) {
+  const cmd = _call(() => _core.planExists(schemaName, condition ?? null));
+  const doc = await _exec(cmd);
+  return doc !== null && doc !== undefined;
+}
+
+/** 统计符合条件的文档数量 */
+async function count(schemaName, filter = null) {
+  const cmd = _call(() => _core.planCount(schemaName, filter ?? null));
+  return _exec(cmd);
+}
+
+module.exports = { insert, insertMany, update, updateMany, remove, exists, count };

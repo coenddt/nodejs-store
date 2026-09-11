@@ -9,7 +9,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test tests/*.js"
+    "test": "node scripts/test.js"
   },
   "keywords": [
     "mongodb",
@@ -37,6 +37,10 @@
     "node": ">=18"
   },
   "dependencies": {
-    "mongodb": "^6.21.0"
+    "better-sqlite3": "^13.0.3",
+    "mongodb": "^6.21.0",
+    "mysql2": "^3.24.4",
+    "pg": "^8.23.0",
+    "rust-store-node": "^0.1.0"
   }
 }

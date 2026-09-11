@@ -55,6 +55,7 @@ function register(defn) {
     relations: defn.relations || {},
     computes,
     indexes: defn.indexes || [],
+    datasource: defn.datasource || null,
     read: defn.read,
     write: defn.write,
   };
@@ -68,6 +69,8 @@ function register(defn) {
       _isArchive: true,
       fields: { ...(defn.fields || {}), deletedAt: { type: 'number' } },
       indexes: defn.indexes || [],
+      // 归档表与原表同库
+      datasource: defn.datasource || null,
     });
   }
 
