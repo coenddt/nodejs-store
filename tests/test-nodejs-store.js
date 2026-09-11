@@ -1,9 +1,9 @@
 'use strict';
 
 /**
- * mongo-store-js 行为测试（纯逻辑，无真实 DB）
+ * nodejs-store 行为测试（纯逻辑，无真实 DB）
  *
- * schema / pipeline / permission / computes 的纯逻辑已全部下沉 Rust core（独立仓库 mongo-store-rust），
+ * schema / pipeline / permission / computes 的纯逻辑已全部下沉 Rust core（独立仓库 rust-store），
  * 对拍由其 core/tests/parity*.rs + core-node/test/parity.test.js 覆盖；
  * 本文件只测薄 Host 适配层的行为（读路径分支 + 写路径全流程，mock 驱动）。
  */

@@ -1,32 +1,43 @@
-# mongo-store-js
+# nodejs-store
 
-A lightweight MongoDB data layer for Node.js — define your models as pure JSON schemas, query with GQL tree syntax that compiles to a single `$lookup` aggregation, and get role-based access control out of the box.
+A lightweight multi-backend data layer for Node.js — define your models as pure JSON schemas, query with GQL tree syntax, and get role-based access control out of the box. One unified MongoDB-style dialect runs on **MongoDB, MySQL, SQLite and PostgreSQL**.
 
-This is the Node.js port of [`mongo-store-py`](https://github.com/coenddt/mongo-store-py) — same schemas, same GQL, same semantics, camelCase API.
+This is the Node.js port of [`py-store`](https://github.com/coenddt/py-store) — same schemas, same GQL, same semantics, camelCase API. Both are thin hosts over the shared Rust core in [`rust-store`](https://github.com/coenddt/rust-store).
+
+## Supported backends
+
+| Backend | Notes |
+| --- | --- |
+| MongoDB | native aggregation pipeline (`find`/`aggregate`/`$lookup`) |
+| MySQL | parameterized SQL, `information_schema` introspection |
+| SQLite | parameterized SQL, `sqlite_master` + `PRAGMA` introspection |
+| PostgreSQL | parameterized SQL (`$n`), `RETURNING` support |
+
+GQL tree queries compile to a single native query per backend — never hand-write `$lookup` or raw SQL again.
 
 ## Features
 
 - **Pure JSON schemas, zero code** — a model is just an object: fields, relations, computes, indexes.
 - **Read-time defaults & computed columns** — writes store only user data; reads fill defaults and run `fn`/`asyncFn` computes.
-- **GQL tree queries → one `$lookup`** — nested relations resolve via a single aggregation pipeline; never hand-write `$lookup` again.
+- **GQL tree queries → one native query** — nested relations resolve in a single query; never hand-write `$lookup` again.
 - **Smart mutation** — `mutation()` auto-detects upsert by `_id` + unique index and recursively fills relation children.
-- **Soft-delete built in** — every schema auto-registers a `<Model>Deleted` archive collection; `remove()` archives before deleting.
+- **Soft-delete built in** — every schema auto-registers a `<Model>Deleted` archive collection/table; `remove()` archives before deleting.
 - **Permission context** — `AsyncLocalStorage`-based roles (`super_admin`/`admin`/`guest`/`creator`...), schema/field-level read/write whitelists, automatic owner-condition injection.
-- **Async-first** — built on the official `mongodb` Node.js driver (`mongodb >= 6`).
+- **Async-first** — built on the `mongodb` Node.js driver and a shared Rust core with SQL dialects.
 
 ## Installation
 
 ```bash
-npm install mongo-store-js
+npm install nodejs-store
 ```
 
-Requires Node.js 18+ and MongoDB.
+Requires Node.js 18+ and one supported backend (MongoDB / MySQL / SQLite / PostgreSQL).
 
 ## Quick start
 
 ```js
 const { MongoClient } = require('mongodb');
-const { init, store } = require('mongo-store-js');
+const { init, store } = require('nodejs-store');
 
 const client = new MongoClient('mongodb://localhost:27017');
 await client.connect();

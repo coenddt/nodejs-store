@@ -1,7 +1,7 @@
 {
-  "name": "mongo-store-js",
+  "name": "nodejs-store",
   "version": "0.1.0",
-  "description": "Lightweight MongoDB data layer: pure JSON schemas, GQL tree queries compiled to a single $lookup, computed columns, soft-delete and role-based access control",
+  "description": "Lightweight multi-backend data layer (MongoDB / MySQL / SQLite / PostgreSQL): pure JSON schemas, GQL tree queries compiled to a single query, computed columns, soft-delete and role-based access control",
   "main": "src/index.js",
   "files": [
     "src",
@@ -13,24 +13,26 @@
   },
   "keywords": [
     "mongodb",
+    "mysql",
+    "sqlite",
+    "postgresql",
     "data-layer",
     "query-builder",
     "odm",
     "gql",
     "acl",
-    "lookup",
     "aggregation"
   ],
   "author": "leo <coen_ddt@qq.com>",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/coenddt/mongo-store-js.git"
+    "url": "git+https://github.com/coenddt/nodejs-store.git"
   },
   "bugs": {
-    "url": "https://github.com/coenddt/mongo-store-js/issues"
+    "url": "https://github.com/coenddt/nodejs-store/issues"
   },
-  "homepage": "https://github.com/coenddt/mongo-store-js#readme",
+  "homepage": "https://github.com/coenddt/nodejs-store#readme",
   "engines": {
     "node": ">=18"
   },

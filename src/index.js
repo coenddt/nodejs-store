@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * MongoStore — 轻量 MongoDB 数据层（Node.js 版，Rust 单核心架构）
+ * nodejs-store — 轻量多后端数据层（Node.js 版，Rust 单核心架构；支持 MongoDB / MySQL / SQLite / PostgreSQL）
  *
  * 核心理念:
  *   1. 纯 JSON schema 定义，零代码
@@ -9,11 +9,11 @@
  *   3. src/*.js 为薄 Host 适配层：驱动 IO + 回调 + 占位符替换
  *   4. Python 侧（core-py）复用同一 Rust core，双端语义天然一致
  *
- * Rust core 与 Node/Python 绑定位于独立仓库 mongo-store-rust，本仓库通过其绑定产物引用。
+ * Rust core 与 Node/Python 绑定位于独立仓库 rust-store，本仓库通过其绑定产物引用。
  *
  * 用法:
  *   const { MongoClient } = require('mongodb');
- *   const { init, store } = require('mongo-store-js');
+ *   const { init, store } = require('nodejs-store');
  *
  *   const client = new MongoClient(uri);
  *   await client.connect();
