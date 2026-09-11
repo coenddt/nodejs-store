@@ -1,13 +1,15 @@
 'use strict';
 
 /**
- * MongoStore — 轻量 MongoDB 数据层（Node.js 版）
+ * MongoStore — 轻量 MongoDB 数据层（Node.js 版，Rust 单核心架构）
  *
  * 核心理念:
  *   1. 纯 JSON schema 定义，零代码
- *   2. 读取时自动补默认值 + 执行计算列
- *   3. GQL 树形查询 → 一次 $lookup 聚合
- *   4. 写入只存用户数据，不补默认值
+ *   2. Rust core 统一实现 GQL 解析 / 权限 / 计算列 / 命令规划（core-node 绑定）
+ *   3. src/*.js 为薄 Host 适配层：驱动 IO + 回调 + 占位符替换
+ *   4. Python 侧（core-py）复用同一 Rust core，双端语义天然一致
+ *
+ * Rust core 与 Node/Python 绑定位于独立仓库 mongo-store-rust，本仓库通过其绑定产物引用。
  *
  * 用法:
  *   const { MongoClient } = require('mongodb');
@@ -19,16 +21,9 @@
  *   const items = await store.query('Model($condition:@c0) { field1, field2 }', { c0: {} });
  */
 
-const computes = require('./computes');
 const crud = require('./crud');
 const permission = require('./permission');
-const pipeline = require('./pipeline');
 const schema = require('./schema');
-
-/** 对指定 schema 执行 MongoDB 原生聚合查询 */
-async function aggregate(schemaName, pl) {
-  return crud.aggregate(schemaName, pl);
-}
 
 class Store {
   // ── Schema 管理 ──
@@ -104,12 +99,9 @@ class Store {
   }
 
   // ── 底层工具（调试/高级用法） ──
-  parseGQL(gql) {
-    return pipeline.parseGql(gql);
-  }
-
-  buildPipeline(ast, params) {
-    return pipeline.buildPipeline(ast, params);
+  /** 解析 GQL 并构建 pipeline，返回 `{tokens, ast, pipeline, projection}` */
+  buildPipeline(gql, params) {
+    return schema.core.buildPipeline(gql, params ?? {}, permission.getContext() ?? null);
   }
 
   // ── 权限控制（AsyncLocalStorage 上下文） ──
@@ -191,11 +183,9 @@ module.exports = {
   init,
   store,
   Store,
-  aggregate,
+  aggregate: crud.aggregate,
   PermissionError: permission.PermissionError,
   schema,
   permission,
-  pipeline,
-  computes,
   crud,
 };

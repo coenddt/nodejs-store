@@ -1,0 +1,117 @@
+﻿cargo : [1m[92m   Compiling[0m mongo-store-py v0.1.0 (F:\独立开发者\项目\mongo-store-js\core-py)
+At line:15 char:1949
++ ... $env:Path"; cargo build --manifest-path core-py/Cargo.toml 2>&1 | Out ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([1m[92m   Com...ore-js\core-py):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[1m[91merror[E0599][0m[1m[97m: no associated function or constant named `value_list` found for struct `Registry` i
+n the current scope[0m
+   [1m[96m--> [0msrc\lib.rs:482:26
+    [1m[96m|[0m
+[1m[96m243[0m [1m[96m|[0m pub struct Registry {
+    [1m[96m|[0m [1m[96m-------------------[0m [1m[96massociated function or constant `value_list` not found for
+ this struct[0m
+[1m[96m...[0m
+[1m[96m482[0m [1m[96m|[0m         let docs = Self::value_list(docs)?;
+    [1m[96m|[0m                          [1m[91m^^^^^^^^^^[0m [1m[91massociated function or constant not found 
+in `Registry`[0m
+    [1m[96m|[0m
+[1m[92mnote[0m: if you're trying to build a new `Registry`, consider using `Registry::new` which returns `Registry`
+   [1m[96m--> [0msrc\lib.rs:251:5
+    [1m[96m|[0m
+[1m[96m251[0m [1m[96m|[0m     fn new() -> Self {
+    [1m[96m|[0m     [1m[92m^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[E0599][0m[1m[97m: no associated function or constant named `value_list` found for struct `Registry` i
+n the current scope[0m
+   [1m[96m--> [0msrc\lib.rs:483:42
+    [1m[96m|[0m
+[1m[96m243[0m [1m[96m|[0m pub struct Registry {
+    [1m[96m|[0m [1m[96m-------------------[0m [1m[96massociated function or constant `value_list` not found for
+ this struct[0m
+[1m[96m...[0m
+[1m[96m483[0m [1m[96m|[0m         let new_ids: Vec<String> = Self::value_list(new_ids)?
+    [1m[96m|[0m                                          [1m[91m^^^^^^^^^^[0m [1m[91massociated function or con
+stant not found in `Registry`[0m
+    [1m[96m|[0m
+[1m[92mnote[0m: if you're trying to build a new `Registry`, consider using `Registry::new` which returns `Registry`
+   [1m[96m--> [0msrc\lib.rs:251:5
+    [1m[96m|[0m
+[1m[96m251[0m [1m[96m|[0m     fn new() -> Self {
+    [1m[96m|[0m     [1m[92m^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[E0599][0m[1m[97m: no associated function or constant named `probe_of` found for struct `Registry` in 
+the current scope[0m
+   [1m[96m--> [0msrc\lib.rs:550:19
+    [1m[96m|[0m
+[1m[96m243[0m [1m[96m|[0m pub struct Registry {
+    [1m[96m|[0m [1m[96m-------------------[0m [1m[96massociated function or constant `probe_of` not found for t
+his struct[0m
+[1m[96m...[0m
+[1m[96m550[0m [1m[96m|[0m             Self::probe_of(probe_found, probe_doc.as_ref()),
+    [1m[96m|[0m                   [1m[91m^^^^^^^^[0m [1m[91massociated function or constant not found in `Regis
+try`[0m
+    [1m[96m|[0m
+[1m[92mnote[0m: if you're trying to build a new `Registry`, consider using `Registry::new` which returns `Registry`
+   [1m[96m--> [0msrc\lib.rs:251:5
+    [1m[96m|[0m
+[1m[96m251[0m [1m[96m|[0m     fn new() -> Self {
+    [1m[96m|[0m     [1m[92m^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[E0599][0m[1m[97m: no associated function or constant named `probe_of` found for struct `Registry` in 
+the current scope[0m
+   [1m[96m--> [0msrc\lib.rs:607:19
+    [1m[96m|[0m
+[1m[96m243[0m [1m[96m|[0m pub struct Registry {
+    [1m[96m|[0m [1m[96m-------------------[0m [1m[96massociated function or constant `probe_of` not found for t
+his struct[0m
+[1m[96m...[0m
+[1m[96m607[0m [1m[96m|[0m             Self::probe_of(probe_found, probe_doc.as_ref()),
+    [1m[96m|[0m                   [1m[91m^^^^^^^^[0m [1m[91massociated function or constant not found in `Regis
+try`[0m
+    [1m[96m|[0m
+[1m[92mnote[0m: if you're trying to build a new `Registry`, consider using `Registry::new` which returns `Registry`
+   [1m[96m--> [0msrc\lib.rs:251:5
+    [1m[96m|[0m
+[1m[96m251[0m [1m[96m|[0m     fn new() -> Self {
+    [1m[96m|[0m     [1m[92m^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[E0599][0m[1m[97m: no associated function or constant named `value_list` found for struct `Registry` i
+n the current scope[0m
+   [1m[96m--> [0msrc\lib.rs:622:26
+    [1m[96m|[0m
+[1m[96m243[0m [1m[96m|[0m pub struct Registry {
+    [1m[96m|[0m [1m[96m-------------------[0m [1m[96massociated function or constant `value_list` not found for
+ this struct[0m
+[1m[96m...[0m
+[1m[96m622[0m [1m[96m|[0m         let docs = Self::value_list(docs)?;
+    [1m[96m|[0m                          [1m[91m^^^^^^^^^^[0m [1m[91massociated function or constant not found 
+in `Registry`[0m
+    [1m[96m|[0m
+[1m[92mnote[0m: if you're trying to build a new `Registry`, consider using `Registry::new` which returns `Registry`
+   [1m[96m--> [0msrc\lib.rs:251:5
+    [1m[96m|[0m
+[1m[96m251[0m [1m[96m|[0m     fn new() -> Self {
+    [1m[96m|[0m     [1m[92m^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[E0599][0m[1m[97m: no associated function or constant named `value_list` found for struct `Registry` i
+n the current scope[0m
+   [1m[96m--> [0msrc\lib.rs:683:42
+    [1m[96m|[0m
+[1m[96m243[0m [1m[96m|[0m pub struct Registry {
+    [1m[96m|[0m [1m[96m-------------------[0m [1m[96massociated function or constant `value_list` not found for
+ this struct[0m
+[1m[96m...[0m
+[1m[96m683[0m [1m[96m|[0m         let new_ids: Vec<String> = Self::value_list(new_ids)?
+    [1m[96m|[0m                                          [1m[91m^^^^^^^^^^[0m [1m[91massociated function or con
+stant not found in `Registry`[0m
+    [1m[96m|[0m
+[1m[92mnote[0m: if you're trying to build a new `Registry`, consider using `Registry::new` which returns `Registry`
+   [1m[96m--> [0msrc\lib.rs:251:5
+    [1m[96m|[0m
+[1m[96m251[0m [1m[96m|[0m     fn new() -> Self {
+    [1m[96m|[0m     [1m[92m^^^^^^^^^^^^^^^^[0m
+
+[1m[97mFor more information about this error, try `rustc --explain E0599`.[0m
+[1m[91merror[0m: could not compile `mongo-store-py` (lib) due to 6 previous errors
