@@ -1,0 +1,46 @@
+name: release-npm
+
+# 发布 nodejs-store（纯 JS 包）到 npm。
+#
+# 前置：rust-store-node 需已发布（本包 dependencies 依赖它）。
+# 触发：推 v* tag，或手动 dispatch。
+# 凭证：NPM_TOKEN secret（actions/setup-node 注入 NODE_AUTH_TOKEN）。
+#       任何 token 都不得写入仓库/文档，只能经 CI secrets 注入。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: npm publish
+    if: startsWith(github.ref, 'refs/tags/') # 手动 dispatch 只做校验，不发布
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance（OIDC）
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+      - name: Check tag matches package version
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          TAG=${GITHUB_REF_NAME#v}
+          if [ "$PKG" != "$TAG" ]; then
+            echo "tag $GITHUB_REF_NAME 与 package.json version $PKG 不一致" >&2
+            exit 1
+          fi
+      - name: Pack & inspect
+        run: npm pack --dry-run
+      - name: Publish
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
