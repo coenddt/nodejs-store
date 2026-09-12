@@ -72,19 +72,19 @@ class _MemColl {
     this.docs = docs !== undefined ? docs : [];
   }
 
-  find(query, projection) {
+  find(_query, _projection) {
     return new _MemCursor(this.docs);
   }
 
-  aggregate(pipeline) {
+  aggregate(_pipeline) {
     return new _MemCursor(this.docs);
   }
 
-  async findOne(query, projection) {
+  async findOne(_query, _projection) {
     return this.docs.length ? { ...this.docs[0] } : null;
   }
 
-  async countDocuments(filter) {
+  async countDocuments(_filter) {
     return this.docs.length;
   }
 
@@ -98,6 +98,17 @@ class _MemColl {
     return { insertedCount: docs.length };
   }
 
+  /** 归档幂等（insertMany + upsertById）走 replaceOne(upsert)（对齐 exec.js） */
+  async replaceOne(condition, doc, options) {
+    const i = this.docs.findIndex((d) => d._id === condition._id);
+    if (i >= 0) {
+      this.docs[i] = { ...doc };
+      return { modifiedCount: 1 };
+    }
+    if (options && options.upsert) this.docs.push({ ...doc });
+    return { modifiedCount: 0 };
+  }
+
   async findOneAndUpdate(condition, update, options) {
     const base = this.docs.length ? { ...this.docs[0] } : {};
     for (const st of Object.values(update)) {
@@ -107,11 +118,11 @@ class _MemColl {
     return base;
   }
 
-  async updateMany(condition, data) {
+  async updateMany(_condition, _data) {
     return { modifiedCount: this.docs.length };
   }
 
-  async deleteMany(condition) {
+  async deleteMany(_condition) {
     const n = this.docs.length;
     this.docs = [];
     return { deletedCount: n };

@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.1.0 (2026-09-12)
+
+宿主接入守卫（对齐 py-store `c44001e` / rust-store `ab643f4`，依赖 `rust-store-node`>=1.0.0）。
+
+### New Features
+
+- **时间戳单位感知**：schema `timestamps` 支持 `'s'`（秒级）——镜像记录
+  `timestampUnit`（`'s'/'ms'/null`），写路径按单位注入秒/毫秒时间戳；
+  非法值注册即报错（core 校验，行为收紧：原先任意非 false 值放行）。
+- **用户 $pipeline 禁用开关**：`store.setAllowUserPipeline(false)` 透传 core
+  Registry 开关（AI 问数宿主建议关闭作纵深防御），关闭后用户 `$pipeline`
+  显式报错。
+- **统一反馈事件通道**：新增 `feedback` 模块（`setFeedbackSink(fn)` + emit，
+  无 sink 时打 stderr 向后兼容）——联邦 degraded 事件（含 core 新增的
+  `layer`/`hint` 字段）与 SQL 下推拒绝（结构化 `PushdownUnsupportedError`，
+  实例 `feedback()` 可转事件）统一接入自动反馈闭环。
+
 ## 1.0.0 (2026-09-12)
 
 **破坏性版本**：多数据源定位模型全面重构，消除「静默走错库」的一切可能。

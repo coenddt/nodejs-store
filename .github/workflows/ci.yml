@@ -1,0 +1,37 @@
+name: ci
+
+# nodejs-store 质量门禁（评测报告 m-5 / m-6）：
+#   1. eslint（零告警门禁，规则从现有风格反推，见 eslint.config.mjs）
+#   2. 测试 + c8 覆盖率门禁（statements/lines 90、functions 85、branches 75）
+#
+# 说明：rust-store-node（Rust 原生核心）可能尚未发布到 npm registry，本地与 CI
+# 开发一律走 LOCAL_CORE=1 兜底（scripts/test.js 自动开启，从相邻 rust-store/
+# core-node/dist 加载）。因此安装前临时摘除该依赖；CI 环境不持久化 manifest，
+# 仓库内 package.json 不受影响。依赖正式发布后可去掉该步。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-test:
+    name: lint + test (coverage gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install deps（临时摘除未发布的 rust-store-node，LOCAL_CORE 兜底）
+        run: |
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));delete p.dependencies['rust-store-node'];fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          npm install --no-audit --no-fund
+      - name: Lint
+        run: npm run lint
+      - name: Test + coverage gate
+        run: npm run test:coverage

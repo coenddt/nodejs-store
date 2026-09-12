@@ -18,12 +18,47 @@
  * `{ default: db }`，保证既有单库调用零变更。
  */
 
+const { AsyncLocalStorage } = require('node:async_hooks');
 const { core: _core, get: _getSchema } = require('./schema');
+const { emit: _emitFeedback } = require('./feedback');
 const executors = require('./executors');
 
 const DEFAULT_SOURCE = 'default';
 
 let _connections = Object.create(null);
+
+/** 事务作用域的连接覆盖：source → 事务描述符（见 runInTransaction） */
+const _txStore = new AsyncLocalStorage();
+
+/**
+ * SQL 下推遇到无法安全翻译的组合（core 标记 unsupported）
+ *
+ * 显式报错而非静默执行「缺少该段」的 SQL（会返回错误结果）；
+ * 自动反馈：触发原因见 message，修复指引见 feedback()。
+ */
+class PushdownUnsupportedError extends Error {
+  constructor(source, kind, codes, warnings) {
+    super(`SQL 下推不支持（${kind}）: ${codes.join(', ')}；${warnings.join(' / ')}`);
+    this.name = 'PushdownUnsupportedError';
+    this.source = source;
+    this.kind = kind;
+    this.codes = codes;
+    this.warnings = warnings;
+  }
+
+  /** 转统一反馈事件（与 feedback.emit 的事件形状一致） */
+  feedback() {
+    return {
+      type: 'sql_pushdown_unsupported',
+      code: 'pushdownUnsupported',
+      layer: 'dialect',
+      message: this.message,
+      hint: '改写查询避开该组合，或改用 Mongo 源执行该段取数',
+      source: this.source,
+      kind: this.kind,
+    };
+  }
+}
 
 /** Mongo 形态判别：db 实例（collection 为函数）或 MongoClient（db 为函数且无 collection） */
 function _isMongoHandle(x) {
@@ -56,6 +91,64 @@ function getConnection(source) {
     );
   }
   return conn;
+}
+
+/** 指定数据源是否已在当前连接映射中配置（辅助动作「软跳过」判定用，如 init 建索引） */
+function hasConnection(source) {
+  return _connections[source] !== undefined;
+}
+
+/** 连接是否为 SQL 执行器描述符（`{ kind, exec }`；Mongo 为驱动实例） */
+function isSqlConnection(connection) {
+  return (
+    !!connection &&
+    typeof connection.kind === 'string' &&
+    typeof connection.exec === 'function'
+  );
+}
+
+/** 数据源名是否绑定 SQL 源 */
+function isSql(source) {
+  return isSqlConnection(getConnection(source));
+}
+
+/**
+ * 当前生效连接：事务作用域内返回覆盖描述符，否则返回全局映射的连接
+ * （`exec.js#_execOn` 经此取连接，使事务内所有命令落到专用连接）
+ */
+function connectionFor(source) {
+  const store = _txStore.getStore();
+  if (store && store.has(source)) return store.get(source);
+  return getConnection(source);
+}
+
+/**
+ * 事务作用域：在单个 SQL 源上以「同连接 + 同事务」执行 fn 内的全部命令
+ *
+ *   - fn 内经 `_exec` 路由到该 source 的命令全部落到事务连接（commit/rollback 一体）；
+ *   - Mongo 源 / 执行器未实现 withTransaction / 多源混合时按原样执行
+ *     （跨源无法原子 —— 信任边界见 README「事务边界」），绝不静默假装已事务化；
+ *   - 事务体抛错统一 rollback 后原样上抛。
+ */
+async function runInTransaction(source, fn) {
+  const conn = getConnection(source);
+  if (!isSqlConnection(conn) || typeof conn.withTransaction !== 'function') {
+    return fn();
+  }
+  const parent = _txStore.getStore();
+  const store = new Map(parent || []);
+  if (store.has(source)) {
+    // 同源嵌套事务：外层已持有该源的事务连接，内层并入外层（不做保存点）
+    return fn();
+  }
+  const txDescriptor = { kind: conn.kind, exec: null };
+  store.set(source, txDescriptor);
+  return _txStore.run(store, () =>
+    conn.withTransaction(async (execOnTx) => {
+      txDescriptor.exec = execOnTx;
+      return fn();
+    }),
+  );
 }
 
 /**
@@ -126,10 +219,15 @@ async function execSql(source, connection, cmd) {
   // Host 兜底：core 标记了无法安全下推的组合（如 $lookup 子 $limit 每父 top-N）时，
   // 绝不执行「缺少该段」的 SQL（会静默返回错误结果），改为显式报错，由调用方降级重查。
   if (Array.isArray(plan.unsupported) && plan.unsupported.length > 0) {
-    const codes = plan.unsupported.map((u) => (u && u.code) || String(u)).join(', ');
-    throw new Error(
-      `SQL 下推不支持（${connection.kind}）: ${codes}；${(plan.warnings || []).join(' / ')}`,
+    const err = new PushdownUnsupportedError(
+      source,
+      connection.kind,
+      plan.unsupported.map((u) => (u && u.code) || String(u)),
+      (plan.warnings || []).map((w) => String(w)),
     );
+    // 自动反馈：拦截即告警（无 sink 时打 stderr），禁止静默失守
+    _emitFeedback(err.feedback());
+    throw err;
   }
   const out = await connection.exec(plan);
   return executors.shapeResult(cmd, out);
@@ -139,10 +237,16 @@ module.exports = {
   DEFAULT_SOURCE,
   setConnections,
   getConnection,
+  hasConnection,
+  isSqlConnection,
+  isSql,
+  connectionFor,
+  runInTransaction,
   mongoDb,
   sourceOfSchema,
   connectionOfSchema,
   dbOfSchema,
   route,
   execSql,
+  PushdownUnsupportedError,
 };

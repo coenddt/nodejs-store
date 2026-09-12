@@ -52,6 +52,8 @@ function register(defn) {
     namespace: defn.namespace || null,
     idPrefix: defn.idPrefix || '',
     timestamps: defn.timestamps !== false,
+    // 时间戳单位（'ms'/'s'/null=不维护）；值合法性由 core.register 校验
+    timestampUnit: defn.timestamps === 's' ? 's' : (defn.timestamps === false ? null : 'ms'),
     fields: defn.fields || {},
     relations: defn.relations || {},
     computes,
@@ -98,9 +100,24 @@ function list() {
   return core.list();
 }
 
+/** 开关用户 $pipeline 直通（默认允许；AI 问数宿主建议关闭作纵深防御） */
+function setAllowUserPipeline(allow = true) {
+  core.setAllowUserPipeline(Boolean(allow));
+}
+
+/**
+ * 开关「上下文强制」（默认关闭 = fail-open，与 JS 原版语义一致）。
+ *
+ * 开启后：所有 plan 入口遇 ctx 缺失抛 `ERR_NO_CONTEXT` 错误（fail-secure）；
+ * 内部调用（索引创建、归档回填、后台任务等）须显式传 `{ internal: true }` 上下文。
+ */
+function setRequireContext(require = true) {
+  core.setRequireContext(Boolean(require));
+}
+
 /** 取 asyncFn 计算列实现（fnRef 缺省 = 计算列 key 名） */
 function getAsyncFn(fnRef) {
   return _asyncFns[fnRef];
 }
 
-module.exports = { core, register, get, has, list, getAsyncFn };
+module.exports = { core, register, get, has, list, setAllowUserPipeline, setRequireContext, getAsyncFn };

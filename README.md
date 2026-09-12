@@ -105,6 +105,10 @@ await store.query('User($condition:@c0){...}', params, { namespace: 'tenant_42' 
 await store.insert('Order', data, { source: 'pg_cluster', namespace: 'tenant_7' });
 ```
 
+**`routeOverride` is a trusted server-side parameter** — it carries no origin check, so
+forwarding user-controlled input into it lets a caller re-target another tenant's
+`source`/`namespace` (CWE-639 authorization-bypass surface). Never pass raw request data here.
+
 Legacy single-db usage (`init(db)` + schema without `datasource`/`namespace`) is unchanged:
 commands carry `source: 'default'`, `namespace: null`.
 
@@ -165,6 +169,22 @@ await store.runAsInternal(() => store.remove('Post', { _id: pid }));
 - No context set → permission checks disabled (backward compatible).
 - Denied access throws `store.PermissionError` (with `status = 403`).
 
+### Fail-secure mode (opt-in)
+
+"No context" can mean both *system call* and *caller forgot the context* — by default the
+latter silently passes every check (fail-open, kept for backward compatibility). For
+security-sensitive hosts, enable the context requirement once at startup:
+
+```js
+store.setRequireContext(true);
+// now every query/write without a context throws `ERR_NO_CONTEXT:...`
+// internal jobs must be explicit:
+await store.runAsInternal(() => store.remove('Post', { _id: pid }));
+```
+
+`runAsInternal` marks the call as `{ internal: true }`, which is semantically distinct from
+a missing context and always passes. `setRequireContext(false)` restores the default.
+
 ## Schema reference
 
 ```js
@@ -195,6 +215,102 @@ await store.runAsInternal(() => store.remove('Post', { _id: pid }));
 ```
 
 Types: `string | int | long | float | double | boolean | array | object | date | any`.
+
+## Advanced API
+
+Everything below is reachable from the exported `store` singleton or the modules it
+re-exports. Options prefixed with `?` are optional.
+
+### `store.buildPipeline(gql, params?)`
+
+Low-level parse — compiles GQL to the command plan **without executing it**, returning
+`{ tokens, ast, pipeline, projection }`. Useful for debugging query shape, asserting
+pushdown behaviour, or building custom tooling. Permissions / computes are **not** applied here.
+
+```js
+const plan = store.buildPipeline('Post($condition:@c0){ title }', { c0: { status: 'draft' } });
+console.log(plan.pipeline);
+```
+
+### `store.syncSchema(opts)`
+
+Pull a SQL backend's physical structure into the registry
+(`introspect → schemaFromRows → mergeSchema(overlay) → register`). It only **reads** the
+structure — it never writes DDL back to the database.
+
+| Option | Type | Meaning |
+| --- | --- | --- |
+| `backend` | `'mysql' \| 'postgres' \| 'sqlite'` | required |
+| `driver` | object | required; prefer a read-only account |
+| `introspectOptions` | object | passed through to introspection (e.g. PG `schema`) |
+| `overlay` | `Array` | local schemaJSON merged on top (permissions / computes / overrides) |
+| `datasource` | string | bind every merged def to this source |
+| `namespace` | string | bind every merged def to this namespace |
+| `registerDefs` | boolean (default `true`) | `false` = return defs without registering |
+
+Returns the merged `schemaJSON[]`.
+
+```js
+const defs = await store.syncSchema({
+  backend: 'postgres', driver: pgPool, overlay: [Post], datasource: 'pg_a',
+});
+```
+
+### `store.setAllowUserPipeline(allow = true)`
+
+Registry-level guard for user-supplied `$pipeline` passthrough. Default is **allow**
+(backward compatible); AI / 问数 hosts should call `store.setAllowUserPipeline(false)` as
+defense in depth. `store.setRequireContext(...)` (fail-secure mode) is documented under
+[Fail-secure mode](#fail-secure-mode-opt-in).
+
+### `store.setFeedbackSink(fn)`
+
+Take over the unified feedback channel used for fallback / degradation / interception
+events. The sink receives one event object; pass `null` (or a non-function) to fall back to
+the default stderr printer.
+
+```js
+store.setFeedbackSink((e) => logger.warn({ code: e.code }, e.hint));
+// event shape: { type, code, layer, message, hint, ... }
+//   type   federation_degraded | sql_pushdown_unsupported | ...
+//   code   crossSourceSort | pushdownUnsupported | ...
+//   layer  federation | dialect | ...
+```
+
+### Low-level modules
+
+The package re-exports its building blocks for advanced hosts:
+
+```js
+const {
+  init, store, Store,
+  aggregate,                    // standalone aggregate(schemaName, pipeline, routeOverride)
+  PermissionError,              // thrown on denied access (status = 403)
+  PushdownUnsupportedError,     // thrown when a command cannot be safely pushed down
+  datasource, schema, permission, crud, executors, feedback, introspect,
+  syncSchema,                   // same function as store.syncSchema
+} = require('nodejs-store');
+
+// introspect.run(backend, driver, options) → normalized structure rows
+const rows = await introspect.run('mysql', pool, {});
+
+// executors.createConnection(kind, driver, options) → SQL datasource descriptor { kind, exec }
+await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) });
+```
+
+- `schema` / `permission` / `feedback` / `datasource` expose the same functions the `store`
+  singleton delegates to (e.g. `datasource.setConnections`, `datasource.hasConnection`,
+  `datasource.isSql`, `datasource.runInTransaction`).
+- **Multi-tenant route override** — pass `{ source, namespace }` as the last argument of any
+  query/write, see [Multi-datasource connections](#multi-datasource-connections).
+
+## Transaction boundary
+
+- **Single SQL source**: `mutation` parent-child step sequences and `remove` (archive + delete) run inside one driver transaction on one checked-out connection — any step failure rolls back the whole sequence.
+- **Each SQL write command** is itself atomic: multi-statement plans (e.g. MySQL write + readback) are transaction-wrapped in the executor.
+- **Mongo sources**: single-document writes are atomic; multi-step `mutation` and `remove` execute sequentially and are **not** atomic across steps (Mongo transactions require a replica set). If your consistency requirement spans steps on Mongo, either use an SQL source for those models or add application-level compensation.
+- **Archive idempotency**: `remove` archives with upsert-by-`_id` semantics, so a retry after partial failure no longer fails on duplicate `_id`.
+- **Cross-source steps** (parent and child bound to different datasources) cannot be atomic — they run sequentially by design.
 
 ## License
 

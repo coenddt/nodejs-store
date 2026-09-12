@@ -24,6 +24,7 @@
 const crud = require('./crud');
 const datasource = require('./datasource');
 const executors = require('./executors');
+const feedback = require('./feedback');
 const introspect = require('./introspect');
 const permission = require('./permission');
 const schema = require('./schema');
@@ -51,6 +52,7 @@ class Store {
   /**
    * GQL 查询。`routeOverride`（可选）：`{ source?, namespace? }` 多租户路由，
    * 覆盖命令定位（权限/计算列仍按结构 schema 判定）。下同。
+   * 注意：`routeOverride` 为**受信服务端参数**，禁止透传用户输入（否则可被用于跨源路由，CWE-639）。
    */
   async query(gql, params, routeOverride) {
     return crud.query(gql, params, routeOverride);
@@ -122,6 +124,25 @@ class Store {
     return schema.core.buildPipeline(gql, params ?? {}, permission.getContext() ?? null);
   }
 
+  // ── 宿主接入守卫（Registry 级，对齐 py-store c44001e） ──
+  /** 开关用户 $pipeline 直通（默认允许；AI 问数宿主建议关闭作纵深防御） */
+  setAllowUserPipeline(allow = true) {
+    return schema.setAllowUserPipeline(allow);
+  }
+
+  /**
+   * 开关「上下文强制」（默认关闭 = fail-open）。开启后：所有查询/写入在 ctx 缺失时
+   * 抛 `ERR_NO_CONTEXT`（fail-secure）；内部调用须显式传 `{ internal: true }` 上下文。
+   */
+  setRequireContext(require = true) {
+    return schema.setRequireContext(require);
+  }
+
+  /** 注册反馈事件回调（兜底/降级/拦截的统一出口）；传 null 恢复默认 stderr */
+  setFeedbackSink(fn) {
+    return feedback.setSink(fn);
+  }
+
   // ── 权限控制（AsyncLocalStorage 上下文） ──
   setContext(ctx) {
     return permission.setContext(ctx);
@@ -156,13 +177,10 @@ async function _createIndexesIfNeeded() {
   for (const name of names) {
     const s = schema.get(name);
     // 索引创建是初始化的辅助动作（非命令路由）：schema 绑定的 source 暂未在
-    // 当前连接映射中时跳过，不阻塞 init（命令路由的 fail fast 不在此处）
-    let db;
-    try {
-      db = datasource.dbOfSchema(name); // Mongo 按 (datasource, namespace) 解析；SQL 源返回 null
-    } catch (e) {
-      continue;
-    }
+    // 当前连接映射中时软跳过，不阻塞 init；其余配置错误（namespace 形态不匹配等）
+    // 按 fail-fast 由 dbOfSchema 上抛，不静默吞掉
+    if (!datasource.hasConnection(datasource.sourceOfSchema(name))) continue;
+    const db = datasource.dbOfSchema(name); // Mongo 按 (datasource, namespace) 解析；SQL 源返回 null
     if (!db) continue; // SQL 后端不建索引
 
     const coll = db.collection(s.collection);
@@ -171,7 +189,10 @@ async function _createIndexesIfNeeded() {
     try {
       existingIndexes = await coll.listIndexes().toArray();
     } catch (e) {
-      existingIndexes = [];
+      // 只吞服务器错误（集合尚未存在 → NamespaceNotFound 属 MongoServerError）；
+      // 连接/程序错误按 fail-fast 上抛，不再静默吞掉（对齐 py 侧 PyMongoError 收窄）
+      if (e && e.name === 'MongoServerError') existingIndexes = [];
+      else throw e;
     }
 
     for (const idx of s.indexes || []) {
@@ -226,11 +247,13 @@ module.exports = {
   Store,
   aggregate: crud.aggregate,
   PermissionError: permission.PermissionError,
+  PushdownUnsupportedError: datasource.PushdownUnsupportedError,
   datasource,
   schema,
   permission,
   crud,
   executors,
+  feedback,
   introspect,
   syncSchema,
 };

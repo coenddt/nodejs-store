@@ -34,6 +34,12 @@ function _requireDevFallback() {
 }
 
 function _load() {
+  // LOCAL_CORE=1（且非 production）优先加载本地调试产物 —— 使「从相邻 rust-store
+  // 仓库加载」的语义与文档一致；未设置或加载失败再走 npm 依赖。
+  if (process.env.LOCAL_CORE === '1' && process.env.NODE_ENV !== 'production') {
+    const local = _requireDevFallback();
+    if (local && !local.__error) return local;
+  }
   try {
     return require('rust-store-node');
   } catch (e) {

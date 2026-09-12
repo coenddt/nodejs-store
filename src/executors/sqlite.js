@@ -25,23 +25,43 @@ function create(db, _options = {}) {
   if (!db || typeof db.prepare !== 'function') {
     throw new TypeError('sqlite 执行器需要 better-sqlite3 Database 实例');
   }
+
+  /** 依序执行 plan.stmts（better-sqlite3 同步单连接） */
+  function runStmts(plan) {
+    let docs = null;
+    let rows = null;
+    let affectedRows = 0;
+    for (const stmt of plan.stmts) {
+      const params = _bind(stmt.params);
+      // 带 RETURNING 的写语句同样返回行 → 必须用 all() 取回；其余写语句用 run() 取影响行数
+      if (!stmt.isWrite || stmt.rowShape) {
+        rows = db.prepare(stmt.text).all(...params);
+        if (stmt.rowShape) docs = _core.restoreRows(stmt.rowShape, rows);
+      } else {
+        affectedRows = Number(db.prepare(stmt.text).run(...params).changes || 0);
+      }
+    }
+    return { docs, rows, affectedRows };
+  }
+
   return {
     kind: 'sqlite',
-    exec(plan) {
-      let docs = null;
-      let rows = null;
-      let affectedRows = 0;
-      for (const stmt of plan.stmts) {
-        const params = _bind(stmt.params);
-        // 带 RETURNING 的写语句同样返回行 → 必须用 all() 取回；其余写语句用 run() 取影响行数
-        if (!stmt.isWrite || stmt.rowShape) {
-          rows = db.prepare(stmt.text).all(...params);
-          if (stmt.rowShape) docs = _core.restoreRows(stmt.rowShape, rows);
-        } else {
-          affectedRows = Number(db.prepare(stmt.text).run(...params).changes || 0);
+    exec: runStmts,
+    /** 事务执行：显式 BEGIN/COMMIT/ROLLBACK（better-sqlite3 默认 autocommit，显式开事务安全） */
+    async withTransaction(body) {
+      db.exec('BEGIN');
+      try {
+        const out = await body(runStmts);
+        db.exec('COMMIT');
+        return out;
+      } catch (e) {
+        try {
+          db.exec('ROLLBACK');
+        } catch (_) {
+          /* rollback 失败不掩盖原始错误 */
         }
+        throw e;
       }
-      return { docs, rows, affectedRows };
     },
   };
 }

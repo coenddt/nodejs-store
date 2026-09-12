@@ -19,7 +19,7 @@
  *   - [`mutation`]：mutation / upsert / 原生聚合
  */
 
-const { setConnections, _now, _ctx, _call, _exec, _substitute, resolvePlaceholders } = require('./exec');
+const { setConnections, _nowFor, _ctx, _call, _exec, _substitute, resolvePlaceholders } = require('./exec');
 const { _generateId, _truthy, _newIdPool } = require('./id');
 const { query, queryOne, queryWithCount, queryFederated } = require('./query');
 const { insert, insertMany, update, updateMany, remove, exists, count } = require('./write');
@@ -48,7 +48,7 @@ module.exports = {
   _truthy,
   _newIdPool,
   // ── 内部工具（包内共享） ──
-  _now,
+  _nowFor,
   _ctx,
   _call,
   _exec,

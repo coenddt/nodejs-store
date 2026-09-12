@@ -14,31 +14,40 @@
 
 const { PermissionError, getContext } = require('../permission');
 const datasource = require('../datasource');
+const { get: _getSchema } = require('../schema');
 
 const _PHASE1_IDS = /^\{\{phase1\.ids\}\}$/;
 const _STEP_PH = /^\{\{step\.(\d+)\._id\}\}$/;
 
-/** core 权限类错误消息 → PermissionError（消息与 core 常量保持一致） */
-const _PERMISSION_MSGS = new Set(['无访问权限', '无写入权限', '无删除权限', '无批量写入权限']);
+/**
+ * 权限类错误识别：core 权限错误统一携带 `ERR_PERMISSION:` 稳定前缀（见 core
+ * `command/mod.rs::ERR_PERM_PREFIX`），按**前缀**映射而非具体文案 —— core 文案
+ * 可自由调整，映射不随文案漂移而静默失效。构造 PermissionError 时剥离前缀。
+ */
+const _PERM_PREFIX = 'ERR_PERMISSION:';
 
 /** 设置数据源连接映射（对 `../datasource` 的路由入口做包内透出） */
 const setConnections = datasource.setConnections;
 
-/** 毫秒时间戳（Host 时钟源） */
-function _now() {
-  return Date.now();
+/** 按 schema 的 timestamps 单位产出当前时间戳（'s' → 秒，其余/未启用 → 毫秒） */
+function _nowFor(schemaName) {
+  const unit = _getSchema(schemaName).timestampUnit;
+  return unit === 's' ? Math.floor(Date.now() / 1000) : Date.now();
 }
 
 function _ctx() {
   return getContext() ?? null;
 }
 
-/** 绑定层调用包装：权限类错误映射为 PermissionError */
+/** 绑定层调用包装：权限类错误（`ERR_PERMISSION:` 前缀）映射为 PermissionError */
 function _call(fn) {
   try {
     return fn();
   } catch (e) {
-    if (_PERMISSION_MSGS.has(e && e.message)) throw new PermissionError(e.message);
+    const msg = e && e.message;
+    if (typeof msg === 'string' && msg.startsWith(_PERM_PREFIX)) {
+      throw new PermissionError(msg.slice(_PERM_PREFIX.length));
+    }
     throw e;
   }
 }
@@ -65,6 +74,14 @@ async function _execMongo(db, cmd) {
       await coll.insertOne(cmd.doc);
       return cmd.doc;
     case 'insertMany':
+      if (cmd.upsertById) {
+        // 归档幂等（core planArchiveDocs）：按 _id 逐条覆盖 —— 「归档成功但删除失败」
+        // 的重试不再因 _id 冲突整批失败。SQL 侧由 dialect 的 ON CONFLICT/REPLACE 承接。
+        for (const doc of cmd.docs) {
+          await coll.replaceOne({ _id: doc._id }, doc, { upsert: true });
+        }
+        return { insertedCount: cmd.docs.length };
+      }
       await coll.insertMany(cmd.docs);
       return { insertedCount: cmd.docs.length };
     case 'findOneAndUpdate':
@@ -78,9 +95,10 @@ async function _execMongo(db, cmd) {
   }
 }
 
-/** 在指定数据源上执行命令（Mongo 走原生驱动，SQL 走 translate → exec） */
+/** 在指定数据源上执行命令（Mongo 走原生驱动，SQL 走 translate → exec；
+ * 事务作用域内经 datasource.connectionFor 落到事务专用连接） */
 async function _execOn(source, cmd) {
-  const connection = datasource.getConnection(source);
+  const connection = datasource.connectionFor(source);
   const db = datasource.mongoDb(connection, source, cmd.namespace ?? null);
   if (db) {
     return _execMongo(db, cmd);
@@ -129,7 +147,7 @@ function resolvePlaceholders(command, { ids = null, steps = [] } = {}) {
 
 module.exports = {
   setConnections,
-  _now,
+  _nowFor,
   _ctx,
   _call,
   _exec,

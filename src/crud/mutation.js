@@ -5,25 +5,36 @@
  */
 
 const { core: _core, get: _getSchema } = require('../schema');
-const { _call, _ctx, _exec, _now, resolvePlaceholders } = require('./exec');
+const datasource = require('../datasource');
+const { _call, _ctx, _exec, _nowFor, resolvePlaceholders } = require('./exec');
 const { _generateId, _newIdPool } = require('./id');
 
 /** mutation 单条：规划步骤序列 → 依序执行 + 父子 _id 占位符回填 */
 async function _mutationOne(schemaName, data, routeOverride = null) {
   const plan = _call(() =>
-    _core.planMutation(schemaName, data, _now(), _newIdPool(schemaName, data), _ctx(),
+    _core.planMutation(schemaName, data, _nowFor(schemaName), _newIdPool(schemaName, data), _ctx(),
       routeOverride));
 
-  const resolved = [];
-  let rootResult = null;
-  for (const [i, step] of plan.steps.entries()) {
-    const cmd = resolvePlaceholders(step.command, { steps: resolved });
-    const result = await _exec(cmd);
-    resolved.push(result ? (result._id ?? null) : null);
-    if (i === 0) rootResult = result; // 首步即根写入
-  }
+  const runSteps = async () => {
+    const resolved = [];
+    let rootResult = null;
+    for (const [i, step] of plan.steps.entries()) {
+      const cmd = resolvePlaceholders(step.command, { steps: resolved });
+      const result = await _exec(cmd);
+      resolved.push(result ? (result._id ?? null) : null);
+      if (i === 0) rootResult = result; // 首步即根写入
+    }
 
-  return rootResult ? _call(() => _core.applyWriteDefaults(schemaName, rootResult)) : null;
+    return rootResult ? _call(() => _core.applyWriteDefaults(schemaName, rootResult)) : null;
+  };
+
+  // 单一 SQL 源 → 步骤序列整体事务化（同连接同事务，任一步失败整体回滚）；
+  // Mongo 源 / 跨源步骤按原样顺序执行（非原子边界见 README「事务边界」）
+  const sources = [...new Set(plan.steps.map((s) => s.command.source || datasource.DEFAULT_SOURCE))];
+  if (sources.length === 1 && datasource.isSql(sources[0])) {
+    return datasource.runInTransaction(sources[0], runSteps);
+  }
+  return runSteps();
 }
 
 /**
@@ -54,7 +65,7 @@ async function mutation(schemaName, data, routeOverride = null) {
 async function upsert(schemaName, condition, data, options = null, routeOverride = null) {
   const s = _getSchema(schemaName);
   const plan = _call(() => _core.planUpsert(
-    schemaName, condition ?? null, data ?? null, options ?? null, _now(),
+    schemaName, condition ?? null, data ?? null, options ?? null, _nowFor(schemaName),
     s.idPrefix ? _generateId(s) : '', _ctx(), routeOverride,
   ));
   const result = await _exec(plan.command);

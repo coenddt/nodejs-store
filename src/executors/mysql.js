@@ -23,22 +23,49 @@ function create(driver, _options = {}) {
   if (!driver || typeof driver.execute !== 'function') {
     throw new TypeError('mysql 执行器需要 mysql2/promise 的连接或连接池');
   }
+
+  /** 在指定连接上依序执行 plan.stmts（多语句 plan 由 withTransaction 包事务） */
+  async function runStmts(conn, plan) {
+    let docs = null;
+    let rows = null;
+    let affectedRows = 0;
+    for (const stmt of plan.stmts) {
+      const [raw] = await conn.execute(stmt.text, stmt.params || []);
+      if (Array.isArray(raw)) {
+        rows = raw.map(_plain);
+        if (stmt.rowShape) docs = _core.restoreRows(stmt.rowShape, rows);
+      } else {
+        affectedRows = Number(raw.affectedRows || 0);
+      }
+    }
+    return { docs, rows, affectedRows };
+  }
+
   return {
     kind: 'mysql',
-    async exec(plan) {
-      let docs = null;
-      let rows = null;
-      let affectedRows = 0;
-      for (const stmt of plan.stmts) {
-        const [raw] = await driver.execute(stmt.text, stmt.params || []);
-        if (Array.isArray(raw)) {
-          rows = raw.map(_plain);
-          if (stmt.rowShape) docs = _core.restoreRows(stmt.rowShape, rows);
-        } else {
-          affectedRows = Number(raw.affectedRows || 0);
+    exec: (plan) => runStmts(driver, plan),
+    /**
+     * 事务执行：body(executeOnTx) 的所有 plan 落在同一连接同一事务内，
+     * 成功 commit / 失败 rollback。池自动取专用连接（结束归还）。
+     */
+    async withTransaction(body) {
+      const conn =
+        typeof driver.getConnection === 'function' ? await driver.getConnection() : driver;
+      try {
+        await conn.beginTransaction();
+        const out = await body((plan) => runStmts(conn, plan));
+        await conn.commit();
+        return out;
+      } catch (e) {
+        try {
+          await conn.rollback();
+        } catch (_) {
+          /* rollback 失败不掩盖原始错误 */
         }
+        throw e;
+      } finally {
+        if (conn !== driver && typeof conn.release === 'function') conn.release();
       }
-      return { docs, rows, affectedRows };
     },
   };
 }

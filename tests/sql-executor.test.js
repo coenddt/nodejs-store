@@ -179,10 +179,10 @@ test('identifier safety: 恶意 field 名加引号后安全，且连接可复用
   const WEIRD = 'x"; DROP TABLE users; --';
   const db = new Database(':memory:');
   // posts 真的有一列名就是注入串（证明 core 只把它当标识符、按后端规则转义）
-  db.exec(`CREATE TABLE users (_id TEXT PRIMARY KEY, name TEXT)`);
+  db.exec('CREATE TABLE users (_id TEXT PRIMARY KEY, name TEXT)');
   db.exec('INSERT INTO users VALUES (\'u1\', \'alice\')');
   db.exec(`CREATE TABLE evil (_id TEXT PRIMARY KEY, title TEXT, "${WEIRD.replace(/"/g, '""')}" TEXT)`);
-  db.exec(`INSERT INTO evil VALUES ('e1', 't', 'v')`);
+  db.exec('INSERT INTO evil VALUES (\'e1\', \'t\', \'v\')');
 
   _sc.register({
     name: 'Evil',

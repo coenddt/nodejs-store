@@ -6,6 +6,7 @@
  */
 
 const { core: _core, getAsyncFn } = require('../schema');
+const { emit: _emitFeedback } = require('../feedback');
 const { _call, _ctx, _exec, _execOn, resolvePlaceholders } = require('./exec');
 
 /** 执行读命令序列：find 快路径 / 两阶段（取 ID → 关联 → 还原排序）/ 标准聚合 */
@@ -48,9 +49,10 @@ async function query(gql, params = null, routeOverride = null) {
   return _finalize(plan, await _runQueryPlan(plan));
 }
 
-/** GQL 查询（返回单条） */
+/** GQL 查询（返回单条）—— 走 core `planQueryOne`：未显式 `$limit` 时下推 `$limit(1)` */
 async function queryOne(gql, params = null, routeOverride = null) {
-  const items = await query(gql, params, routeOverride);
+  const plan = _call(() => _core.planQueryOne(gql, params ?? {}, _ctx(), routeOverride));
+  const items = await _finalize(plan, await _runQueryPlan(plan));
   return items.length ? items[0] : null;
 }
 
@@ -75,8 +77,8 @@ async function _runFederatedUnit(unit) {
 /**
  * 跨库联邦查询（返回嵌套文档数组）
  *
- * Host 四步：core `planFederated` 拆源 → 逐源执行 → core `mergeFederated`
- * 内存 hash join → 统一后处理（`_finalize`，与单库同一路径）。
+ * Host 四步：core `planFederated` 拆源 → 并行逐源执行（任一源失败整体失败）
+ * → core `mergeFederated` 内存 hash join → 统一后处理（`_finalize`，与单库同一路径）。
  *
  * `postprocess` 取自根单元快照（含全部关系），因此结果形状与单库 `query` 完全一致。
  * 每源取数上限 `MAX_FEDERATION_ROWS` 由 core 强制（超限即报错，拒绝静默全表拉取）；
@@ -86,13 +88,11 @@ async function queryFederated(gql, params = null) {
   const plan = _call(() => _core.planFederated(gql, params ?? {}, _ctx()));
 
   for (const d of plan.degraded || []) {
-    console.warn(`[federation] 降级 ${(d && d.code) || ''}: ${(d && d.message) || ''}`);
+    // 降级事件走统一反馈通道（无 sink 时打 stderr，允许拦截，禁止静默失守）
+    _emitFeedback({ ...(d || {}), type: 'federation_degraded' });
   }
 
-  const results = [];
-  for (const unit of plan.sources || []) {
-    results.push(await _runFederatedUnit(unit));
-  }
+  const results = await Promise.all((plan.sources || []).map(_runFederatedUnit));
 
   const merged = _call(() => _core.mergeFederated(plan, results));
   return _finalize(plan, merged);

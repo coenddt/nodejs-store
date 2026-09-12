@@ -4,18 +4,23 @@
  * ID 供给（Host 随机源） —— 与 core `needs_new_id` 语义对齐
  *
  * core 无随机源：需要新 _id 时由 Host 按序供给，本模块负责生成与遍历。
+ * 随机段使用 crypto 强随机源 8 位 base36（约 41 bit 熵）：Math.random 仅 4 位
+ * （36^4 ≈ 168 万组合），insertMany 同毫秒批量生成时碰撞概率不可忽略（CWE-338）。
  */
+
+const crypto = require('node:crypto');
 
 const { get: _getSchema } = require('../schema');
 
 const _ID_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
-/** 按 schema.idPrefix 生成唯一 ID（时间戳36进制 + 随机4位） */
+/** 按 schema.idPrefix 生成唯一 ID（时间戳36进制 + crypto 随机8位） */
 function _generateId(schema) {
   const ts = Date.now().toString(36).toUpperCase();
   let rnd = '';
-  for (let i = 0; i < 4; i++) {
-    rnd += _ID_CHARS[Math.floor(Math.random() * _ID_CHARS.length)];
+  for (let i = 0; i < 8; i++) {
+    // crypto.randomInt 内部拒绝采样，无取模偏差
+    rnd += _ID_CHARS[crypto.randomInt(_ID_CHARS.length)];
   }
   return schema.idPrefix + ts + rnd.toUpperCase();
 }

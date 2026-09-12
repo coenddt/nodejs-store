@@ -16,19 +16,58 @@ function create(driver, _options = {}) {
   if (!driver || typeof driver.query !== 'function') {
     throw new TypeError('postgres 执行器需要 pg 的 Pool/Client 实例');
   }
+
+  /** 在指定连接上依序执行 plan.stmts */
+  async function runStmts(conn, plan) {
+    let docs = null;
+    let rows = null;
+    let affectedRows = 0;
+    for (const stmt of plan.stmts) {
+      const res = await conn.query(stmt.text, stmt.params || []);
+      rows = res.rows || [];
+      affectedRows = Number(res.rowCount || 0);
+      if (stmt.rowShape) docs = _core.restoreRows(stmt.rowShape, rows);
+    }
+    return { docs, rows, affectedRows };
+  }
+
   return {
     kind: 'postgres',
-    async exec(plan) {
-      let docs = null;
-      let rows = null;
-      let affectedRows = 0;
-      for (const stmt of plan.stmts) {
-        const res = await driver.query(stmt.text, stmt.params || []);
-        rows = res.rows || [];
-        affectedRows = Number(res.rowCount || 0);
-        if (stmt.rowShape) docs = _core.restoreRows(stmt.rowShape, rows);
+    exec: (plan) => runStmts(driver, plan),
+    /**
+     * 事务执行：显式 BEGIN/COMMIT/ROLLBACK 包住 body 的全部 plan。
+     * Pool 自动 checkout 专用 client（`release()` 归还）；Client 直连直接用。
+     */
+    async withTransaction(body) {
+      let conn = driver;
+      let release = null;
+      if (typeof driver.connect === 'function') {
+        try {
+          const c = await driver.connect();
+          // Pool.connect() → 专用 Client（带 release）；Client.connect() → 自身
+          if (c && typeof c.query === 'function') {
+            conn = c;
+            if (c !== driver && typeof c.release === 'function') release = () => c.release();
+          }
+        } catch (_) {
+          /* checkout 失败退回 driver 本体，事务语义由 BEGIN/COMMIT 保证 */
+        }
       }
-      return { docs, rows, affectedRows };
+      try {
+        await conn.query('BEGIN');
+        const out = await body((plan) => runStmts(conn, plan));
+        await conn.query('COMMIT');
+        return out;
+      } catch (e) {
+        try {
+          await conn.query('ROLLBACK');
+        } catch (_) {
+          /* rollback 失败不掩盖原始错误 */
+        }
+        throw e;
+      } finally {
+        if (release) release();
+      }
     },
   };
 }
