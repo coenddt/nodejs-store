@@ -14,7 +14,7 @@ function _quote(name) {
   return `"${String(name).replace(/"/g, '""')}"`;
 }
 
-function introspect(db) {
+function introspect(db, { database = null } = {}) {
   if (!db || typeof db.prepare !== 'function') {
     throw new TypeError('sqlite introspection 需要 better-sqlite3 Database 实例');
   }
@@ -23,12 +23,24 @@ function introspect(db) {
   const fks = [];
   const indexes = [];
 
+  // attached db 过滤：PRAGMA database_list 校验库名存在（main/temp/ATTACH 的库名），
+  // 表清单改从 `<db>.sqlite_master` 读取；显式库名作为 namespace 透出到 def。
+  let masterFrom = 'sqlite_master';
+  if (database != null) {
+    const known = db.prepare('PRAGMA database_list').all().some((r) => r.name === database);
+    if (!known) {
+      const names = db.prepare('PRAGMA database_list').all().map((r) => r.name).join(', ');
+      throw new Error(`SQLite attached db 不存在: ${database}（当前 attached: ${names}）`);
+    }
+    masterFrom = `${_quote(database)}.sqlite_master`;
+  }
+
   const tableRows = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+    .prepare(`SELECT name FROM ${masterFrom} WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
     .all();
 
   for (const { name } of tableRows) {
-    tables.push({ name });
+    tables.push(database != null ? { name, namespace: database } : { name });
 
     for (const c of db.prepare(`PRAGMA table_info(${_quote(name)})`).all()) {
       columns.push({

@@ -57,23 +57,32 @@ function _groupIndexes(rows) {
   return [...byKey.values()];
 }
 
-async function introspect(driver, { _schema = null } = {}) {
+async function introspect(driver, { database = null } = {}) {
   if (!driver || typeof driver.execute !== 'function') {
     throw new TypeError('mysql introspection 需要 mysql2/promise 的连接或连接池');
   }
-  const run = async (sql) => {
-    const [rows] = await driver.execute(sql);
+  // 显式传 database（连接串不带库或跨库同步）→ 参数化 table_schema；
+  // 缺省用当前连接的 DATABASE()。显式库名会作为 namespace 透出到 def。
+  const schemaFilter = database != null ? 'table_schema = ?' : 'table_schema = DATABASE()';
+  const params = database != null ? [database] : [];
+  const tablesSql = (base) => base.replace('table_schema = DATABASE()', schemaFilter);
+
+  const run = async (sql, args = []) => {
+    const [rows] = await driver.execute(sql, args);
     return rows;
   };
   const [tables, columns, fks, indexRows] = await Promise.all([
-    run(_TABLES),
-    run(_COLUMNS),
-    run(_FKS),
-    run(_INDEXES),
+    run(tablesSql(_TABLES), params),
+    run(tablesSql(_COLUMNS), params),
+    run(tablesSql(_FKS), params),
+    run(tablesSql(_INDEXES), params),
   ]);
 
   return {
-    tables,
+    // 显式库名 → 行携带 namespace（core schemaFromRows 会写进 def）
+    tables: database != null
+      ? tables.map((t) => ({ ...t, namespace: database }))
+      : tables,
     columns: columns.map((c) => ({
       table: c.table,
       name: c.name,

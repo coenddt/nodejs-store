@@ -1,6 +1,6 @@
 {
   "name": "nodejs-store",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Lightweight multi-backend data layer (MongoDB / MySQL / SQLite / PostgreSQL): pure JSON schemas, GQL tree queries compiled to a single query, computed columns, soft-delete and role-based access control",
   "main": "src/index.js",
   "files": [
@@ -41,6 +41,6 @@
     "mongodb": "^6.21.0",
     "mysql2": "^3.24.4",
     "pg": "^8.23.0",
-    "rust-store-node": "^0.1.0"
+    "rust-store-node": "^1.0.0"
   }
 }

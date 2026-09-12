@@ -196,6 +196,8 @@ test('identifier safety: 恶意 field 名加引号后安全，且连接可复用
 
   const cmd = {
     kind: 'find',
+    source: SRC,
+    namespace: null,
     collection: 'evil',
     filter: { [WEIRD]: 'v' },
     projection: { _id: 1, title: 1, [WEIRD]: 1 },

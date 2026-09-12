@@ -39,15 +39,18 @@ async function _finalize(plan, items) {
  * 支持的 params 键（通过 GQL 的 @key 引用）:
  *   $condition / $sort / $skip / $limit / $pipeline
  * 使用 $pipeline 时，框架不追加 compute 层、不补默认值、不裁剪，完全由用户控制。
+ *
+ * `routeOverride`（多租户路由，可选）：`{ source?, namespace? }`，覆盖命令定位，
+ * 权限/计算列仍按结构 schema 判定（见 multi-datasource-routing-plan.md §6）。
  */
-async function query(gql, params = null) {
-  const plan = _call(() => _core.planQuery(gql, params ?? {}, _ctx()));
+async function query(gql, params = null, routeOverride = null) {
+  const plan = _call(() => _core.planQuery(gql, params ?? {}, _ctx(), routeOverride));
   return _finalize(plan, await _runQueryPlan(plan));
 }
 
 /** GQL 查询（返回单条） */
-async function queryOne(gql, params = null) {
-  const items = await query(gql, params);
+async function queryOne(gql, params = null, routeOverride = null) {
+  const items = await query(gql, params, routeOverride);
   return items.length ? items[0] : null;
 }
 
@@ -103,8 +106,9 @@ async function queryFederated(gql, params = null) {
  *   2. 传统 $skip/$limit — 从 GQL 参数推导 page/pageSize
  * pageSize 上限 5000，防止拖库。
  */
-async function queryWithCount(gql, params = null) {
-  const plan = _call(() => _core.planQueryWithCount(gql, params ?? {}, _ctx(), null));
+async function queryWithCount(gql, params = null, routeOverride = null) {
+  const plan = _call(() =>
+    _core.planQueryWithCount(gql, params ?? {}, _ctx(), null, routeOverride));
   const items = await _finalize(plan, await _runQueryPlan(plan));
   const total = await _exec(plan.countCommand);
   return {

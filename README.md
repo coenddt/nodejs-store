@@ -73,6 +73,41 @@ const items = await store.query(
 );
 ```
 
+## Multi-datasource connections
+
+Every schema is located by the triple `(source, namespace, collection)` — the triple must be
+globally unique across the registry (duplicate registration throws instead of silently
+mis-routing).
+
+- `source` — connection key in `init({...})` (default `"default"`).
+- `namespace` — database/schema inside the connection: Mongo db name, PG schema,
+  MySQL database, SQLite attached db. Optional; `null` = connection default.
+- `collection` — table/collection name.
+
+```js
+// Multiple Mongo servers: one source per connection
+await init({ mongo_main: db, pg_a: { kind: 'postgres', exec } });
+
+// Same MongoClient serving multiple databases: declare namespace (db name)
+await init({ cluster: client });
+store.register({ name: 'User', collection: 'users', datasource: 'cluster', namespace: 'tenant_42', ... });
+
+// SQL cross-namespace joins are pushed down natively ("ns_a"."t" JOIN "ns_b"."t");
+// only Mongo cross-db relations fall back to in-memory federation.
+```
+
+**Multi-tenant route override** — one schema definition, N tenants. Any query/write accepts
+a `{ source, namespace }` override that re-targets commands at execution time (permissions
+and computed columns still follow the structural schema):
+
+```js
+await store.query('User($condition:@c0){...}', params, { namespace: 'tenant_42' });
+await store.insert('Order', data, { source: 'pg_cluster', namespace: 'tenant_7' });
+```
+
+Legacy single-db usage (`init(db)` + schema without `datasource`/`namespace`) is unchanged:
+commands carry `source: 'default'`, `namespace: null`.
+
 ## GQL syntax
 
 ```text

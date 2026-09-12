@@ -13,8 +13,8 @@
  *     → executors（绑定参数 + 执行 + restoreRows）→ 结果塑形
  * 以及 `syncSchema`（introspect → schemaFromRows → register）。
  *
- * 每个后端的 collection 名互不相同 —— 路由按 `collection → datasource` 反查，
- * 同名 collection 会串源（这也正是「多库并行」下 schema 命名需全局唯一的体现）。
+ * 每个后端的 collection 名互不相同 —— 路由按命令自带的 `source` 三元组精确路由，
+ * `(source, namespace, collection)` 在 Registry 内全局唯一，冲突注册即抛错（fail fast）。
  *
  * 运行：node scripts/test.js（scripts/test.js 会置 LOCAL_CORE=1）
  */
@@ -316,11 +316,15 @@ function crudSuite(ctx) {
 function syncSuite(ctx) {
   it('introspect → schemaFromRows → register', async (t) => {
     if (!ctx.ready) return t.skip(ctx.reason);
+    // 库里含已注册逻辑模型（my_posts 等），三元组唯一性下直接注册必冲突 ——
+    // 故先 registerDefs: false 拿 defs 验证映射，再显式断言冲突 fail fast，
+    // 最后单独注册非冲突表验证注册链路。
     const defs = await store.syncSchema({
       backend: ctx.kind,
       driver: ctx.driver,
       datasource: ctx.ds,
       introspectOptions: ctx.introspectOptions,
+      registerDefs: false,
     });
 
     const widgets = defs.find((d) => d.name === 'widgets');
@@ -338,7 +342,21 @@ function syncSuite(ctx) {
     assert.equal(gadgets.relations.widgets.type, 'one');
     assert.equal(gadgets.relations.widgets.localField, 'widget_id');
 
-    assert.ok(store.has('widgets'), 'syncSchema 应完成注册');
+    // 三元组冲突 fail fast：已注册 <ctx.schemaName>（同 source、同 collection）再注册即抛错
+    const dupe = defs.find((d) => d.collection === ctx.collection);
+    assert.ok(dupe, 'introspect 应产出已注册表的 def');
+    assert.throws(
+      () => _sc.register({ ...dupe, name: `${dupe.name}_dupe` }),
+      /冲突|占用/,
+      '同 (source, namespace, collection) 重复注册应抛错而非静默串源'
+    );
+
+    const taken = new Set(_sc.list().map((n) => _sc.get(n).collection));
+    for (const d of defs) {
+      if (taken.has(d.collection)) continue;
+      _sc.register(d);
+    }
+    assert.ok(store.has('widgets'), 'syncSchema 应完成非冲突表注册');
   });
 }
 

@@ -78,10 +78,15 @@ function _groupIndexes(rows) {
   return [...byKey.values()];
 }
 
-async function introspect(driver, { schema = 'public' } = {}) {
+async function introspect(driver, opts = {}) {
   if (!driver || typeof driver.query !== 'function') {
     throw new TypeError('postgres introspection 需要 pg 的 Pool/Client 实例');
   }
+  // 查询按 schema 过滤（缺省 public）；显式传入 schema/namespace 时作为 namespace
+  // 透出到 def（缺省不透出 = 连接默认 search_path，保持既有行为零变更）。
+  const explicit = opts.schema !== undefined || opts.namespace !== undefined;
+  const schema = opts.schema ?? opts.namespace ?? 'public';
+  const namespace = explicit ? schema : null;
   const [tables, columns, fks, indexRows] = await Promise.all([
     driver.query(_TABLES, [schema]),
     driver.query(_COLUMNS, [schema]),
@@ -90,7 +95,9 @@ async function introspect(driver, { schema = 'public' } = {}) {
   ]);
 
   return {
-    tables: tables.rows,
+    tables: namespace
+      ? tables.rows.map((t) => ({ ...t, namespace }))
+      : tables.rows,
     columns: columns.rows.map((c) => ({
       table: c.table,
       name: c.name,

@@ -7,7 +7,8 @@
  * 本模块只做 Host 三件事里最底层的一件：把 core 产出的 Command JSON
  * 路由到对应数据源连接并执行。不确定性输入由本层供给（now 时钟）。
  *
- * 路由规则见 `../datasource`：按命令的 `collection` 找 schema 绑定的数据源，
+ * 路由规则见 `../datasource`：命令自带 `source` / `namespace` 三元组，按 `source`
+ * 选连接、`namespace` 定位连接内的库（Mongo 双形态严格校验），
  * Mongo 走原生驱动，SQL 走 `translate → exec`。
  */
 
@@ -80,15 +81,16 @@ async function _execMongo(db, cmd) {
 /** 在指定数据源上执行命令（Mongo 走原生驱动，SQL 走 translate → exec） */
 async function _execOn(source, cmd) {
   const connection = datasource.getConnection(source);
-  if (typeof connection.collection === 'function') {
-    return _execMongo(connection, cmd);
+  const db = datasource.mongoDb(connection, source, cmd.namespace ?? null);
+  if (db) {
+    return _execMongo(db, cmd);
   }
   return datasource.execSql(source, connection, cmd);
 }
 
-/** Command JSON → 按 collection 绑定路由到 Mongo 原生 / SQL 翻译执行 */
+/** Command JSON → 按命令自带的 `source` 路由（不按 collection 反查） */
 async function _exec(cmd) {
-  return _execOn(datasource.sourceOfCollection(cmd.collection), cmd);
+  return _execOn(cmd.source || datasource.DEFAULT_SOURCE, cmd);
 }
 
 /** 深度替换命令中的占位符（命中 resolver 返回非字符串时替换） */

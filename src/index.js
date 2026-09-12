@@ -48,16 +48,20 @@ class Store {
   }
 
   // ── CRUD ──
-  async query(gql, params) {
-    return crud.query(gql, params);
+  /**
+   * GQL 查询。`routeOverride`（可选）：`{ source?, namespace? }` 多租户路由，
+   * 覆盖命令定位（权限/计算列仍按结构 schema 判定）。下同。
+   */
+  async query(gql, params, routeOverride) {
+    return crud.query(gql, params, routeOverride);
   }
 
-  async queryOne(gql, params) {
-    return crud.queryOne(gql, params);
+  async queryOne(gql, params, routeOverride) {
+    return crud.queryOne(gql, params, routeOverride);
   }
 
-  async queryWithCount(gql, params) {
-    return crud.queryWithCount(gql, params);
+  async queryWithCount(gql, params, routeOverride) {
+    return crud.queryWithCount(gql, params, routeOverride);
   }
 
   /** 跨库联邦查询（一条 GQL 跨多数据源：各源取数 → 内存 join → 统一后处理） */
@@ -65,46 +69,46 @@ class Store {
     return crud.queryFederated(gql, params);
   }
 
-  async insert(schemaName, data) {
-    return crud.insert(schemaName, data);
+  async insert(schemaName, data, routeOverride) {
+    return crud.insert(schemaName, data, routeOverride);
   }
 
-  async insertMany(schemaName, docs) {
-    return crud.insertMany(schemaName, docs);
+  async insertMany(schemaName, docs, routeOverride) {
+    return crud.insertMany(schemaName, docs, routeOverride);
   }
 
-  async update(schemaName, condition, data, options) {
-    return crud.update(schemaName, condition, data, options);
+  async update(schemaName, condition, data, options, routeOverride) {
+    return crud.update(schemaName, condition, data, options, routeOverride);
   }
 
-  async updateMany(schemaName, condition, data) {
-    return crud.updateMany(schemaName, condition, data);
+  async updateMany(schemaName, condition, data, routeOverride) {
+    return crud.updateMany(schemaName, condition, data, routeOverride);
   }
 
-  async remove(schemaName, condition) {
-    return crud.remove(schemaName, condition);
+  async remove(schemaName, condition, routeOverride) {
+    return crud.remove(schemaName, condition, routeOverride);
   }
 
-  async exists(schemaName, condition) {
-    return crud.exists(schemaName, condition);
+  async exists(schemaName, condition, routeOverride) {
+    return crud.exists(schemaName, condition, routeOverride);
   }
 
-  async count(schemaName, filter) {
-    return crud.count(schemaName, filter);
+  async count(schemaName, filter, routeOverride) {
+    return crud.count(schemaName, filter, routeOverride);
   }
 
   // ── Mutation / Upsert ──
-  async mutation(schemaName, data) {
-    return crud.mutation(schemaName, data);
+  async mutation(schemaName, data, routeOverride) {
+    return crud.mutation(schemaName, data, routeOverride);
   }
 
-  async upsert(schemaName, condition, data, options) {
-    return crud.upsert(schemaName, condition, data, options);
+  async upsert(schemaName, condition, data, options, routeOverride) {
+    return crud.upsert(schemaName, condition, data, options, routeOverride);
   }
 
   // ── 原生聚合 ──
-  async aggregate(schemaName, pl) {
-    return crud.aggregate(schemaName, pl);
+  async aggregate(schemaName, pl, routeOverride) {
+    return crud.aggregate(schemaName, pl, routeOverride);
   }
 
   // ── 结构同步（SQL 数据源：introspect → schemaFromRows → mergeSchema → register） ──
@@ -151,8 +155,15 @@ async function _createIndexesIfNeeded() {
   const names = schema.list();
   for (const name of names) {
     const s = schema.get(name);
-    const db = datasource.connectionOfSchema(name);
-    if (typeof db.collection !== 'function') continue; // SQL 后端不建索引
+    // 索引创建是初始化的辅助动作（非命令路由）：schema 绑定的 source 暂未在
+    // 当前连接映射中时跳过，不阻塞 init（命令路由的 fail fast 不在此处）
+    let db;
+    try {
+      db = datasource.dbOfSchema(name); // Mongo 按 (datasource, namespace) 解析；SQL 源返回 null
+    } catch (e) {
+      continue;
+    }
+    if (!db) continue; // SQL 后端不建索引
 
     const coll = db.collection(s.collection);
 
@@ -191,10 +202,11 @@ async function _createIndexesIfNeeded() {
 /**
  * 初始化 store — 传入数据源连接映射
  *
- *   - 多源：`init({ default: db, mysql_a: { kind: 'mysql', exec }, ... })`
- *   - 单源简写：`init(db)`（Mongo db 实例，自动归一为 `{ default: db }`）
+ *   - 多源：`init({ default: db, mongo_b: client, pg_a: { kind: 'postgres', exec }, ... })`
+ *   - 单源简写：`init(db)` / `init(client)`（Mongo db 实例或 MongoClient，自动归一为
+ *     `{ default: 连接 }`）
  *
- * 连接按 schema 的 `datasource` 绑定路由；缺省绑定回落 `default`。
+ * 连接按命令的 `source` 路由、`namespace` 定位库（schema 声明）；缺省绑定回落 `default`。
  */
 async function init(connections) {
   if (!connections || typeof connections !== 'object') {

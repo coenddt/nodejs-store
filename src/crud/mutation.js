@@ -9,9 +9,10 @@ const { _call, _ctx, _exec, _now, resolvePlaceholders } = require('./exec');
 const { _generateId, _newIdPool } = require('./id');
 
 /** mutation 单条：规划步骤序列 → 依序执行 + 父子 _id 占位符回填 */
-async function _mutationOne(schemaName, data) {
+async function _mutationOne(schemaName, data, routeOverride = null) {
   const plan = _call(() =>
-    _core.planMutation(schemaName, data, _now(), _newIdPool(schemaName, data), _ctx()));
+    _core.planMutation(schemaName, data, _now(), _newIdPool(schemaName, data), _ctx(),
+      routeOverride));
 
   const resolved = [];
   let rootResult = null;
@@ -29,8 +30,9 @@ async function _mutationOne(schemaName, data) {
  * mutation — 智能持久化
  *
  * 自动判断 upsert/insert，支持父子文档关联填充。
+ * `routeOverride` 可选：`{ source?, namespace? }` 多租户路由。
  */
-async function mutation(schemaName, data) {
+async function mutation(schemaName, data, routeOverride = null) {
   const isArray = Array.isArray(data);
   const items = isArray ? data : [data];
 
@@ -38,7 +40,7 @@ async function mutation(schemaName, data) {
 
   const results = [];
   for (const item of items) {
-    results.push(await _mutationOne(schemaName, item));
+    results.push(await _mutationOne(schemaName, item, routeOverride));
   }
 
   return isArray ? results : results[0];
@@ -49,11 +51,11 @@ async function mutation(schemaName, data) {
  *
  * 与 mutation 不同，upsert 需要调用方显式提供 match 条件，不处理父子关系。
  */
-async function upsert(schemaName, condition, data, options = null) {
+async function upsert(schemaName, condition, data, options = null, routeOverride = null) {
   const s = _getSchema(schemaName);
   const plan = _call(() => _core.planUpsert(
     schemaName, condition ?? null, data ?? null, options ?? null, _now(),
-    s.idPrefix ? _generateId(s) : '', _ctx(),
+    s.idPrefix ? _generateId(s) : '', _ctx(), routeOverride,
   ));
   const result = await _exec(plan.command);
   return result ? _call(() => _core.applyWriteDefaults(schemaName, result)) : null;
@@ -62,8 +64,8 @@ async function upsert(schemaName, condition, data, options = null) {
 // ─── 原生聚合 ────────────────────────────────────────────────
 
 /** 对指定 schema 执行 MongoDB 原生聚合查询 */
-async function aggregate(schemaName, pipeline) {
-  const cmd = _call(() => _core.planAggregate(schemaName, pipeline ?? []));
+async function aggregate(schemaName, pipeline, routeOverride = null) {
+  const cmd = _call(() => _core.planAggregate(schemaName, pipeline ?? [], routeOverride));
   return _exec(cmd);
 }
 

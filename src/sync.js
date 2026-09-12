@@ -19,6 +19,7 @@ const introspect = require('./introspect');
  * @param {object}   [opts.introspectOptions] 透传给 introspection（如 PG 的 `schema`）
  * @param {Array}    [opts.overlay]           本地 overlay schemaJSON（权限/计算列/覆盖）
  * @param {string}   [opts.datasource]        绑定到该 schema 的数据源名（写入每个 def）
+ * @param {string}   [opts.namespace]         连接内的库/schema 名（写入每个 def；缺省 = 连接默认）
  * @param {boolean}  [opts.registerDefs=true] 是否直接注册（false 时仅返回 defs）
  * @returns {Promise<Array>} 合并后的 schemaJSON 数组
  */
@@ -28,12 +29,14 @@ async function syncSchema({
   introspectOptions,
   overlay = [],
   datasource = null,
+  namespace = null,
   registerDefs = true,
 }) {
   const rows = await introspect.run(backend, driver, introspectOptions);
   let defs = _core.schemaFromRows(rows, backend);
   if (overlay && overlay.length) defs = _core.mergeSchema(defs, overlay);
   if (datasource) defs = defs.map((d) => ({ ...d, datasource }));
+  if (namespace) defs = defs.map((d) => ({ ...d, namespace }));
   if (registerDefs) for (const d of defs) register(d);
   return defs;
 }

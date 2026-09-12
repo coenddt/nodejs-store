@@ -49,6 +49,7 @@ function register(defn) {
   _schemas[defn.name] = {
     name: defn.name,
     collection: defn.collection || defn.name,
+    namespace: defn.namespace || null,
     idPrefix: defn.idPrefix || '',
     timestamps: defn.timestamps !== false,
     fields: defn.fields || {},
@@ -69,8 +70,9 @@ function register(defn) {
       _isArchive: true,
       fields: { ...(defn.fields || {}), deletedAt: { type: 'number' } },
       indexes: defn.indexes || [],
-      // 归档表与原表同库
+      // 归档表与原表同 (source, namespace)
       datasource: defn.datasource || null,
+      namespace: defn.namespace || null,
     });
   }
 
