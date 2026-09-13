@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "test": "node scripts/test.js",
-    "test:coverage": "c8 --all --include src/** -x **/rust-store/** --reporter=text --reporter=html --check-coverage --statements 90 --lines 90 --functions 85 --branches 75 node scripts/test.js",
+    "test:coverage": "c8 --all --include \"src/**\" -x \"**/rust-store/**\" --reporter=text --reporter=html --check-coverage --statements 90 --lines 90 --functions 85 --branches 75 node scripts/test.js",
     "lint": "eslint ."
   },
   "keywords": [
