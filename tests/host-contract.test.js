@@ -28,9 +28,15 @@ const { setContext } = require('../src/permission');
 const HOST_FIXTURES = path.join(__dirname, '..', '..', 'rust-store', 'fixtures', 'host');
 const load = (name) => JSON.parse(fs.readFileSync(path.join(HOST_FIXTURES, name), 'utf8'));
 
+// fixture 归 rust-store 仓库（跨宿主对拍的唯一事实源），CI 单仓库检出时不存在该相邻
+// 目录 → 显式跳过并说明原因（绝不静默；本地含相邻仓库时照常执行）。
+const SKIP = fs.existsSync(HOST_FIXTURES)
+  ? false
+  : `缺少共享 fixture 目录（${HOST_FIXTURES}）：需在含相邻 rust-store 仓库的工作区运行`;
+
 // ─── 1. 占位符替换 ──────────────────────────────────────────
 
-test('host contract: resolvePlaceholders', () => {
+test('host contract: resolvePlaceholders', { skip: SKIP }, () => {
   const fx = load('placeholders.json');
   for (const c of fx.cases) {
     const got = resolvePlaceholders(c.command, {
@@ -43,7 +49,7 @@ test('host contract: resolvePlaceholders', () => {
 
 // ─── 2. is_truthy 语义 ──────────────────────────────────────
 
-test('host contract: _truthy', () => {
+test('host contract: _truthy', { skip: SKIP }, () => {
   const fx = load('truthy.json');
   for (const c of fx.cases) {
     assert.equal(_truthy(c.value), c.expected, `truthy 用例不一致: ${c.name}`);
@@ -52,7 +58,7 @@ test('host contract: _truthy', () => {
 
 // ─── 3. mutation ID 池遍历 ──────────────────────────────────
 
-test('host contract: _newIdPool', () => {
+test('host contract: _newIdPool', { skip: SKIP }, () => {
   const fx = load('id_pool.json');
   for (const s of fx.schemas) register(s);
 
@@ -118,7 +124,7 @@ class _FakeDb {
   }
 }
 
-test('host contract: callback bridge (fn + asyncFn)', async () => {
+test('host contract: callback bridge (fn + asyncFn)', { skip: SKIP }, async () => {
   const fx = load('callback_bridge.json');
 
   // 把 fixture 的声明式 computes 替换为真实桩函数后注册

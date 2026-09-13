@@ -21,6 +21,13 @@ jobs:
   lint-test:
     name: lint + test (coverage gate)
     runs-on: ubuntu-latest
+    # 场景矩阵（tests/scenario-course-platform.test.js）以 Mongo 结果作 oracle 对拍
+    # SQL 后端，缺 oracle 时 H/J 组「行集一致性」用例无法判定 —— 故 CI 起真实 mongod。
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
