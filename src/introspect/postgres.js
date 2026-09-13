@@ -7,6 +7,8 @@
  * 产出规范化行 JSON，交 core `schemaFromRows` 做纯映射。建议使用只读账号。
  */
 
+const { groupIndexes } = require('./_shared');
+
 const _TABLES = `
   SELECT table_name AS name
   FROM information_schema.tables
@@ -63,20 +65,8 @@ const _INDEXES = `
   WHERE ns.nspname = $1 AND NOT ix.indisprimary
   ORDER BY t.relname, i.relname`;
 
-/** 把 `{table,name,unique,column}` 行按索引名归并出 columns 数组 */
-function _groupIndexes(rows) {
-  const byKey = new Map();
-  for (const r of rows) {
-    const key = `${r.table}::${r.name}`;
-    let entry = byKey.get(key);
-    if (!entry) {
-      entry = { table: r.table, name: r.name, columns: [], unique: Number(r.unique) };
-      byKey.set(key, entry);
-    }
-    entry.columns.push(r.column);
-  }
-  return [...byKey.values()];
-}
+// PG 行已带 unique（0/1）→ 直取；归并逻辑共享见 _shared.js
+const _uniqueOf = (r) => Number(r.unique);
 
 async function introspect(driver, opts = {}) {
   if (!driver || typeof driver.query !== 'function') {
@@ -106,7 +96,7 @@ async function introspect(driver, opts = {}) {
       pk: Number(c.pk) || 0,
     })),
     fks: fks.rows,
-    indexes: _groupIndexes(indexRows.rows),
+    indexes: groupIndexes(indexRows.rows, _uniqueOf),
   };
 }
 

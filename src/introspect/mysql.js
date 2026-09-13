@@ -7,6 +7,8 @@
  * 交 core `schemaFromRows` 做纯映射。建议使用只读账号；库名取当前连接的 `DATABASE()`。
  */
 
+const { groupIndexes } = require('./_shared');
+
 const _TABLES = `
   SELECT table_name AS name
   FROM information_schema.tables
@@ -42,20 +44,8 @@ const _INDEXES = `
   WHERE table_schema = DATABASE()
   ORDER BY table_name, index_name, seq_in_index`;
 
-/** 把 `{table,name,nonUnique,column}` 行按索引名归并出 columns 数组 */
-function _groupIndexes(rows) {
-  const byKey = new Map();
-  for (const r of rows) {
-    const key = `${r.table}::${r.name}`;
-    let entry = byKey.get(key);
-    if (!entry) {
-      entry = { table: r.table, name: r.name, columns: [], unique: Number(r.nonUnique) ? 0 : 1 };
-      byKey.set(key, entry);
-    }
-    entry.columns.push(r.column);
-  }
-  return [...byKey.values()];
-}
+// MySQL 行携带 nonUnique（1=非唯一）→ 取反为 unique 标志；归并逻辑共享见 _shared.js
+const _uniqueOf = (r) => (Number(r.nonUnique) ? 0 : 1);
 
 async function introspect(driver, { database = null } = {}) {
   if (!driver || typeof driver.execute !== 'function') {
@@ -91,7 +81,7 @@ async function introspect(driver, { database = null } = {}) {
       pk: c.columnKey === 'PRI' ? 1 : 0,
     })),
     fks,
-    indexes: _groupIndexes(indexRows),
+    indexes: groupIndexes(indexRows, _uniqueOf),
   };
 }
 

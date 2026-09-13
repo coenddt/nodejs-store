@@ -10,7 +10,7 @@ This is the Node.js port of [`py-store`](https://github.com/coenddt/py-store) �
 | --- | --- |
 | MongoDB | native aggregation pipeline (`find`/`aggregate`/`$lookup`) |
 | MySQL | parameterized SQL, `information_schema` introspection |
-| SQLite | parameterized SQL, `sqlite_master` + `PRAGMA` introspection |
+| SQLite | parameterized SQL, `sqlite_master` + `PRAGMA` introspection. **Sync driver** (`better-sqlite3`): calls block the event loop by design — for high-concurrency hot paths prefer MySQL/PostgreSQL/MongoDB, or isolate SQLite in a dedicated process |
 | PostgreSQL | parameterized SQL (`$n`), `RETURNING` support |
 
 GQL tree queries compile to a single native query per backend — never hand-write `$lookup` or raw SQL again.

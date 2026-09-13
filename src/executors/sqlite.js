@@ -7,6 +7,11 @@
  * 产出，本模块不拼任何 SQL；带 `rowShape` 的语句结果交 core `restoreRows` 还原为
  * 嵌套文档。返回值是中立包络 `{ docs, rows, affectedRows }`，由 `./index.js`
  * 依 command.kind 塑形为 Mongo 驱动等价返回值。
+ *
+ * ⚠️ 同步阻塞说明：better-sqlite3 是**同步驱动**，`prepare/all/run` 在 async 契约内
+ * 仍会**阻塞事件循环**（本模块保持同步调用是有意为之的设计选择：单连接语义最简、
+ * 无跨线程开销）。高并发主链路请改用 MySQL / PostgreSQL / MongoDB 数据源，
+ * 或为 SQLite 单独起独立进程隔离阻塞面——本执行器不适合多请求共享的事件循环热路径。
  */
 
 const { core: _core } = require('../schema');
@@ -26,7 +31,7 @@ function create(db, _options = {}) {
     throw new TypeError('sqlite 执行器需要 better-sqlite3 Database 实例');
   }
 
-  /** 依序执行 plan.stmts（better-sqlite3 同步单连接） */
+  /** 依序执行 plan.stmts（better-sqlite3 同步单连接；同步调用会阻塞事件循环，见模块头说明） */
   function runStmts(plan) {
     let docs = null;
     let rows = null;

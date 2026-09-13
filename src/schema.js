@@ -111,8 +111,8 @@ function setAllowUserPipeline(allow = true) {
  * 开启后：所有 plan 入口遇 ctx 缺失抛 `ERR_NO_CONTEXT` 错误（fail-secure）；
  * 内部调用（索引创建、归档回填、后台任务等）须显式传 `{ internal: true }` 上下文。
  */
-function setRequireContext(require = true) {
-  core.setRequireContext(Boolean(require));
+function setRequireContext(needCtx = true) {
+  core.setRequireContext(Boolean(needCtx));
 }
 
 /** 取 asyncFn 计算列实现（fnRef 缺省 = 计算列 key 名） */

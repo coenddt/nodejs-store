@@ -134,8 +134,8 @@ class Store {
    * 开关「上下文强制」（默认关闭 = fail-open）。开启后：所有查询/写入在 ctx 缺失时
    * 抛 `ERR_NO_CONTEXT`（fail-secure）；内部调用须显式传 `{ internal: true }` 上下文。
    */
-  setRequireContext(require = true) {
-    return schema.setRequireContext(require);
+  setRequireContext(needCtx = true) {
+    return schema.setRequireContext(needCtx);
   }
 
   /** 注册反馈事件回调（兜底/降级/拦截的统一出口）；传 null 恢复默认 stderr */
@@ -214,7 +214,15 @@ async function _createIndexesIfNeeded() {
 
         await coll.createIndex(Object.entries(keys), finalOptions);
       } catch (e) {
-        console.error(`[MongoStore] 创建索引失败 ${s.collection}: ${e && e.message ? e.message : e}`);
+        // 索引创建失败不阻塞 init（辅助动作），但必须走统一反馈通道：
+        // 无 sink 时由 feedback 默认落 stderr（不双份打印），宿主可 setFeedbackSink 接管
+        feedback.emit({
+          type: 'index_create_failed',
+          code: 'indexCreateFailed',
+          layer: 'host',
+          message: `创建索引失败 ${s.collection}: ${e && e.message ? e.message : e}`,
+          hint: '检查该集合的索引定义与连接权限；索引缺失不影响读写，相关查询将退化为全表扫描',
+        });
       }
     }
   }

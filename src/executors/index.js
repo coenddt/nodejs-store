@@ -18,6 +18,10 @@ const sqlite = require('./sqlite');
 
 const _BACKENDS = { mysql, postgres, sqlite };
 
+// 注意：sqlite 执行器基于 better-sqlite3 同步驱动，调用期间会阻塞事件循环
+// （设计选择，非缺陷）——高并发主链路请用 mysql/postgres/mongo，或为 SQLite
+// 单独起独立进程；详见 ./sqlite.js 模块头「同步阻塞说明」。
+
 /** 创建 SQL 数据源连接描述符 `{ kind, exec }`（driver 为对应驱动实例/连接） */
 function createConnection(kind, driver, options) {
   const mod = _BACKENDS[kind];

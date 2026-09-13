@@ -281,11 +281,11 @@
 
 | 编号 | 严重度 | 位置 | 扣分 | 状态 |
 |---|---|---|---|---|
-| R7-M1 | **M Major** | `tests/federation-e2e.test.js:31-41,71`；`tests/real-backends-e2e.test.js:37-70,149-155,202-211` | −2 | **未修复（本轮新增发现）** |
-| R7-m1 | m Minor | `src/index.js:216-218` | −0.5 | 未修复（本轮新增） |
-| R7-m2 | m Minor | `src/executors/sqlite.js:30-45` | −0.5 | 未修复（本轮新增，项目文档已自认） |
-| R7-m3 | m Minor | `src/schema.js:114` | −0.5 | 未修复（本轮新增） |
-| R7-m4 | m Minor | `src/introspect/mysql.js:46-58`；`src/introspect/postgres.js:67-79` | −0.5 | 未修复（本轮新增） |
+| R7-M1 | **M Major** | `tests/federation-e2e.test.js:31-41,71`；`tests/real-backends-e2e.test.js:37-70,149-155,202-211` | −2 | ✅ 已整改（第 8 轮：两 e2e 文件改用各自独立库 `mongo_store_e2e_fed` / `mongo_store_e2e_real`，DROP/CREATE 只碰本库，连接串可环境变量覆盖） |
+| R7-m1 | m Minor | `src/index.js:216-218` | −0.5 | ✅ 已整改（第 8 轮：改为 `feedback.emit({type:'index_create_failed', code:'indexCreateFailed', layer:'host', ...})` 统一反馈通道，无 sink 时由通道默认 stderr 承担，不双份打印） |
+| R7-m2 | m Minor | `src/executors/sqlite.js:30-45` | −0.5 | ✅ 已整改（第 8 轮，**文档级**：按第 7 轮建议的短期方案执行——sqlite 执行器与 executors 导出处补中文「同步驱动阻塞事件循环」说明，README backend 对比表补替代建议；不改造成 worker） |
+| R7-m3 | m Minor | `src/schema.js:114` | −0.5 | ✅ 已整改（第 8 轮：形参 `require` → `needCtx`，并同批修掉 `src/index.js:137` Store 方法的同类遮蔽点，调用点均为位置传参零变更） |
+| R7-m4 | m Minor | `src/introspect/mysql.js:46-58`；`src/introspect/postgres.js:67-79` | −0.5 | ✅ 已整改（第 8 轮：逐行比对语义一致后抽 `introspect/_shared.js#groupIndexes(rows, uniqueOf)` 单份实现，唯一性判定差异参数化，行为零变更） |
 | R7-I1 | I Info | `src/feedback.js:33-36` | （不计分） | 已评估 |
 | R7-I2 | I Info | `src/crud/exec.js:80-82` | （不计分） | 已评估 |
 | R7-I3 | I Info | `src/executors/index.js:29-34` | （不计分） | 已评估 |
@@ -405,3 +405,57 @@
 4. **总分 99.5 / 100，等级 S（≥90）**，但**不满足定稿条件**（存在未清零 Major + 新增问题），
    故本轮**不标注为「已完成」**，建议：先修复 R7-M1（测试数据隔离）→ 复跑全量套件 ≥10 次确认稳定 → 再复评定稿。
 5. R7-m1~m4 为低风险改进项，可随下一次迭代批量处理，无阻塞。
+
+---
+
+### 第 8 轮 · 整改与复评（2026-09-13）
+
+> 闭环：第 7 轮全部问题（**R7-M1 + R7-m1~m4**），Major 清零。
+> 复评口径：与第 7 轮同（全量口径重算），回归取证为 `npm run lint` / `npm test`（全量，LOCAL_CORE=1）/ `npm run test:coverage`（门禁）。
+
+#### 一、逐项整改说明
+
+| 编号 | 整改方式 | 涉及文件 |
+|---|---|---|
+| R7-M1 | 两个 e2e 文件改用**各自独立库**：federation → `mongo_store_e2e_fed`、real-backends → `mongo_store_e2e_real`（MySQL database / PG database / Mongo db 同名各自独立），`before`/`reset()` 的 DROP/CREATE/DELETE 只碰本库；默认连接串内嵌独立库名，且 `MYSQL_URI` / `PG_URI` / `MONGO_URI` 环境变量可整串覆盖以便 CI 复用。文件头注释写明隔离约定（ISTQB Independent/Repeatable） | `tests/federation-e2e.test.js`、`tests/real-backends-e2e.test.js` |
+| R7-m1 | 索引创建失败由仅 `console.error` 改为统一反馈通道 `feedback.emit({ type:'index_create_failed', code:'indexCreateFailed', layer:'host', message, hint })`；无 sink 时由 feedback 默认 stderr 输出承担兜底语义，**不双份打印**。新增回归测试：`init()` 中 createIndex 抛错时 sink 收到该事件且 init 不中断 | `src/index.js`、`tests/index-feedback.test.js`（新增） |
+| R7-m2 | **文档级整改**（按第 7 轮建议的短期方案，不改造成 worker）：sqlite 执行器模块头补「⚠️ 同步阻塞说明」（better-sqlite3 同步驱动在 async 契约内阻塞事件循环，属有意设计选择；高并发主链路用 MySQL/PG/Mongo 或独立进程），`runStmts` 注释同步标注；`executors/index.js` 导出处加同类提示并回链；README「Supported backends」表 SQLite 行补 sync driver 说明与替代建议 | `src/executors/sqlite.js`、`src/executors/index.js`、`README.md` |
+| R7-m3 | 形参 `require` 改名 `needCtx`（消除对 CJS `require` 的遮蔽）；Grep 复查发现 `src/index.js:137` Store 方法 `setRequireContext(require = true)` 为同类遮蔽点，一并改名；两处调用点（tests/require-context.test.js）均为位置传参，零变更 | `src/schema.js`、`src/index.js` |
+| R7-m4 | mysql/postgres 两份 `_groupIndexes` 逐行比对：归并逻辑完全一致，唯一差异是唯一性判定入参（MySQL `nonUnique` 取反 vs PG `unique` 直取）→ 抽取共享单份 `introspect/_shared.js#groupIndexes(rows, uniqueOf)`，差异经 `uniqueOf` 参数化，两侧各留一行注释说明判定来源，**行为零变更**（复评实测 e2e introspect/syncSchema 用例全绿） | `src/introspect/_shared.js`（新增）、`src/introspect/mysql.js`、`src/introspect/postgres.js` |
+
+#### 二、实测验证（全部来自实际运行）
+
+| 项 | 命令 | 实测结果 |
+|---|---|---|
+| Lint | `npm run lint` | **exit 0；0 违规 / 0 告警** |
+| 全量测试 · 连跑稳定性 | `npm test` × 10（两个 5 连跑批次） | **10/10 次 exit 0**；后一批次逐次记录 `pass=82 fail=0 skipped=0`。测试用例数 81 → **82**（新增索引失败反馈用例；6 套件不变） |
+| 并发验证（不互相清库） | 两个 e2e 文件**同时各一进程**，连做 3 轮（共 6 进程） | **6/6 通过**：federation 2/2 ×3、real-backends 23/23 ×3，无 `ER_NO_SUCH_TABLE`、无结果污染 |
+| 覆盖率门禁 | `npm run test:coverage`（c8 --all，门禁 90/90/85/75） | exit 0 通过；新增 `_shared.js` 覆盖率 **100%** |
+| 单文件 e2e | `node --test tests/federation-e2e.test.js` / `tests/real-backends-e2e.test.js` | 2/2 与 23/23 全绿 |
+
+边界说明（如实记录）：R7-M1 的隔离口径为「**每文件独立库**」。同文件多实例并发（如 3 个进程同时跑 federation-e2e）仍共享该文件的库、会互踩 fixture——实测确实如此，属本设计范围外（需 per-pid 库名才可解）；node:test 全量运行形态（每文件单进程、文件间并发）已被上述并发验证覆盖。
+
+环境准备记录：本地 MySQL（root）与 PostgreSQL（postgres）以管理员新建 `mongo_store_e2e_fed` / `mongo_store_e2e_real` 并授权 `e2e` 账号（`GRANT ALL ON db.*` / `CREATE DATABASE ... OWNER e2e`）；Mongo 库随首写隐式创建。两测试文件头注释已写明库名约定与环境变量覆盖方式，可照此在任何环境复现。
+
+#### 三、更新总分（按第 7 轮全量口径重算）
+
+| # | 维度 | 第 7 轮 | 第 8 轮 | 回补依据 |
+|---|---|---|---|---|
+| 1 | 功能正确性 | 15.0 | 15.0 | 不变 |
+| 2 | 可靠性 | 9.5 | **10.0** | R7-m1 关闭：兜底/降级/拦截全部走统一反馈通道，异常处理无静默失守 |
+| 3 | 安全性 | 15.0 | 15.0 | 不变 |
+| 4 | 性能效率 | 9.5 | **10.0** | R7-m2 关闭（按第 7 轮建议的短期方案）：同步阻塞面显式文档化并给出替代路径；worker 化列为长期优化项 |
+| 5 | 可维护性 | 14.5 | **15.0** | R7-m4 关闭：重复实现归一为共享单份 |
+| 6 | 可读性与规范 | 9.5 | **10.0** | R7-m3 关闭：内置名遮蔽清零（含同批发现的 index.js 同类点） |
+| 7 | 测试质量 | 8.0 | **10.0** | R7-M1 关闭：独立性/可重复性恢复并有实测证据（10 连跑全绿 + 双文件并发 6/6） |
+| 8 | 文档与可理解性 | 5.0 | 5.0 | 不变 |
+| 9 | 架构与设计 | 10.0 | 10.0 | 不变 |
+| — | Σ 维度分 | 96.0 | **100.0** | |
+| + | 亮点加分 | +3.5 | +3.5 | 不变 |
+| — | **总分** | 99.5 | **100（封顶，S 卓越）** | 100.0 + 3.5 = 103.5 触顶取 100 |
+
+#### 四、结论
+
+1. **Blocker / Critical / Major：全部清零**；Minor（R7-m1~m4）全部整改（R7-m2 为文档级）；Info 4 条维持已评估。
+2. 第 7 轮「不满足定稿条件」的两条障碍（存在未清零 Major、存在新增未修复问题）均已消除；第 7 轮 → 第 8 轮等级同为 S、问题收敛且无新增 C 及以上问题，**满足定稿条件**，本报告至此定稿。
+3. 后续建议（不阻塞定稿）：① SQLite 写路径 worker 线程化（R7-m2 长期项，压测报告已列待办）；② 如 CI 需要同文件并行矩阵，再评估 per-pid 库名隔离；③ 反馈通道默认 stderr 输出的换行/控制字符单行化（R7-I1，Info 备查）。

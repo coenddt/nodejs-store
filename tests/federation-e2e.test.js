@@ -7,8 +7,13 @@
  * A6：跨库计算列（依赖子源关系字段）在同一 GQL 内生效。
  *
  * 需本机 127.0.0.1 已启动 MySQL(3306) / MongoDB(27017)，
- * 库 `mongo_store_e2e`，账号 `e2e/e2e123`（可用 MYSQL_URI / MONGO_URI 覆盖）；
+ * 库 `mongo_store_e2e_fed`，账号 `e2e/e2e123`（可用 MYSQL_URI / MONGO_URI 覆盖）；
  * 任一不可达则整体 skip，不影响其余回归。
+ *
+ * 数据隔离（ISTQB Independent/Repeatable）：本文件使用**独立库** `mongo_store_e2e_fed`
+ * （MySQL database 与 Mongo db 同名），`before` 中的 DROP/CREATE 仅作用于本库，
+ * 与 `real-backends-e2e.test.js`（`mongo_store_e2e_real`）互不干扰，
+ * 全量套件并发/重复运行不再互相清空对方 fixture。
  *
  * 全程只走 store 统一入口：`store.queryFederated` → core `planFederated` 拆源
  * → 逐源执行（Mongo 原生 / SQL translate→exec）→ core `mergeFederated` 内存 join
@@ -24,9 +29,11 @@ const { MongoClient } = require('mongodb');
 
 const { init, store, executors, permission, schema: _sc } = require('../src');
 
+// 独立库名（可整串用 MYSQL_URI / MONGO_URI 环境变量覆盖，便于 CI 复用外部实例）
 const MYSQL_URI =
-  process.env.MYSQL_URI || 'mysql://e2e:e2e123@127.0.0.1:3306/mongo_store_e2e?charset=utf8mb4';
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/mongo_store_e2e';
+  process.env.MYSQL_URI
+  || 'mysql://e2e:e2e123@127.0.0.1:3306/mongo_store_e2e_fed?charset=utf8mb4';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/mongo_store_e2e_fed';
 
 const MYSQL_DDL = [
   'DROP TABLE IF EXISTS fed_orders_deleted',
