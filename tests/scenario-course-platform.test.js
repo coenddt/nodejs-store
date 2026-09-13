@@ -182,7 +182,7 @@ after(() => {
   L.push('');
   L.push('- `LOCAL_CORE=1`：从相邻 `rust-store/core-node/dist/` 加载原生核心；'
     + '**不要**设 `NODE_ENV=production`（会使本地兜底失效，回落 npm 依赖）。');
-  L.push(`- 后端可达性可用 \`MYSQL_URI\` / \`PG_URI\` / \`MONGO_URI\` 覆盖；缺省：MySQL `
+  L.push('- 后端可达性可用 `MYSQL_URI` / `PG_URI` / `MONGO_URI` 覆盖；缺省：MySQL '
     + `\`${harness.MYSQL_URI}\`、PostgreSQL \`${harness.PG_URI}\`、MongoDB `
     + `\`${harness.MONGO_URI}\`；SQLite 为 better-sqlite3 内存库。`);
   L.push('- 每个用例前 `reset → seed`（seed 走 `store.insert` 真实写路径），ctx 三态齐备。');

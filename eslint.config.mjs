@@ -14,7 +14,7 @@ export default [
   js.configs.recommended,
   {
     // 仅约束仓库源码（.js / .cjs）；config 自身（.mjs）保持 ESM 默认解析
-    files: ['src/**/*.js', 'tests/**/*.js', 'scripts/**/*.js'],
+    files: ['src/**/*.js', 'tests/**/*.js', 'scripts/**/*.js', 'example/**/*.js'],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: 'commonjs',
