@@ -1,0 +1,120 @@
+[
+  {
+    "id": "C-01", "group": "C", "title": "one 关系挂单对象",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($sort:@s0){_id, category{_id, name}}", "params": { "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "c1", "category": { "_id": "cat2", "name": "后端" } },
+          { "_id": "c2", "category": { "_id": "cat1", "name": "编程" } },
+          { "_id": "c3", "category": null },
+          { "_id": "c4", "category": null },
+          { "_id": "c5", "category": { "_id": "cat3", "name": "数据库" } },
+          { "_id": "c6", "category": { "_id": "cat2", "name": "后端" } },
+          { "_id": "c7", "category": { "_id": "cat3", "name": "数据库" } }
+        ] } }
+    ], "note": "C-01：categoryId 为 NULL 的 c3/c4 挂 null；其余挂正确对象"
+  },
+  {
+    "id": "C-02", "group": "C", "title": "many 关系挂数组",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($sort:@s0){_id, lessons{_id, title, seq}}", "params": { "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "c1", "lessons": [ { "_id": "l1", "title": "安装", "seq": 1 }, { "_id": "l2", "title": "入门", "seq": 2 } ] },
+          { "_id": "c2", "lessons": [ { "_id": "l3", "title": "语法", "seq": 1 } ] },
+          { "_id": "c3", "lessons": [] }, { "_id": "c4", "lessons": [] },
+          { "_id": "c5", "lessons": [] }, { "_id": "c6", "lessons": [] },
+          { "_id": "c7", "lessons": [] }
+        ] } }
+    ], "note": "C-02：c1 多课时、c2 一节、c7 0 子行返回 []"
+  },
+  {
+    "id": "C-03", "group": "C", "title": "自关联父",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Category($sort:@s0){_id, parent{_id, name}}", "params": { "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "cat1", "parent": null },
+          { "_id": "cat2", "parent": { "_id": "cat1", "name": "编程" } },
+          { "_id": "cat3", "parent": { "_id": "cat2", "name": "后端" } }
+        ] } }
+    ], "note": "C-03：三级分类树，根 cat1 的 parent 为 null"
+  },
+  {
+    "id": "C-04", "group": "C", "title": "自关联子（只挂一层）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Category($sort:@s0){_id, children{_id, name, sort}}", "params": { "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "cat1", "children": [ { "_id": "cat2", "name": "后端", "sort": 2 } ] },
+          { "_id": "cat2", "children": [ { "_id": "cat3", "name": "数据库", "sort": 3 } ] },
+          { "_id": "cat3", "children": [] }
+        ] } }
+    ], "note": "C-04：cat1 直接子为 cat2、cat2 直接子为 cat3、cat3 为空（只挂一层，不递归到更深层）"
+  },
+  {
+    "id": "C-05", "group": "C", "title": "两层嵌套",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, lessons{_id, title, parent{_id, title}}}", "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "c1", "lessons": [
+            { "_id": "l1", "title": "安装", "parent": null },
+            { "_id": "l2", "title": "入门", "parent": { "_id": "l1", "title": "安装" } }
+          ] } ] } }
+    ], "note": "C-05：l2.parent→l1；顶层 l1.parent=null"
+  },
+  {
+    "id": "C-06", "group": "C", "title": "嵌套 + 排序 + 分页下推",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, lessons($sort:@s0,$limit:@l0){_id, title, seq}}",
+        "params": { "c0": { "_id": "c1" }, "s0": { "seq": 1 }, "l0": 1 },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "c1", "lessons": [ { "_id": "l1", "title": "安装", "seq": 1 } ] }
+        ] } }
+    ], "note": "C-06：子级按 seq 排序并只取 limit 条（父行不受影响）"
+  },
+  {
+    "id": "C-07", "group": "C", "title": "空关系形状（many=[] / one=null）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, lessons{_id}}", "params": { "c0": { "_id": "c7" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c7", "lessons": [] } ] } },
+      { "op": "query", "gql": "Course($condition:@c0){_id, category{_id}}", "params": { "c0": { "_id": "c3" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c3", "category": null } ] } }
+    ], "note": "C-07：many→[]、one→null，不得一边 [] 一边 null"
+  },
+  {
+    "id": "C-08", "group": "C", "title": "关系外键为 NULL",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Enrollment($condition:@c0){_id, user{_id, name}}", "params": { "c0": { "_id": "e5" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "e5", "user": null } ] } }
+    ], "note": "C-08：e5.userId 为 NULL，user 挂 null 不报错"
+  },
+  {
+    "id": "C-09", "group": "C", "title": "多关系同时请求",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, category{name}, lessons{_id}, reviews{_id, score}}",
+        "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "c1", "category": { "name": "后端" },
+            "lessons": [ { "_id": "l1" }, { "_id": "l2" } ],
+            "reviews": [ { "_id": "r1", "score": 5 }, { "_id": "r2", "score": 4 } ]
+          } ] } }
+    ], "note": "C-09：category/lessons/reviews 三关系分别正确挂载"
+  },
+  {
+    "id": "C-10", "group": "C", "title": "关系内字段投影",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){lessons{title}}", "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "c1", "lessons": [ { "title": "安装" }, { "title": "入门" } ] }
+        ] } }
+    ], "note": "C-10：子文档未知键不请求时不得外泄（lessons 只含 title）"
+  }
+]

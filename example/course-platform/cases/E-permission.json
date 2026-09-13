@@ -1,0 +1,122 @@
+[
+  {
+    "id": "E-01", "group": "E", "title": "schema 级 read 拒绝",
+    "reset": "seed", "ctx": { "userId": "u2", "roles": ["student"] },
+    "steps": [
+      { "op": "query", "gql": "AuditLog($condition:@c0){_id}", "params": { "c0": { "_id": "a1" } },
+        "expect": { "kind": "error", "code": "ERR_PERMISSION", "status": 403 } }
+    ], "note": "E-01：AuditLog read=admin，student 读被拒 403"
+  },
+  {
+    "id": "E-02", "group": "E", "title": "schema 级 read 放行",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "AuditLog($sort:@s0){_id}", "params": { "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "a1" }, { "_id": "a2" } ] } }
+    ], "note": "E-02：admin 读 AuditLog 正常返回"
+  },
+  {
+    "id": "E-03", "group": "E", "title": "字段级 read 裁剪",
+    "reset": "seed", "ctx": { "userId": "u2", "roles": ["student"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, title, secret}", "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1", "title": "Python入门" } ] } }
+    ], "note": "E-03：student 请求 secret(read=admin) → 结果不含 secret，键集精确"
+  },
+  {
+    "id": "E-04", "group": "E", "title": "字段级 read 对 admin 放行",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, secret}", "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1", "secret": "SECRET-1" } ] } }
+    ], "note": "E-04：admin 可见 secret"
+  },
+  {
+    "id": "E-05", "group": "E", "title": "关系级 read 拒绝（显式请求不可读关系）",
+    "reset": "seed", "ctx": { "userId": "u2", "roles": ["student"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, lessons{_id}, reviews{_id, score}}",
+        "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "error", "code": "ERR_PERMISSION", "status": 403 } }
+    ], "note": "E-05 / RBAC R0-1：reviews 关系 read=admin/editor，student 显式请求 → Err(ERR_PERMISSION)，绝不静默裁剪"
+  },
+  {
+    "id": "E-06", "group": "E", "title": "owner 注入（带 $condition）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["student"] },
+    "steps": [
+      { "op": "query", "gql": "StudyNote($condition:@c0){_id, title}", "params": { "c0": { "title": "笔记A" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "n1", "title": "笔记A" } ] } }
+    ], "note": "E-06：ctx=u1 只读 createdBy=u1 的笔记"
+  },
+  {
+    "id": "E-07", "group": "E", "title": "owner 注入（不带 $condition）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["student"] },
+    "steps": [
+      { "op": "query", "gql": "StudyNote{_id, title}",
+        "expect": { "kind": "rows", "rows": [ { "_id": "n1", "title": "笔记A" } ] } }
+    ], "note": "E-07 / 历史 B-11-2：owner 注入不得被 $condition 门控，无条件也不得越权读全表"
+  },
+  {
+    "id": "E-08", "group": "E", "title": "owner 注入 + count",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["student"] },
+    "steps": [
+      { "op": "count", "schema": "StudyNote", "filter": {}, "expect": { "kind": "count", "value": 1 } }
+    ], "note": "E-08：count 路径也注入 owner（u1 只有 n1）"
+  },
+  {
+    "id": "E-10", "group": "E", "title": "owner 条件不覆盖原条件",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["student"] },
+    "steps": [
+      { "op": "query", "gql": "StudyNote($condition:@c0){_id}", "params": { "c0": { "title": "笔记B" } },
+        "expect": { "kind": "rows", "rows": [] } }
+    ], "note": "E-10：最终条件=AND(原条件,owner)；笔记B 属 u2，u1 得空（丢其一将越权）"
+  },
+  {
+    "id": "E-11", "group": "E", "title": "关系目标 schema 不可读 → 拒绝",
+    "reset": "seed", "ctx": { "userId": "u5", "roles": ["student"] },
+    "steps": [
+      { "op": "query", "gql": "ProbeHolder($condition:@c0){_id, label, grade{score}}",
+        "params": { "c0": { "_id": "h1" } },
+        "expect": { "kind": "error", "code": "ERR_PERMISSION", "status": 403 } }
+    ], "note": "E-11 / RBAC R0-1：目标模型 ProbeGrade read=admin，student 显式请求 grade 关系 → Err(ERR_PERMISSION)"
+  },
+  {
+    "id": "E-12", "group": "E", "title": "关系目标 owner 隔离",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["student"] },
+    "steps": [
+      { "op": "query", "gql": "ProbeNote($condition:@c0){_id, label, memos{body, createdBy}}",
+        "params": { "c0": { "_id": "PN1" } },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "PN1", "label": "pn", "memos": [ { "body": "mine", "createdBy": "u1" } ] } ] } }
+    ], "note": "E-12：ProbeMemo read=creator，ctx=u1 只挂 createdBy=u1 的 memo（m2 不掉）"
+  },
+  {
+    "id": "E-13", "group": "E", "title": "fail-open vs fail-secure",
+    "reset": "seed", "ctx": null,
+    "steps": [
+      { "op": "raw", "fn": "check_require_context", "gql": "Course{_id}" }
+    ], "note": "E-13：无 ctx fail-open 放行；set_require_context(True) 后无 ctx 抛 ERR_NO_CONTEXT（开关用后由 harness 复原）"
+  },
+  {
+    "id": "E-14", "group": "E", "title": "特权角色放行",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "raw", "fn": "check_privileged_roles", "gql": "AuditLog($condition:@c0){_id}", "c0": { "_id": "a1" } }
+    ], "note": "E-14：super_admin/admin/internal 三种 ctx 跑 E-01 全部放行"
+  },
+  {
+    "id": "E-15", "group": "E", "title": "伪角色 creator 由数据判定",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["student"] },
+    "steps": [
+      { "op": "query", "gql": "StudyNote{_id}",
+        "expect": { "kind": "rows", "rows": [ { "_id": "n1" } ] } }
+    ], "note": "E-15：roles 不含 creator，但由 createdBy=u1 数据判为 creator，只读自己的"
+  },
+  {
+    "id": "E-16", "group": "E", "title": "写路径 owner 校验",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["student"] },
+    "steps": [
+      { "op": "raw", "fn": "check_write_owner" }
+    ], "note": "E-16：u1 试图 update 属 u2 的 StudyNote n2 → 被拒/0 行，不得改动"
+  }
+]

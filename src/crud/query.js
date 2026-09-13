@@ -38,8 +38,7 @@ async function _finalize(plan, items) {
  * GQL 查询（返回数组）
  *
  * 支持的 params 键（通过 GQL 的 @key 引用）:
- *   $condition / $sort / $skip / $limit / $pipeline
- * 使用 $pipeline 时，框架不追加 compute 层、不补默认值、不裁剪，完全由用户控制。
+ *   $condition / $sort / $skip / $limit
  *
  * `routeOverride`（多租户路由，可选）：`{ source?, namespace? }`，覆盖命令定位，
  * 权限/计算列仍按结构 schema 判定（见 multi-datasource-routing-plan.md §6）。

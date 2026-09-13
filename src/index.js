@@ -108,11 +108,6 @@ class Store {
     return crud.upsert(schemaName, condition, data, options, routeOverride);
   }
 
-  // ── 原生聚合 ──
-  async aggregate(schemaName, pl, routeOverride) {
-    return crud.aggregate(schemaName, pl, routeOverride);
-  }
-
   // ── 结构同步（SQL 数据源：introspect → schemaFromRows → mergeSchema → register） ──
   async syncSchema(opts) {
     return syncSchema(opts);
@@ -125,17 +120,22 @@ class Store {
   }
 
   // ── 宿主接入守卫（Registry 级，对齐 py-store c44001e） ──
-  /** 开关用户 $pipeline 直通（默认允许；AI 问数宿主建议关闭作纵深防御） */
-  setAllowUserPipeline(allow = true) {
-    return schema.setAllowUserPipeline(allow);
-  }
-
   /**
    * 开关「上下文强制」（默认关闭 = fail-open）。开启后：所有查询/写入在 ctx 缺失时
    * 抛 `ERR_NO_CONTEXT`（fail-secure）；内部调用须显式传 `{ internal: true }` 上下文。
    */
   setRequireContext(needCtx = true) {
     return schema.setRequireContext(needCtx);
+  }
+
+  /** 「上下文强制」开关当前值（对齐 py-store store.require_context） */
+  requireContext() {
+    return schema.requireContext();
+  }
+
+  /** 设置数据源连接映射（多后端路由；对齐 py-store store.set_connections） */
+  setConnections(connections) {
+    return datasource.setConnections(connections);
   }
 
   /** 注册反馈事件回调（兜底/降级/拦截的统一出口）；传 null 恢复默认 stderr */
@@ -253,7 +253,6 @@ module.exports = {
   init,
   store,
   Store,
-  aggregate: crud.aggregate,
   PermissionError: permission.PermissionError,
   PushdownUnsupportedError: datasource.PushdownUnsupportedError,
   datasource,

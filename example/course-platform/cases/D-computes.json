@@ -1,0 +1,62 @@
+[
+  {
+    "id": "D-01", "group": "D", "title": "fn 同步计算列",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, revenue}", "params": { "c0": { "_id": "c2" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c2", "revenue": 301.5 } ] } },
+      { "op": "query", "gql": "Course($condition:@c0){_id, revenue}", "params": { "c0": { "_id": "c3" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c3", "revenue": 0 } ] } }
+    ], "note": "D-01：revenue = price * enrolledCount（c2=100.5*3=301.5，c3=0*0=0）"
+  },
+  {
+    "id": "D-02", "group": "D", "title": "asyncFn 计算列",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "User($condition:@c0){_id, displayName}", "params": { "c0": { "_id": "u1" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "u1", "displayName": "Alice#u1" } ] } }
+    ], "note": "D-02：displayName asyncFn 尾处理，值正确"
+  },
+  {
+    "id": "D-03", "group": "D", "title": "归一聚合计算列",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, lessonCount}", "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1", "lessonCount": 2 } ] } },
+      { "op": "query", "gql": "Course($condition:@c0){_id, lessonCount}", "params": { "c0": { "_id": "c7" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c7", "lessonCount": 0 } ] } }
+    ], "note": "D-03：lessonCount 与 C-02 课时数组长度交叉验证（c1=2，c7=0）"
+  },
+  {
+    "id": "D-04", "group": "D", "title": "计算列依赖字段自动注入",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, revenue}", "params": { "c0": { "_id": "c2" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c2", "revenue": 301.5 } ] } }
+    ], "note": "D-04：不显式请求 price/enrolledCount 仍算对，且结果不含依赖字段"
+  },
+  {
+    "id": "D-05", "group": "D", "title": "计算列 read 权限",
+    "reset": "seed", "ctx": { "userId": "u5", "roles": ["student"] },
+    "steps": [
+      { "op": "query", "gql": "User($condition:@c0){_id, displayName}", "params": { "c0": { "_id": "u1" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "u1" } ] } }
+    ], "note": "D-05：student 请求 displayName（read=admin）→ 该列不出现，未授权值不外泄"
+  },
+  {
+    "id": "D-06", "group": "D", "title": "计算列依赖不可读字段不得泄漏",
+    "reset": "seed", "ctx": { "userId": "u5", "roles": ["student"] },
+    "steps": [
+      { "op": "query", "gql": "ProbeCompute($condition:@c0){_id, label, code}", "params": { "c0": { "_id": "pc1" } },
+        "expect": { "kind": "raw", "fn": "check_no_secret", "field": "secret", "secret": "ABCD1234" } }
+    ], "note": "D-06：code 依赖 secret(read=admin)，student 不得透出 secret 值（可 Err 或省略）"
+  },
+  {
+    "id": "D-09", "group": "D", "title": "计算列 + 投影混用",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, price, revenue}", "params": { "c0": { "_id": "c2" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c2", "price": 100.5, "revenue": 301.5 } ] } }
+    ], "note": "D-09：键集 = {_id, price, revenue}，依赖字段 enrolledCount 不外泄"
+  }
+]

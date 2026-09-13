@@ -51,6 +51,7 @@ const MYSQL_DDL = [
      title VARCHAR(255),
      status VARCHAR(64),
      views INT,
+     __present VARCHAR(255),
      PRIMARY KEY (_id)
    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
   `CREATE TABLE my_posts_deleted (
@@ -59,18 +60,21 @@ const MYSQL_DDL = [
      status VARCHAR(64),
      views INT,
      deletedAt BIGINT,
+     __present VARCHAR(255),
      PRIMARY KEY (_id)
    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
   `CREATE TABLE widgets (
      _id VARCHAR(64) NOT NULL,
      sku VARCHAR(255) NOT NULL,
      price DOUBLE,
+     __present VARCHAR(255),
      PRIMARY KEY (_id)
    ) ENGINE=InnoDB`,
   `CREATE TABLE gadgets (
      _id VARCHAR(64) NOT NULL,
      widget_id VARCHAR(64),
      label VARCHAR(255),
+     __present VARCHAR(255),
      PRIMARY KEY (_id),
      FOREIGN KEY (widget_id) REFERENCES widgets(_id)
    ) ENGINE=InnoDB`,
@@ -81,13 +85,13 @@ const PG_DDL = [
   'DROP TABLE IF EXISTS widgets CASCADE',
   'DROP TABLE IF EXISTS pg_posts_deleted CASCADE',
   'DROP TABLE IF EXISTS pg_posts CASCADE',
-  'CREATE TABLE pg_posts (_id TEXT PRIMARY KEY, title TEXT, status TEXT, views INTEGER)',
+  'CREATE TABLE pg_posts (_id TEXT PRIMARY KEY, title TEXT, status TEXT, views INTEGER, __present TEXT)',
   `CREATE TABLE pg_posts_deleted (
-     _id TEXT PRIMARY KEY, title TEXT, status TEXT, views INTEGER, "deletedAt" BIGINT
+     _id TEXT PRIMARY KEY, title TEXT, status TEXT, views INTEGER, "deletedAt" BIGINT, __present TEXT
    )`,
-  'CREATE TABLE widgets (_id TEXT PRIMARY KEY, sku TEXT NOT NULL, price DOUBLE PRECISION)',
+  'CREATE TABLE widgets (_id TEXT PRIMARY KEY, sku TEXT NOT NULL, price DOUBLE PRECISION, __present TEXT)',
   `CREATE TABLE gadgets (
-     _id TEXT PRIMARY KEY, widget_id TEXT REFERENCES widgets(_id), label TEXT
+     _id TEXT PRIMARY KEY, widget_id TEXT REFERENCES widgets(_id), label TEXT, __present TEXT
    )`,
 ];
 
@@ -275,7 +279,7 @@ function crudSuite(ctx) {
       { title: 'A', status: 'draft', views: 1 },
       { title: 'B', status: 'draft', views: 2 },
     ]);
-    const r = await store.updateMany(S, {}, { $inc: { views: 10 } });
+    const r = await store.updateMany(S, { status: 'draft' }, { $inc: { views: 10 } });
     assert.equal(r.modifiedCount, 2);
     const items = await store.query(`${S}{_id, views}`);
     assert.deepEqual(items.map((d) => d.views).sort((a, b) => a - b), [11, 12]);

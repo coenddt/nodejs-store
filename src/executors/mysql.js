@@ -10,6 +10,7 @@
  */
 
 const { core: _core } = require('../schema');
+const { normalizeRows } = require('./_values');
 
 /** mysql2 返回 RowDataPacket 实例，转普通对象后再交 core（绑定层只认纯 JSON） */
 function _plain(row) {
@@ -30,9 +31,9 @@ function create(driver, _options = {}) {
     let rows = null;
     let affectedRows = 0;
     for (const stmt of plan.stmts) {
-      const [raw] = await conn.execute(stmt.text, stmt.params || []);
+      const [raw, fields] = await conn.execute(stmt.text, stmt.params || []);
       if (Array.isArray(raw)) {
-        rows = raw.map(_plain);
+        rows = normalizeRows(raw.map(_plain), fields, 'mysql');
         if (stmt.rowShape) docs = _core.restoreRows(stmt.rowShape, rows);
       } else {
         affectedRows = Number(raw.affectedRows || 0);

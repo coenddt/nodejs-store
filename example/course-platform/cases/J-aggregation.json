@@ -1,0 +1,210 @@
+[
+  {
+    "id": "J-01", "group": "J", "title": "根级 $group 单 by 键 + $count:'*' + $sum",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($group:@g0){ status, n, total }",
+        "params": { "g0": { "by": ["status"], "agg": { "n": { "$count": "*" }, "total": { "$sum": "price" } } } },
+        "expect": { "kind": "rows", "rows": [
+          { "status": "published", "n": 5, "total": 1000000000000110.8 },
+          { "status": "draft", "n": 1, "total": 0.0 },
+          { "status": "archived", "n": 1, "total": -5.0 }
+        ], "normalize": { "sortBy": ["status"] } } },
+      { "op": "query", "gql": "Course($group:@g0){ status, cnt }",
+        "params": { "g0": { "by": ["status"], "agg": { "cnt": { "$count": "summary" } } } },
+        "expect": { "kind": "rows", "rows": [
+          { "status": "published", "cnt": 3 }, { "status": "draft", "cnt": 1 }, { "status": "archived", "cnt": 0 }
+        ], "normalize": { "sortBy": ["status"] } } }
+    ], "note": "J-01：单键分组 GROUP BY + COUNT(*) + SUM(float)；第二 step 覆盖 $count:'<字段>' 非空计数（summary 为 NULL 的行不计）"
+  },
+  {
+    "id": "J-02", "group": "J", "title": "根级 $group 多 by 键",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($group:@g0){ status, enrolledCount, n }",
+        "params": { "g0": { "by": ["status", "enrolledCount"], "agg": { "n": { "$count": "*" } } } },
+        "expect": { "kind": "rows", "rows": [
+          { "status": "published", "enrolledCount": 0, "n": 2 },
+          { "status": "published", "enrolledCount": 1, "n": 1 },
+          { "status": "published", "enrolledCount": 2, "n": 1 },
+          { "status": "published", "enrolledCount": 3, "n": 1 },
+          { "status": "draft", "enrolledCount": 0, "n": 1 },
+          { "status": "archived", "enrolledCount": 2, "n": 1 }
+        ], "normalize": { "sortBy": ["status", "enrolledCount"] } } }
+    ], "note": "J-02：多键 by（两个标量域）→ GROUP BY 多列，跨后端逐行相等"
+  },
+  {
+    "id": "J-03", "group": "J", "title": "根级 $group $avg / $min / $max 数值归一",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($group:@g0){ status, n, avgPrice, minPrice, maxPrice }",
+        "params": { "g0": { "by": ["status"], "agg": {
+          "n": { "$count": "*" }, "avgPrice": { "$avg": "price" },
+          "minPrice": { "$min": "price" }, "maxPrice": { "$max": "price" } } } },
+        "expect": { "kind": "rows", "rows": [
+          { "status": "published", "n": 5, "avgPrice": 200000000000022.16, "minPrice": 0.1, "maxPrice": 1000000000000000.0 },
+          { "status": "archived", "n": 1, "avgPrice": -5.0, "minPrice": -5.0, "maxPrice": -5.0 },
+          { "status": "draft", "n": 1, "avgPrice": 0.0, "minPrice": 0.0, "maxPrice": 0.0 }
+        ], "normalize": { "sortBy": ["status"] } } },
+      { "op": "query", "gql": "Course($group:@g0){ status, mn }",
+        "params": { "g0": { "by": ["status"], "agg": { "mn": { "$min": "rating" } } } },
+        "expect": { "kind": "rows", "rows": [
+          { "status": "published", "mn": 1.1 }, { "status": "archived", "mn": null }, { "status": "draft", "mn": 0.0 }
+        ], "normalize": { "sortBy": ["status"] } } }
+    ], "note": "J-03：$avg/$min/$max 走 float 字段（int 字段的 SUM/AVG 在 PG/MySQL 会返回 Decimal 触发绑定层类型错误，单独上报，不在此用例断言）；第二 step 覆盖整组全 NULL 时 $min→null"
+  },
+  {
+    "id": "J-04", "group": "J", "title": "根级 $having 过滤分组结果（比较算子 / 逻辑组）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($group:@g0,$having:@h0){ status, n, total }",
+        "params": { "g0": { "by": ["status"], "agg": { "n": { "$count": "*" }, "total": { "$sum": "price" } } },
+          "h0": { "n": { "$gt": 1 } } },
+        "expect": { "kind": "rows", "rows": [ { "status": "published", "n": 5, "total": 1000000000000110.8 } ],
+          "normalize": { "sortBy": ["status"] } } },
+      { "op": "query", "gql": "Course($group:@g0,$having:@h0){ status, n, total }",
+        "params": { "g0": { "by": ["status"], "agg": { "n": { "$count": "*" }, "total": { "$sum": "price" } } },
+          "h0": { "$and": [ { "n": { "$gt": 1 } }, { "total": { "$gt": 0 } } ] } },
+        "expect": { "kind": "rows", "rows": [ { "status": "published", "n": 5, "total": 1000000000000110.8 } ],
+          "normalize": { "sortBy": ["status"] } } },
+      { "op": "query", "gql": "Course($group:@g0,$having:@h0){ status, n }",
+        "params": { "g0": { "by": ["status"], "agg": { "n": { "$count": "*" } } },
+          "h0": { "status": { "$eq": "published" } } },
+        "expect": { "kind": "rows", "rows": [ { "status": "published", "n": 5 } ],
+          "normalize": { "sortBy": ["status"] } } }
+    ], "note": "J-04：三步 $having 分别引用 agg 别名（比较 / $and）与 **by 键**；by 键在 core 侧已改写为分组 `_id` 路径，SQL 方言反向映射后四库逐行一致（2026-09-14 修复：原 SQL 侧显式 Err）"
+  },
+  {
+    "id": "J-05", "group": "J", "title": "根级 $group 结果的 $sort + $skip/$limit",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($group:@g0,$sort:@s0,$limit:@l0){ status, n, total }",
+        "params": { "g0": { "by": ["status"], "agg": { "n": { "$count": "*" }, "total": { "$sum": "price" } } },
+          "s0": { "total": -1 }, "l0": 2 },
+        "expect": { "kind": "rows", "rows": [
+          { "status": "published", "n": 5, "total": 1000000000000110.8 },
+          { "status": "draft", "n": 1, "total": 0.0 }
+        ], "normalize": { "sortBy": ["status"] } } },
+      { "op": "query", "gql": "Course($group:@g0,$sort:@s0,$skip:@sk0,$limit:@l0){ status, n, total }",
+        "params": { "g0": { "by": ["status"], "agg": { "n": { "$count": "*" }, "total": { "$sum": "price" } } },
+          "s0": { "total": -1 }, "sk0": 1, "l0": 1 },
+        "expect": { "kind": "rows", "rows": [ { "status": "draft", "n": 1, "total": 0.0 } ],
+          "normalize": { "sortBy": ["status"] } } },
+      { "op": "query", "gql": "Course($group:@g0,$sort:@s0,$limit:@l0){ status, n }",
+        "params": { "g0": { "by": ["status"], "agg": { "n": { "$count": "*" } } },
+          "s0": { "status": 1 }, "l0": 2 },
+        "expect": { "kind": "rows", "rows": [
+          { "status": "archived", "n": 1 }, { "status": "draft", "n": 1 }
+        ], "normalize": { "sortBy": ["status"] } } }
+    ], "note": "J-05：$sort/$limit/$skip 作用于分组结果。step1-2 按 agg 别名 total 排序（三档互异，分页窗口确定）；step3 按 **by 键 status** 升序 + limit2 → archived/draft，与按 total 降序的窗口**不同** —— 若 Mongo 侧排序为 no-op（未改写为分组 `_id`）会退化为自然序 published/draft 而失败（2026-09-14 修复）"
+  },
+  {
+    "id": "J-06", "group": "J", "title": "根级 $group 全表单组（by 省略）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($group:@g0){ n, total, avgPrice }",
+        "params": { "g0": { "agg": { "n": { "$count": "*" }, "total": { "$sum": "price" }, "avgPrice": { "$avg": "price" } } } },
+        "expect": { "kind": "rows", "rows": [
+          { "n": 7, "total": 1000000000000105.8, "avgPrice": 142857142857157.97 }
+        ] } },
+      { "op": "query", "gql": "Course($condition:@c0,$group:@g0){ n, total }",
+        "params": { "c0": { "status": "published" },
+          "g0": { "agg": { "n": { "$count": "*" }, "total": { "$sum": "price" } } } },
+        "expect": { "kind": "rows", "rows": [ { "n": 5, "total": 1000000000000110.8 } ] } }
+    ], "note": "J-06：by 省略/[] = 全表单组一行（无 GROUP BY）；WHERE 先于分组生效"
+  },
+  {
+    "id": "J-07", "group": "J", "title": "根级 $group 空输入语义（无匹配行）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0,$group:@g0){ n, total, avgPrice }",
+        "params": { "c0": { "status": "nonexistent" },
+          "g0": { "agg": { "n": { "$count": "*" }, "total": { "$sum": "price" }, "avgPrice": { "$avg": "price" } } } },
+        "expect": { "kind": "rows", "rows": [ { "n": 0, "total": null, "avgPrice": null } ] } },
+      { "op": "query", "gql": "Course($condition:@c0,$group:@g0){ status, n, total }",
+        "params": { "c0": { "status": "nonexistent" },
+          "g0": { "by": ["status"], "agg": { "n": { "$count": "*" }, "total": { "$sum": "price" } } } },
+        "expect": { "kind": "rows", "rows": [] } }
+    ], "note": "J-07：全表单组空输入 → 恒 1 行（$count→0，其余→null）；带 by 键空输入 → 0 行；Mongo 与 SQL 语义必须对齐（§9.7）"
+  },
+  {
+    "id": "J-08", "group": "J", "title": "根级 $group / $having 非法参数显式报错",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($group:@g0){ status }",
+        "params": { "g0": { "by": ["status"], "agg": { "status": { "$count": "*" } } } },
+        "expect": { "kind": "error" } },
+      { "op": "query", "gql": "Course($group:@g0){ n }",
+        "params": { "g0": { "by": [], "agg": {} } },
+        "expect": { "kind": "error" } },
+      { "op": "query", "gql": "Course($group:@g0){ status, n }",
+        "params": { "g0": { "by": ["status"], "agg": { "n": { "$median": "price" } } } },
+        "expect": { "kind": "error" } },
+      { "op": "query", "gql": "Course($group:@g0,$having:@h0){ status, n }",
+        "params": { "g0": { "by": ["status"], "agg": { "n": { "$count": "*" } } },
+          "h0": { "bogus": { "$gt": 1 } } },
+        "expect": { "kind": "error" } },
+      { "op": "query", "gql": "Course($having:@h0){ _id }",
+        "params": { "h0": { "n": { "$gt": 1 } } },
+        "expect": { "kind": "error" } },
+      { "op": "query", "gql": "Course($group:@g0){ status, n }",
+        "params": { "g0": { "by": ["lessons"], "agg": { "n": { "$count": "*" } } } },
+        "expect": { "kind": "error" } }
+    ], "note": "J-08：agg 别名与 by 键冲突 / 空 by+空 agg / 算子不在白名单 / $having 引用未声明字段 / 无 $group 用 $having / by 键为关系名 —— 全部必须显式 Err（含 Mongo），绝不静默降级"
+  },
+  {
+    "id": "J-09", "group": "J", "title": "§9.6 关系聚合谓词 —— semi / anti-join（简写 $exists）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0,$sort:@s0){ _id }",
+        "params": { "c0": { "lessons": { "$exists": true } }, "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1" }, { "_id": "c2" } ], "normalize": { "sortBy": ["_id"] } } },
+      { "op": "query", "gql": "Course($condition:@c0,$sort:@s0){ _id }",
+        "params": { "c0": { "$not": { "lessons": { "$exists": true } } }, "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "c3" }, { "_id": "c4" }, { "_id": "c5" }, { "_id": "c6" }, { "_id": "c7" }
+        ], "normalize": { "sortBy": ["_id"] } } },
+      { "op": "query", "gql": "Course($condition:@c0,$sort:@s0){ _id }",
+        "params": { "c0": { "lessons": { "$exists": false } }, "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "c3" }, { "_id": "c4" }, { "_id": "c5" }, { "_id": "c6" }, { "_id": "c7" }
+        ], "normalize": { "sortBy": ["_id"] } } },
+      { "op": "query", "gql": "Course($condition:@c0,$sort:@s0){ _id }",
+        "params": { "c0": { "$and": [ { "status": "published" }, { "lessons": { "$exists": true } } ] }, "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1" }, { "_id": "c2" } ], "normalize": { "sortBy": ["_id"] } } }
+    ], "note": "J-09：semi-join（$exists:true）/ anti-join（$not + $exists:true / $exists:false）与标量条件混用；父行不扇出，四库逐行相等"
+  },
+  {
+    "id": "J-10", "group": "J", "title": "§9.6 关系聚合谓词 —— $count / $sum+$of / 主形式 filter+agg+having",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0,$sort:@s0){ _id }",
+        "params": { "c0": { "lessons": { "$count": { "$gt": 1 } } }, "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1" } ], "normalize": { "sortBy": ["_id"] } } },
+      { "op": "query", "gql": "Course($condition:@c0,$sort:@s0){ _id }",
+        "params": { "c0": { "reviews": { "$sum": { "$of": "score", "$gt": 5 } } }, "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1" } ], "normalize": { "sortBy": ["_id"] } } },
+      { "op": "query", "gql": "Course($condition:@c0,$sort:@s0){ _id }",
+        "params": { "c0": { "$and": [ { "status": "published" }, { "lessons": { "$count": { "$gte": 1 } } } ] }, "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1" }, { "_id": "c2" } ], "normalize": { "sortBy": ["_id"] } } },
+      { "op": "query", "gql": "Course($condition:@c0,$sort:@s0){ _id }",
+        "params": { "c0": { "lessons": { "filter": { "duration": { "$gte": 10 } },
+          "agg": { "n": { "$count": "*" } }, "having": { "n": { "$gt": 1 } } } }, "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1" } ], "normalize": { "sortBy": ["_id"] } } }
+    ], "note": "J-10：$count+比较算子 / $sum+$of+比较算子 / 与标量条件混用 / 主形式 filter+agg+having；均为 semi-join 语义（EXISTS/NOT EXISTS），四库逐行相等"
+  },
+  {
+    "id": "J-11", "group": "J", "title": "根级 $group 对 int 字段 $sum/$avg（数值归一为 double）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($group:@g0){ status, sumEnrolled, avgEnrolled }",
+        "params": { "g0": { "by": ["status"], "agg": {
+          "sumEnrolled": { "$sum": "enrolledCount" }, "avgEnrolled": { "$avg": "enrolledCount" } } } },
+        "expect": { "kind": "rows" } },
+      { "op": "query", "gql": "Course($group:@g0){ sumEnrolled, avgEnrolled }",
+        "params": { "g0": { "agg": {
+          "sumEnrolled": { "$sum": "enrolledCount" }, "avgEnrolled": { "$avg": "enrolledCount" } } } },
+        "expect": { "kind": "rows" } }
+    ], "note": "J-11：**int 字段**的 $sum/$avg（期望值由 Mongo oracle 产出）。原缺陷：PG/MySQL 聚合返回 `Decimal`，绑定层无法转 JSON → `TypeError`；修复：Host 执行器归一 `Decimal`→数值 + SQL 侧 `$avg` 前 CAST 到 double（§9.7），消除 MySQL `AVG(int)` 的 4 位小数截断"
+  }
+]

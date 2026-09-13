@@ -21,7 +21,7 @@ const SRC = 'rc_src';
 
 function createDb() {
   const db = new Database(':memory:');
-  db.exec('CREATE TABLE rc_posts (_id TEXT PRIMARY KEY, title TEXT);');
+  db.exec('CREATE TABLE rc_posts (_id TEXT PRIMARY KEY, title TEXT, __present TEXT);');
   return db;
 }
 

@@ -12,6 +12,7 @@
  * （`crud/query|write|mutation`）透明：上层只看到同一套返回值语义。
  */
 
+const mongo = require('./mongo');
 const mysql = require('./mysql');
 const postgres = require('./postgres');
 const sqlite = require('./sqlite');
@@ -61,4 +62,4 @@ function shapeResult(cmd, out) {
   }
 }
 
-module.exports = { createConnection, shapeResult, mysql, postgres, sqlite };
+module.exports = { createConnection, shapeResult, mongo, mysql, postgres, sqlite };

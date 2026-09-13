@@ -1,0 +1,103 @@
+[
+  {
+    "id": "H-01", "group": "H", "title": "同 seed 四后端结果集一致",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($sort:@s0){_id, title, price, enrolledCount, summary, status, categoryId, createdBy}",
+        "params": { "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "c1", "title": "Python入门", "price": 9.9, "enrolledCount": 0, "summary": "必学", "status": "published", "categoryId": "cat2", "createdBy": "u1" },
+          { "_id": "c2", "title": "Go进阶", "price": 100.5, "enrolledCount": 3, "summary": null, "status": "published", "categoryId": "cat1", "createdBy": "u2" },
+          { "_id": "c3", "title": "SQL速成", "price": 0.0, "enrolledCount": 0, "summary": "", "status": "draft", "categoryId": null, "createdBy": "u2" },
+          { "_id": "c4", "title": "算法题解", "price": -5.0, "enrolledCount": 2, "status": "archived", "categoryId": null, "createdBy": "u1" },
+          { "_id": "c5", "title": "分布式", "price": 1e15, "enrolledCount": 1, "summary": null, "status": "published", "categoryId": "cat3", "createdBy": "u2" },
+          { "_id": "c6", "title": "浮点精度", "price": 0.30000000000000004, "enrolledCount": 2, "summary": "fp", "status": "published", "categoryId": "cat2", "createdBy": "u1" },
+          { "_id": "c7", "title": "基础数学", "price": 0.1, "enrolledCount": 0, "summary": "base", "status": "published", "categoryId": "cat3", "createdBy": "u1" }
+        ], "normalize": { "ignore": ["createdAt", "updatedAt"] } } }
+    ], "note": "H-01：A 组读取类在四后端逐行相等（c4 无 summary 字段键，不显式断言缺失键）"
+  },
+  {
+    "id": "H-02", "group": "H", "title": "排序一致性（含 NULL 位置）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] }, "sqlPolicy": "explicit-or-parity",
+    "steps": [
+      { "op": "query", "gql": "Course($sort:@s0){_id, summary}", "params": { "s0": { "summary": 1 } },
+        "expect": { "kind": "rows" } }
+    ], "note": "H-02：summary 含 NULL/''/缺失，NULL 位置须与 Mongo 一致；不一致修正或 unsupported"
+  },
+  {
+    "id": "H-03", "group": "H", "title": "分页一致性",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] }, "sqlPolicy": "parity",
+    "steps": [
+      { "op": "query", "gql": "Course($sort:@s0,$limit:@l0){_id}", "params": { "s0": { "price": 1 }, "l0": 2 },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c3" }, { "_id": "c4" } ], "normalize": { "sortBy": ["_id"] } } }
+    ], "note": "H-03：分页窗口跨后端一致（sort price:1 asc，最小两档 0.0/-5.0 → c3/c4）"
+  },
+  {
+    "id": "H-04", "group": "H", "title": "数值类型归一",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($sort:@s0){_id, price, enrolledCount}", "params": { "s0": { "_id": 1 } },
+        "expect": { "kind": "rows" } },
+      { "op": "raw", "fn": "check_numeric_rows", "intField": "enrolledCount", "floatField": "price" }
+    ], "note": "H-04：price 为 float、enrolledCount 为 int，不得字符串/Decimal 漂移"
+  },
+  {
+    "id": "H-05", "group": "H", "title": "布尔归一",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Enrollment($sort:@s0){_id, paid}", "params": { "s0": { "_id": 1 } },
+        "expect": { "kind": "rows" } },
+      { "op": "raw", "fn": "check_bool_rows", "field": "paid" }
+    ], "note": "H-05：paid 回读必为真布尔"
+  },
+  {
+    "id": "H-06", "group": "H", "title": "时间归一",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Enrollment($condition:@c0){_id, paidAt}", "params": { "c0": { "paidAt": { "$ne": null } } },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "e1", "paidAt": 1700000000000 }, { "_id": "e4", "paidAt": 1700000200000 }
+        ], "normalize": { "sortBy": ["_id"] } } }
+    ], "note": "H-06：paidAt 回读为可比较数值，四后端一致（e2/e3/e5 paidAt 为显式 null，用 $ne:null 仅取非空时间戳）"
+  },
+  {
+    "id": "H-07", "group": "H", "title": "关系挂载形状一致",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, category{_id}, lessons{_id}}", "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "c1", "category": { "_id": "cat2" }, "lessons": [ { "_id": "l1" }, { "_id": "l2" } ] } ] } },
+      { "op": "query", "gql": "Course($condition:@c0){_id, lessons{_id}}", "params": { "c0": { "_id": "c7" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c7", "lessons": [] } ] } }
+    ], "note": "H-07：one→对象、many→数组、空→[]，四后端形状一致"
+  },
+  {
+    "id": "H-08", "group": "H", "title": "归档行为一致",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "remove", "schema": "Course", "condition": { "_id": "c1" },
+        "expect": { "kind": "removed", "deletedCount": 1, "archivedCount": 1 } },
+      { "op": "query", "gql": "CourseDeleted($condition:@c0){_id, deletedAt}", "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1" } ], "normalize": { "ignore": ["deletedAt"] } } }
+    ], "note": "H-08：四后端均归档，deletedAt 语义一致"
+  },
+  {
+    "id": "H-09", "group": "H", "title": "NULL 语义一致性",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] }, "sqlPolicy": "explicit-or-parity",
+    "steps": [
+      { "op": "query", "gql": "Enrollment($condition:@c0){_id}", "params": { "c0": { "paidAt": null } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "e2" }, { "_id": "e3" }, { "_id": "e5" } ], "normalize": { "sortBy": ["_id"] } } }
+    ], "note": "H-09 / 历史 M-11-1：NULL 语义四后端一致"
+  },
+  {
+    "id": "H-10", "group": "H", "title": "数组 / 对象写读往返",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] }, "sqlPolicy": "explicit-or-parity",
+    "steps": [
+      { "op": "update", "schema": "Course", "condition": { "_id": "c7" },
+        "data": { "$set": { "tags": [ "x", "y" ], "meta": { "cover": "z", "seo": { "title": "深", "desc": "深描" } } } } },
+      { "op": "query", "gql": "Course($condition:@c0){_id, tags, meta}", "params": { "c0": { "_id": "c7" } },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "c7", "tags": [ "x", "y" ], "meta": { "cover": "z", "seo": { "title": "深", "desc": "深描" } } } ] } }
+    ], "note": "H-10：数组/对象两层写读往返结构与值完全一致"
+  }
+]

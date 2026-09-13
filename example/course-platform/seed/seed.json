@@ -1,0 +1,100 @@
+[
+  { "schema": "User", "ctx": null, "rows": [
+    { "_id": "u1", "name": "Alice", "email": "a@x.io", "role": "student", "avatar": "a.png",
+      "profile": { "bio": "hi", "city": "成都", "links": ["https://a.io"] } },
+    { "_id": "u2", "name": "Bob", "email": null, "role": "instructor", "avatar": null,
+      "profile": { "bio": null, "city": "北京", "links": [] } },
+    { "_id": "u3", "name": "Carol", "email": "c@x.io", "role": "admin", "avatar": null,
+      "profile": {} }
+  ] },
+  { "schema": "Category", "ctx": null, "rows": [
+    { "_id": "cat1", "name": "编程", "parentId": null, "sort": 1, "createdBy": "u1" },
+    { "_id": "cat2", "name": "后端", "parentId": "cat1", "sort": 2, "createdBy": "u1" },
+    { "_id": "cat3", "name": "数据库", "parentId": "cat2", "sort": 3, "createdBy": "u2" }
+  ] },
+  { "schema": "Course", "ctx": null, "rows": [
+    { "_id": "c1", "title": "Python入门", "summary": "必学", "status": "published",
+      "price": 9.9, "enrolledCount": 0, "rating": 4.5,
+      "tags": ["python", "db"],
+      "meta": { "cover": "c1.png", "level": "beginner", "seo": { "title": "看Python", "desc": "从零开始" } },
+      "secret": "SECRET-1", "categoryId": "cat2", "createdBy": "u1" },
+    { "_id": "c2", "title": "Go进阶", "summary": null, "status": "published",
+      "price": 100.5, "enrolledCount": 3, "rating": 3.0,
+      "tags": ["go"],
+      "meta": { "cover": "c2.png", "level": "advanced", "seo": { "title": "学Go", "desc": "并发" } },
+      "secret": "SECRET-2", "categoryId": "cat1", "createdBy": "u2" },
+    { "_id": "c3", "title": "SQL速成", "summary": "", "status": "draft",
+      "price": 0.0, "enrolledCount": 0, "rating": 0.0,
+      "tags": [],
+      "meta": { "cover": null, "level": "", "seo": { "title": "", "desc": "x" } },
+      "secret": "SECRET-3", "categoryId": null, "createdBy": "u2" },
+    { "_id": "c4", "title": "算法题解", "status": "archived",
+      "price": -5.0, "enrolledCount": 2, "rating": null,
+      "secret": "SECRET-4", "categoryId": null, "createdBy": "u1" },
+    { "_id": "c5", "title": "分布式", "summary": null, "status": "published",
+      "price": 1e15, "enrolledCount": 1, "rating": 2.2,
+      "tags": ["rust"], "meta": { "level": "advanced", "seo": { "title": "dist", "desc": "d" } },
+      "secret": "SECRET-5", "categoryId": "cat3", "createdBy": "u2" },
+    { "_id": "c6", "title": "浮点精度", "summary": "fp", "status": "published",
+      "price": 0.30000000000000004, "enrolledCount": 2, "rating": 4.8,
+      "tags": ["python"], "meta": { "level": "beginner", "seo": { "title": "fp", "desc": "f" } },
+      "secret": "SECRET-6", "categoryId": "cat2", "createdBy": "u1" },
+    { "_id": "c7", "title": "基础数学", "summary": "base", "status": "published",
+      "price": 0.1, "enrolledCount": 0, "rating": 1.1,
+      "tags": [], "meta": { "level": "beginner", "seo": { "title": "m", "desc": "m" } },
+      "secret": "SECRET-7", "categoryId": "cat3", "createdBy": "u1" }
+  ] },
+  { "schema": "Lesson", "ctx": null, "rows": [
+    { "_id": "l1", "courseId": "c1", "parentId": null, "title": "安装", "seq": 1, "duration": 10, "videoUrl": "v1", "free": true,  "createdBy": "u1" },
+    { "_id": "l2", "courseId": "c1", "parentId": "l1", "title": "入门", "seq": 2, "duration": 20, "videoUrl": "v2", "free": false, "createdBy": "u1" },
+    { "_id": "l3", "courseId": "c2", "parentId": null, "title": "语法", "seq": 1, "duration": 30, "videoUrl": "v3", "free": true,  "createdBy": "u2" }
+  ] },
+  { "schema": "Review", "ctx": null, "rows": [
+    { "_id": "r1", "courseId": "c1", "userId": "u1", "score": 5, "content": "很棒", "tags": ["helpful"], "createdBy": "u1" },
+    { "_id": "r2", "courseId": "c1", "userId": "u3", "score": 4, "content": "不错", "tags": [], "createdBy": "u3" }
+  ] },
+  { "schema": "Enrollment", "ctx": null, "rows": [
+    { "_id": "e1", "userId": "u1", "courseId": "c1", "amount": 0, "paid": true,  "paidAt": 1700000000000, "status": "paid",
+      "coupon": { "code": "SAVE10", "off": 10 }, "createdBy": "u1" },
+    { "_id": "e2", "userId": "u2", "courseId": "c2", "amount": 500.0, "paid": false, "paidAt": null, "status": "pending",
+      "coupon": { "code": "SAVE10", "off": 20 }, "createdBy": "u2" },
+    { "_id": "e3", "userId": "u1", "courseId": "c3", "amount": -50, "paid": false, "paidAt": null, "status": "canceled",
+      "createdBy": "u1" },
+    { "_id": "e4", "userId": "u2", "courseId": "c1", "amount": 1e15, "paid": true,  "paidAt": 1700000200000, "status": "paid",
+      "createdBy": "u2" },
+    { "_id": "e5", "userId": null, "courseId": "c3", "amount": 10, "paid": false, "paidAt": null, "status": "x",
+      "createdBy": "u2" }
+  ] },
+  { "schema": "StudyNote", "ctx": { "userId": "u1", "roles": ["student"] }, "rows": [
+    { "_id": "n1", "title": "笔记A", "content": "x", "courseId": "c1", "tags": ["math"], "meta": { "color": "red" } }
+  ] },
+  { "schema": "StudyNote", "ctx": { "userId": "u2", "roles": ["student"] }, "rows": [
+    { "_id": "n2", "title": "笔记B", "content": "y", "courseId": "c2", "tags": [], "meta": { "pinned": false } }
+  ] },
+  { "schema": "AuditLog", "ctx": { "internal": true }, "rows": [
+    { "_id": "a1", "actorId": "u1", "action": "update", "target": "c1", "at": 1700000000000,
+      "detail": { "before": { "action": "update" }, "after": {} } },
+    { "_id": "a2", "actorId": "u2", "action": "delete", "target": "c2", "at": 1700000100000,
+      "detail": { "before": { "action": "delete" }, "after": { "action": "create" } }
+    }
+  ] },
+  { "schema": "ProbeGrade", "ctx": { "internal": true }, "rows": [
+    { "_id": "g1", "score": 90, "createdBy": "u1" }
+  ] },
+  { "schema": "ProbeHolder", "ctx": null, "rows": [
+    { "_id": "h1", "label": "h1", "gradeId": "g1", "createdBy": "u1" },
+    { "_id": "h2", "label": "h2", "gradeId": null, "createdBy": "u1" }
+  ] },
+  { "schema": "ProbeNote", "ctx": null, "rows": [
+    { "_id": "PN1", "label": "pn", "createdBy": "u1" }
+  ] },
+  { "schema": "ProbeMemo", "ctx": { "userId": "u1", "roles": ["student"] }, "rows": [
+    { "_id": "m1", "noteId": "PN1", "body": "mine", "createdBy": "u1" }
+  ] },
+  { "schema": "ProbeMemo", "ctx": { "userId": "u2", "roles": ["student"] }, "rows": [
+    { "_id": "m2", "noteId": "PN1", "body": "other", "createdBy": "u2" }
+  ] },
+  { "schema": "ProbeCompute", "ctx": { "internal": true }, "rows": [
+    { "_id": "pc1", "label": "x", "secret": "ABCD1234", "createdBy": "u1" }
+  ] }
+]

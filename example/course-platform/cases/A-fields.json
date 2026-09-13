@@ -1,0 +1,123 @@
+[
+  {
+    "id": "A-01", "group": "A", "title": "标量等值过滤（含 falsy 0）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, enrolledCount}", "params": { "c0": { "enrolledCount": 0 } },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "c1", "enrolledCount": 0 }, { "_id": "c3", "enrolledCount": 0 },
+          { "_id": "c7", "enrolledCount": 0 }
+        ] } }
+    ], "note": "A-01：enrolledCount=0 必须命中（不得被当未提供条件）"
+  },
+  {
+    "id": "A-02", "group": "A", "title": "标量比较 $gt + 组合",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, price}", "params": { "c0": { "price": { "$gt": 0 } } },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "c2", "price": 100.5 }, { "_id": "c6", "price": 0.30000000000000004 },
+          { "_id": "c5", "price": 1e15 }, { "_id": "c1", "price": 9.9 }, { "_id": "c7", "price": 0.1 }
+        ] } },
+      { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "status": "draft", "price": { "$gt": 0 } } },
+        "expect": { "kind": "rows", "rows": [] } }
+    ], "note": "A-02：price>0 命中的是浮点边界可解析的行（按 seed 实际值）"
+  },
+  {
+    "id": "A-03", "group": "A", "title": "数组字段等值（U1 全局 Err）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, tags}", "params": { "c0": { "tags": "python" } },
+        "expect": { "kind": "error" } }
+    ], "note": "A-03 / D2：数组字段过滤 → 所有后端（含 Mongo）统一显式报错，绝不静默返回全表"
+  },
+  {
+    "id": "A-06", "group": "A", "title": "对象字段整体等值（U2 全局 Err）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Enrollment($condition:@c0){_id, coupon}", "params": { "c0": { "coupon": { "code": "SAVE10", "off": 10 } } },
+        "expect": { "kind": "error" } }
+    ], "note": "A-06 / D2：对象深等值过滤 → 所有后端（含 Mongo）统一显式报错"
+  },
+  {
+    "id": "A-07", "group": "A", "title": "对象点号路径过滤（U3 全局 Err）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "meta.seo.title": "看Python" } },
+        "expect": { "kind": "error" } }
+    ], "note": "A-07 / D2：对象点号路径过滤 → 所有后端（含 Mongo）统一显式报错，绝不静默丢弃路径条件"
+  },
+  {
+    "id": "A-08", "group": "A", "title": "对象点号路径排序（U4 全局 Err）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($sort:@s0){_id, title}", "params": { "s0": { "meta.level": 1 } },
+        "expect": { "kind": "error" } }
+    ], "note": "A-08 / D2：对象点号路径排序 → 所有后端（含 Mongo）统一显式报错，绝不静默按未排序返回"
+  },
+  {
+    "id": "A-10", "group": "A", "title": "投影：包含式精确键集",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, title, status}", "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1", "title": "Python入门", "status": "published" } ] } }
+    ], "note": "A-10：结果只含这三个键"
+  },
+  {
+    "id": "A-13", "group": "A", "title": "数组字段投影完整返回",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] }, "sqlPolicy": "explicit-or-parity",
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, tags}", "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1", "tags": ["python", "db"] } ] } }
+    ], "note": "A-13：SQL 不得截断/字符串化"
+  },
+  {
+    "id": "A-14", "group": "A", "title": "对象字段投影完整返回",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] }, "sqlPolicy": "explicit-or-parity",
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, meta}", "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1", "meta": { "cover": "c1.png", "level": "beginner",
+          "seo": { "title": "看Python", "desc": "从零开始" } } } ] } }
+    ], "note": "A-14：meta 含两层 seo 完整返回"
+  },
+  {
+    "id": "A-17", "group": "A", "title": "分页 $skip/$limit + 排序",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] }, "sqlPolicy": "parity",
+    "steps": [
+      { "op": "query", "gql": "Course($sort:@s0,$skip:@sk0,$limit:@l0){_id, price}",
+        "params": { "s0": { "price": 1 }, "sk0": 1, "l0": 2 },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c3", "price": 0.0 }, { "_id": "c7", "price": 0.1 } ],
+          "normalize": { "sortBy": ["_id"] } } }
+    ], "note": "A-17 / 历史 M-11-3：LIMIT 阶段位置错误即缺陷"
+  },
+  {
+    "id": "A-18", "group": "A", "title": "query_with_count 分页元数据",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query_with_count", "gql": "Course($sort:@s0){_id}", "params": { "s0": { "_id": 1 }, "page": 0, "pageSize": 3 },
+        "expect": { "kind": "raw", "fn": "check_page", "gql": "Course($sort:@s0){_id}",
+          "schema": "Course", "params": { "s0": { "_id": 1 }, "page": 0, "pageSize": 3 },
+          "expectedIds": ["c1", "c2", "c3"] } }
+    ], "note": "A-18：items/total/hasMore 自洽"
+  },
+  {
+    "id": "A-19", "group": "A", "title": "缺失字段 vs NULL",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] }, "sqlPolicy": "explicit-or-parity",
+    "steps": [
+      { "op": "query", "gql": "Enrollment($condition:@c0){_id}", "params": { "c0": { "paidAt": null } },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "e2" }, { "_id": "e3" }, { "_id": "e5" }
+        ], "normalize": { "sortBy": ["_id"] } } },
+      { "op": "query", "gql": "Enrollment($condition:@c0){_id}", "params": { "c0": { "paidAt": { "$exists": false } } },
+        "expect": { "kind": "rows", "rows": [] } }
+    ], "note": "A-19 / 历史 M-11-1：NULL 与缺失区分 —— paidAt 为显式 null（e2/e3/e5）命中 null，但非缺失，故 $exists:false 命中空集"
+  },
+  {
+    "id": "A-20", "group": "A", "title": "空逻辑组必须报错",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "$or": [] } },
+        "expect": { "kind": "error" } }
+    ], "note": "A-20 / 历史一票否决：空 $or 不得产出无 WHERE 的全表查询"
+  }
+]

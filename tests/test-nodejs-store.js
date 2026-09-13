@@ -250,9 +250,9 @@ test('crud.update 空 $set 抛错', async () => {
 
 test('crud.updateMany 原生与 $set', async () => {
   _crudWMock([{ income: 1.0 }]);
-  const r1 = await _crud_mod.updateMany('CommercialLedger', {}, { $inc: { income: 1 } });
+  const r1 = await _crud_mod.updateMany('CommercialLedger', { income: 1.0 }, { $inc: { income: 1 } });
   assert.equal(r1.modifiedCount, 1);
-  const r2 = await _crud_mod.updateMany('CommercialLedger', {}, { income: 2.0 });
+  const r2 = await _crud_mod.updateMany('CommercialLedger', { income: 1.0 }, { income: 2.0 });
   assert.equal(r2.modifiedCount, 1);
 });
 
@@ -298,12 +298,6 @@ test('crud.mutation 单条与数组', async () => {
 test('crud.mutation 空数组返回空数组', async () => {
   _crudWMock();
   assert.deepEqual(await _crud_mod.mutation('CommercialLedger', []), []);
-});
-
-test('crud.aggregate', async () => {
-  _crudWMock([{ unit: 'a' }]);
-  const out = await _crud_mod.aggregate('CommercialLedger', [{ $match: { unit: 'a' } }]);
-  assert.ok(out.length && out[0].unit === 'a');
 });
 
 // ---------- 数据源路由（Phase 3） ----------

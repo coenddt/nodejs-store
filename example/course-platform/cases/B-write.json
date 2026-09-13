@@ -1,0 +1,120 @@
+[
+  {
+    "id": "B-01", "group": "B", "title": "insert 自动字段",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "insert", "schema": "Course", "data": { "title": "新课程", "status": "draft" },
+        "expect": { "kind": "inserted", "idPrefix": "c", "hasTimestamps": true } },
+      { "op": "count", "schema": "Course", "filter": { "title": "新课程" }, "expect": { "kind": "count", "value": 1 } }
+    ], "note": "B-01：_id 前缀 c、createdAt/updatedAt 为数值 ms"
+  },
+  {
+    "id": "B-02", "group": "B", "title": "insert_many 批量",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "insert_many", "schema": "Course", "rows": [
+        { "title": "批量A", "status": "new" }, { "title": "批量B", "status": "new" } ] },
+      { "op": "count", "schema": "Course", "filter": { "status": "new" }, "expect": { "kind": "count", "value": 2 } }
+    ], "note": "B-02：逐条生成 _id，回读条数 == 写入条数"
+  },
+  {
+    "id": "B-04", "group": "B", "title": "update $set 标量",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "update", "schema": "Course", "condition": { "_id": "c1" }, "data": { "price": 11.1 } },
+      { "op": "query", "gql": "Course($condition:@c0){_id, price}", "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1", "price": 11.1 } ] } }
+    ], "note": "B-04：写后回读新值"
+  },
+  {
+    "id": "B-05", "group": "B", "title": "update $set 对象字段",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] }, "sqlPolicy": "explicit-or-parity",
+    "steps": [
+      { "op": "update", "schema": "Course", "condition": { "_id": "c1" }, "data": { "$set": { "meta": { "cover": "x" } } } },
+      { "op": "query", "gql": "Course($condition:@c0){_id, meta}", "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1", "meta": { "cover": "x" } } ] } }
+    ], "note": "B-05 / 历史 C-11-1：meta 不得被静默丢弃"
+  },
+  {
+    "id": "B-06", "group": "B", "title": "update $set 数组字段",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] }, "sqlPolicy": "explicit-or-parity",
+    "steps": [
+      { "op": "update", "schema": "Course", "condition": { "_id": "c1" }, "data": { "$set": { "tags": ["a", "b"] } } },
+      { "op": "query", "gql": "Course($condition:@c0){_id, tags}", "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1", "tags": ["a", "b"] } ] } }
+    ], "note": "B-06 / 历史 C-11-1：tags 写入并回读"
+  },
+  {
+    "id": "B-08", "group": "B", "title": "数组算子 + $inc",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "update", "schema": "Course", "condition": { "_id": "c1" }, "data": { "$inc": { "enrolledCount": 1 } } },
+      { "op": "query", "gql": "Course($condition:@c0){_id, enrolledCount}", "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1", "enrolledCount": 1 } ] } }
+    ], "note": "B-08：$inc 标量（数组算子 $push 另在 B-08b）"
+  },
+  {
+    "id": "B-08b", "group": "B", "title": "$push 数组算子", "reset": "seed",
+    "ctx": { "userId": "u1", "roles": ["admin"] }, "sqlPolicy": "explicit-or-parity",
+    "steps": [
+      { "op": "update", "schema": "Course", "condition": { "_id": "c1" }, "data": { "$push": { "tags": "x" } } },
+      { "op": "query", "gql": "Course($condition:@c0){_id, tags}", "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1", "tags": ["python", "db", "x"] } ] } }
+    ], "note": "B-08：$push"
+  },
+  {
+    "id": "B-10", "group": "B", "title": "update_many 空条件必须拒绝",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "update_many", "schema": "Course", "condition": {}, "data": { "$set": { "status": "x" } },
+        "expect": { "kind": "error" } }
+    ], "note": "B-10：无 WHERE 的无界批量更新一票否决"
+  },
+  {
+    "id": "B-11", "group": "B", "title": "remove 归档",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "remove", "schema": "Course", "condition": { "_id": "c1" },
+        "expect": { "kind": "removed", "deletedCount": 1, "archivedCount": 1 } },
+      { "op": "query", "gql": "CourseDeleted($condition:@c0){_id, deletedAt}", "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1" } ], "normalize": { "ignore": ["deletedAt"] } } }
+    ], "note": "B-11：归档表 courses_deleted 收到行且 deletedAt>0"
+  },
+  {
+    "id": "B-12", "group": "B", "title": "remove 空条件必须拒绝",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "remove", "schema": "Course", "condition": {}, "expect": { "kind": "error" } },
+      { "op": "count", "schema": "Course", "filter": {}, "expect": { "kind": "count", "value": 7 } }
+    ], "note": "B-12：remove({}) 拒绝且主表行数不变（seed 有 7 门课）"
+  },
+  {
+    "id": "B-13", "group": "B", "title": "upsert 命中/未命中",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "upsert", "schema": "Course", "condition": { "_id": "c9" }, "data": { "status": "new" } },
+      { "op": "count", "schema": "Course", "filter": { "_id": "c9" }, "expect": { "kind": "count", "value": 1 } },
+      { "op": "upsert", "schema": "Course", "condition": { "_id": "c9" }, "data": { "title": "补title" } },
+      { "op": "count", "schema": "Course", "filter": { "_id": "c9" }, "expect": { "kind": "count", "value": 1 } },
+      { "op": "query", "gql": "Course($condition:@c0){_id, title}", "params": { "c0": { "_id": "c9" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c9", "title": "补title" } ] } }
+    ], "note": "B-13：命中时不新增行，标题已更新"
+  },
+  {
+    "id": "B-15", "group": "B", "title": "写路径 owner 自动填充",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["student"] },
+    "steps": [
+      { "op": "insert", "schema": "StudyNote", "data": { "title": "新笔记" },
+        "expect": { "kind": "inserted", "idPrefix": "n", "hasTimestamps": true } },
+      { "op": "count", "schema": "StudyNote", "filter": { "createdBy": "u1" }, "expect": { "kind": "count", "value": 2 } }
+    ], "note": "B-15：insert StudyNote 自动填 createdBy=u1（seed n1 + 新条）"
+  },
+  {
+    "id": "B-16", "group": "B", "title": "写权限拒绝",
+    "reset": "seed", "ctx": { "userId": "u2", "roles": ["student"] },
+    "steps": [
+      { "op": "insert", "schema": "AuditLog", "data": { "action": "x", "target": "c1" },
+        "expect": { "kind": "error", "code": "ERR_PERMISSION" } }
+    ], "note": "B-16：AuditLog write 为空，student 写被拒 403"
+  }
+]

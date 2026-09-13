@@ -14,6 +14,7 @@
 
 const { PermissionError, getContext } = require('../permission');
 const datasource = require('../datasource');
+const { execMongo } = require('../executors/mongo');
 const { get: _getSchema } = require('../schema');
 
 const _PHASE1_IDS = /^\{\{phase1\.ids\}\}$/;
@@ -28,6 +29,11 @@ const _PERM_PREFIX = 'ERR_PERMISSION:';
 
 /** 设置数据源连接映射（对 `../datasource` 的路由入口做包内透出） */
 const setConnections = datasource.setConnections;
+
+/** 单库简写：等价于 `setConnections({ default: db })`（对齐 py_store.crud.exec.set_db） */
+function setDb(db) {
+  datasource.setConnections({ [datasource.DEFAULT_SOURCE]: db });
+}
 
 /** 按 schema 的 timestamps 单位产出当前时间戳（'s' → 秒，其余/未启用 → 毫秒） */
 function _nowFor(schemaName) {
@@ -54,54 +60,13 @@ function _call(fn) {
 
 // ─── 命令执行（唯一 IO 边界） ────────────────────────────────
 
-/** Command JSON → MongoDB 原生驱动调用 */
-async function _execMongo(db, cmd) {
-  const coll = db.collection(cmd.collection);
-  switch (cmd.kind) {
-    case 'find': {
-      const opts = cmd.projection ? { projection: cmd.projection } : undefined;
-      return coll.find(cmd.filter, opts).toArray();
-    }
-    case 'aggregate':
-      return coll.aggregate(cmd.pipeline).toArray();
-    case 'countDocuments':
-      return coll.countDocuments(cmd.filter);
-    case 'findOne': {
-      const opts = cmd.projection ? { projection: cmd.projection } : undefined;
-      return coll.findOne(cmd.filter, opts);
-    }
-    case 'insertOne':
-      await coll.insertOne(cmd.doc);
-      return cmd.doc;
-    case 'insertMany':
-      if (cmd.upsertById) {
-        // 归档幂等（core planArchiveDocs）：按 _id 逐条覆盖 —— 「归档成功但删除失败」
-        // 的重试不再因 _id 冲突整批失败。SQL 侧由 dialect 的 ON CONFLICT/REPLACE 承接。
-        for (const doc of cmd.docs) {
-          await coll.replaceOne({ _id: doc._id }, doc, { upsert: true });
-        }
-        return { insertedCount: cmd.docs.length };
-      }
-      await coll.insertMany(cmd.docs);
-      return { insertedCount: cmd.docs.length };
-    case 'findOneAndUpdate':
-      return coll.findOneAndUpdate(cmd.filter, cmd.update, cmd.options);
-    case 'updateMany':
-      return coll.updateMany(cmd.filter, cmd.update);
-    case 'deleteMany':
-      return coll.deleteMany(cmd.filter);
-    default:
-      throw new Error(`未支持的命令: ${cmd.kind}`);
-  }
-}
-
 /** 在指定数据源上执行命令（Mongo 走原生驱动，SQL 走 translate → exec；
  * 事务作用域内经 datasource.connectionFor 落到事务专用连接） */
 async function _execOn(source, cmd) {
   const connection = datasource.connectionFor(source);
   const db = datasource.mongoDb(connection, source, cmd.namespace ?? null);
   if (db) {
-    return _execMongo(db, cmd);
+    return execMongo(db, cmd);
   }
   return datasource.execSql(source, connection, cmd);
 }
@@ -147,6 +112,7 @@ function resolvePlaceholders(command, { ids = null, steps = [] } = {}) {
 
 module.exports = {
   setConnections,
+  setDb,
   _nowFor,
   _ctx,
   _call,

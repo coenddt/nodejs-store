@@ -43,6 +43,7 @@ const MYSQL_DDL = [
      userId VARCHAR(64),
      code VARCHAR(255),
      amount DOUBLE,
+     __present VARCHAR(255),
      PRIMARY KEY (_id)
    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];

@@ -10,6 +10,7 @@
  */
 
 const { core: _core } = require('../schema');
+const { normalizeRows } = require('./_values');
 
 /** 创建执行器描述符（可直接作为 `init(connections)` 的一个 SQL 数据源连接） */
 function create(driver, _options = {}) {
@@ -24,7 +25,7 @@ function create(driver, _options = {}) {
     let affectedRows = 0;
     for (const stmt of plan.stmts) {
       const res = await conn.query(stmt.text, stmt.params || []);
-      rows = res.rows || [];
+      rows = normalizeRows(res.rows || [], res.fields, 'postgres');
       affectedRows = Number(res.rowCount || 0);
       if (stmt.rowShape) docs = _core.restoreRows(stmt.rowShape, rows);
     }

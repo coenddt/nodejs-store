@@ -1,0 +1,86 @@
+[
+  {
+    "id": "F-01", "group": "F", "title": "金额边界比较",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Enrollment($condition:@c0){_id}", "params": { "c0": { "amount": { "$gt": 0 } } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "e2" }, { "_id": "e4" }, { "_id": "e5" } ], "normalize": { "sortBy": ["_id"] } } },
+      { "op": "query", "gql": "Enrollment($condition:@c0){_id}", "params": { "c0": { "amount": 0 } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "e1" } ] } },
+      { "op": "query", "gql": "Enrollment($condition:@c0){_id}", "params": { "c0": { "amount": { "$lt": 0 } } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "e3" } ] } },
+      { "op": "query", "gql": "Enrollment($condition:@c0){_id}", "params": { "c0": { "amount": { "$gte": 1e15 } } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "e4" } ] } }
+    ], "note": "F-01：0/负数/极大值边界（e1=0,e2=500,e3=-50,e4=1e15,e5=10）"
+  },
+  {
+    "id": "F-02", "group": "F", "title": "浮点精度",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, price}", "params": { "c0": { "price": 0.1 } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c7", "price": 0.1 } ] } },
+      { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "price": { "$lt": 0.5 } } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c3" }, { "_id": "c4" }, { "_id": "c6" }, { "_id": "c7" } ], "normalize": { "sortBy": ["_id"] } } }
+    ], "note": "F-02：price=0.1 精准命中；<0.5 含 0.0/-5/0.30000000000000004/0.1（不因 Decimal/字符串转换引入偏差）"
+  },
+  {
+    "id": "F-03", "group": "F", "title": "int / float 混合",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, enrolledCount}", "params": { "c0": { "enrolledCount": { "$gt": 2.5 } } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c2", "enrolledCount": 3 } ] } }
+    ], "note": "F-03：int 列比 float 值（enrolledCount>2.5 → 只有 c2=3）"
+  },
+  {
+    "id": "F-04", "group": "F", "title": "datetime 范围过滤",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Enrollment($condition:@c0){_id}", "params": { "c0": { "paidAt": { "$gte": 1700000000000, "$lt": 1700000200000 } } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "e1" } ] } },
+      { "op": "query", "gql": "Enrollment($condition:@c0){_id}", "params": { "c0": { "paidAt": { "$gte": 1700000200000 } } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "e4" } ] } }
+    ], "note": "F-04：paidAt 边界含取舍（[e1=…000,e4=…200]）"
+  },
+  {
+    "id": "F-05", "group": "F", "title": "时间单位 ms",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id, createdAt, updatedAt}",
+        "params": { "c0": { "_id": "c1" } },
+        "expect": { "kind": "raw", "fn": "check_ms_timestamp", "fields": ["createdAt", "updatedAt"] } }
+    ], "note": "F-05：timestamps:true 为 ms 位数（>=10^12）；SQL 后端不得以 DATETIME 覆写单位语义"
+  },
+  {
+    "id": "F-06", "group": "F", "title": "布尔过滤",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Enrollment($condition:@c0){_id, paid}", "params": { "c0": { "paid": true } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "e1", "paid": true }, { "_id": "e4", "paid": true } ], "normalize": { "sortBy": ["_id"] } } },
+      { "op": "raw", "fn": "check_bool_rows", "field": "paid" }
+    ], "note": "F-06：paid:true 命中 e1/e4，且回读须为真布尔（SQL 0/1 归一）"
+  },
+  {
+    "id": "F-07", "group": "F", "title": "空串 / NULL / 缺失三态",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] }, "sqlPolicy": "explicit-or-parity",
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "summary": "" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c3" } ] } },
+      { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "summary": null } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c2" }, { "_id": "c5" } ], "normalize": { "sortBy": ["_id"] } } },
+      { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "summary": { "$exists": false } } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c4" } ] } }
+    ], "note": "F-07：c3=''、c2/c5=null、c4 缺失三态可区分"
+  },
+  {
+    "id": "F-08", "group": "F", "title": "falsy 值不得被吞",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "enrolledCount": 0 } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1" }, { "_id": "c3" }, { "_id": "c7" } ], "normalize": { "sortBy": ["_id"] } } },
+      { "op": "query", "gql": "Lesson($condition:@c0){_id}", "params": { "c0": { "free": false } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "l2" } ] } },
+      { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "summary": "" } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c3" } ] } }
+    ], "note": "F-08：0/false/'' 都能命中（不得被 falsy 判定当无条件）"
+  }
+]

@@ -210,14 +210,11 @@ function route(cmd) {
  * 使上层（crud/*）对 Mongo / SQL 两条路径无感。
  */
 async function execSql(source, connection, cmd) {
-  if (typeof connection.exec !== 'function') {
-    throw new Error(
-      `SQL 数据源 ${source}(${connection.kind}) 的执行器未接入（见执行文档 Phase 4）`,
-    );
-  }
   const plan = _core.dialectTranslate(connection.kind, cmd);
   // Host 兜底：core 标记了无法安全下推的组合（如 $lookup 子 $limit 每父 top-N）时，
   // 绝不执行「缺少该段」的 SQL（会静默返回错误结果），改为显式报错，由调用方降级重查。
+  // 先于执行器检查 —— 命令本身不可安全下推时，报下推不支持而非「执行器未接入」
+  // （对齐 py_store/datasource.py#exec_sql 的检查次序）。
   if (Array.isArray(plan.unsupported) && plan.unsupported.length > 0) {
     const err = new PushdownUnsupportedError(
       source,
@@ -228,6 +225,11 @@ async function execSql(source, connection, cmd) {
     // 自动反馈：拦截即告警（无 sink 时打 stderr），禁止静默失守
     _emitFeedback(err.feedback());
     throw err;
+  }
+  if (typeof connection.exec !== 'function') {
+    throw new Error(
+      `SQL 数据源 ${source}(${connection.kind}) 的执行器未接入（见执行文档 Phase 4）`,
+    );
   }
   const out = await connection.exec(plan);
   return executors.shapeResult(cmd, out);

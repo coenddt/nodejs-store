@@ -11,6 +11,8 @@
 
 const { AsyncLocalStorage } = require('node:async_hooks');
 
+const { core } = require('./schema');
+
 const _als = new AsyncLocalStorage();
 
 /** 设置当前请求的上下文，每次请求开始时调用一次 */
@@ -41,6 +43,47 @@ async function runAsInternal(fn) {
   return _als.run(next, () => fn());
 }
 
+// ─── core 权限方法包装（对齐 py_store.permission 的同名薄包装） ──────
+
+/** 接受 schema 对象或 schema 名称 */
+function _model(schema) {
+  return typeof schema === 'string' ? schema : schema.name;
+}
+
+function canReadSchema(schema, ctx) {
+  return core.canRead(_model(schema), ctx ?? null);
+}
+
+function canWriteSchema(schema, ctx) {
+  return core.canWrite(_model(schema), ctx ?? null);
+}
+
+function shouldInjectOwnerCondition(schema, ctx) {
+  return core.shouldInjectOwner(_model(schema), ctx ?? null);
+}
+
+function mergeOwnerCondition(schema, ctx, condition) {
+  const out = core.mergeOwnerCondition(_model(schema), ctx ?? null, condition ?? null);
+  // core 在「不注入」时返回 null（无法区分原条件为 null）→ 原样返回入参条件
+  return out === null || out === undefined ? condition : out;
+}
+
+function getReadableFields(schema, ctx) {
+  return core.readableFields(_model(schema), ctx ?? null);
+}
+
+function getReadableRelations(schema, ctx) {
+  return core.readableRelations(_model(schema), ctx ?? null);
+}
+
+function getWritableFields(schema, ctx) {
+  return core.writableFields(_model(schema), ctx ?? null);
+}
+
+function filterWritableData(schema, ctx, data) {
+  return core.filterWritableData(_model(schema), ctx ?? null, data);
+}
+
 // ─── 自定义错误 ──────────────────────────────────────────────
 
 class PermissionError extends Error {
@@ -56,5 +99,13 @@ module.exports = {
   getContext,
   scopedRoles,
   runAsInternal,
+  canReadSchema,
+  canWriteSchema,
+  shouldInjectOwnerCondition,
+  mergeOwnerCondition,
+  getReadableFields,
+  getReadableRelations,
+  getWritableFields,
+  filterWritableData,
   PermissionError,
 };

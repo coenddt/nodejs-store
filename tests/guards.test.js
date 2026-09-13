@@ -4,14 +4,13 @@
  * 宿主接入守卫测试（对齐 py-store tests/test_py_store.py 守卫用例）
  *
  * 覆盖：timestamps 单位感知（秒级注入 / 毫秒缺省）、非法 timestamps 注册即报错
- * （core 校验）、$pipeline 禁用开关（关闭显式报错 / 重开恢复）、feedback 事件通道
- * （sink 回调 / 默认 stderr / SQL 下推拦截自动反馈）。
+ * （core 校验）、feedback 事件通道（sink 回调 / 默认 stderr / SQL 下推拦截自动反馈）。
  */
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { store, schema: _sc, crud: _crud_mod, datasource: _ds, feedback } = require('../src');
+const { schema: _sc, crud: _crud_mod, datasource: _ds, feedback } = require('../src');
 const { core } = require('../src/schema');
 const { permission: perm } = require('../src');
 
@@ -104,7 +103,7 @@ function _crudWMock(docs) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 扩展守卫：timestamps 单位 / $pipeline 开关 / feedback 事件
+// 扩展守卫：timestamps 单位 / feedback 事件
 // ─────────────────────────────────────────────────────────────
 
 test('timestamps: "s" → Host 时钟注入秒级时间戳', async () => {
@@ -133,24 +132,6 @@ test('非法 timestamps 注册即报错（core 校验，行为收紧）', () => 
     }),
     /timestamps 仅支持/,
   );
-});
-
-test('$pipeline 禁用开关：关闭后显式报错，重开恢复（finally 必恢复）', async () => {
-  _crudWMock([{ unit: 'a', income: 100.0, _id: '1' }]);
-  const gql = 'CommercialLedger($pipeline:@p){unit}';
-  const params = { p: [{ $match: {} }] };
-  try {
-    store.setAllowUserPipeline(false);
-    await assert.rejects(
-      () => _crud_mod.query(gql, params),
-      (e) => /已被禁用/.test(e.message),
-    );
-    store.setAllowUserPipeline(true);
-    const items = await _crud_mod.query(gql, params);
-    assert.ok(items.length && items[0].unit === 'a');
-  } finally {
-    store.setAllowUserPipeline(true);
-  }
 });
 
 test('feedback sink 回调与默认 stderr（不抛错即可）', () => {

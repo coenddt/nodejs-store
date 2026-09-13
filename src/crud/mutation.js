@@ -6,14 +6,20 @@
 
 const { core: _core, get: _getSchema } = require('../schema');
 const datasource = require('../datasource');
+const { emit: _emitFeedback } = require('../feedback');
 const { _call, _ctx, _exec, _nowFor, resolvePlaceholders } = require('./exec');
 const { _generateId, _newIdPool } = require('./id');
 
 /** mutation 单条：规划步骤序列 → 依序执行 + 父子 _id 占位符回填 */
-async function _mutationOne(schemaName, data, routeOverride = null) {
+async function _mutationOne(schemaName, data, now, routeOverride = null) {
   const plan = _call(() =>
-    _core.planMutation(schemaName, data, _nowFor(schemaName), _newIdPool(schemaName, data), _ctx(),
+    _core.planMutation(schemaName, data, now, _newIdPool(schemaName, data), _ctx(),
       routeOverride));
+
+  // §11.4 静默点收口：规划期降级（如关系不可读被跳过）走统一反馈通道，禁止静默失守
+  for (const d of plan.degraded || []) {
+    _emitFeedback({ ...(d || {}), type: 'mutation_degraded' });
+  }
 
   const runSteps = async () => {
     const resolved = [];
@@ -49,9 +55,13 @@ async function mutation(schemaName, data, routeOverride = null) {
 
   if (!items.length) return isArray ? [] : null;
 
+  // §11.3 确定性输入：一次 mutation 调用共用一个 now
+  // （数组内多条 + 父子步骤 + 默认值 / 计算列全部同值）
+  const now = _nowFor(schemaName);
+
   const results = [];
   for (const item of items) {
-    results.push(await _mutationOne(schemaName, item, routeOverride));
+    results.push(await _mutationOne(schemaName, item, now, routeOverride));
   }
 
   return isArray ? results : results[0];
@@ -72,12 +82,4 @@ async function upsert(schemaName, condition, data, options = null, routeOverride
   return result ? _call(() => _core.applyWriteDefaults(schemaName, result)) : null;
 }
 
-// ─── 原生聚合 ────────────────────────────────────────────────
-
-/** 对指定 schema 执行 MongoDB 原生聚合查询 */
-async function aggregate(schemaName, pipeline, routeOverride = null) {
-  const cmd = _call(() => _core.planAggregate(schemaName, pipeline ?? [], routeOverride));
-  return _exec(cmd);
-}
-
-module.exports = { mutation, upsert, aggregate };
+module.exports = { mutation, upsert };

@@ -23,9 +23,11 @@ const SRC = 'sqlite_e2e';
 function createDb() {
   const db = new Database(':memory:');
   db.exec(`
-    CREATE TABLE posts (_id TEXT PRIMARY KEY, title TEXT, status TEXT, views INTEGER);
+    CREATE TABLE posts (
+      _id TEXT PRIMARY KEY, title TEXT, status TEXT, views INTEGER, __present TEXT
+    );
     CREATE TABLE posts_deleted (
-      _id TEXT PRIMARY KEY, title TEXT, status TEXT, views INTEGER, deletedAt INTEGER
+      _id TEXT PRIMARY KEY, title TEXT, status TEXT, views INTEGER, deletedAt INTEGER, __present TEXT
     );
   `);
   return db;
@@ -100,7 +102,7 @@ test('sqlite e2e: updateMany（$inc）', async () => {
     { title: 'A', status: 'draft', views: 1 },
     { title: 'B', status: 'draft', views: 2 },
   ]);
-  const r = await store.updateMany('Post', {}, { $inc: { views: 10 } });
+  const r = await store.updateMany('Post', { status: 'draft' }, { $inc: { views: 10 } });
   assert.equal(r.modifiedCount, 2);
   const items = await store.query('Post{_id, views}');
   assert.deepEqual(items.map((d) => d.views).sort((a, b) => a - b), [11, 12]);
@@ -145,9 +147,9 @@ test('sqlite e2e: upsert（_id 冲突目标：未命中新建 / 命中更新）'
 test('sqlite sync: introspect → schemaFromRows → register', async () => {
   const db = new Database(':memory:');
   db.exec(`
-    CREATE TABLE widgets (_id TEXT PRIMARY KEY, sku TEXT NOT NULL, price REAL);
+    CREATE TABLE widgets (_id TEXT PRIMARY KEY, sku TEXT NOT NULL, price REAL, __present TEXT);
     CREATE TABLE gadgets (
-      _id TEXT PRIMARY KEY, widget_id TEXT, label TEXT,
+      _id TEXT PRIMARY KEY, widget_id TEXT, label TEXT, __present TEXT,
       FOREIGN KEY (widget_id) REFERENCES widgets(_id)
     );
   `);
@@ -181,8 +183,8 @@ test('identifier safety: 恶意 field 名加引号后安全，且连接可复用
   // posts 真的有一列名就是注入串（证明 core 只把它当标识符、按后端规则转义）
   db.exec('CREATE TABLE users (_id TEXT PRIMARY KEY, name TEXT)');
   db.exec('INSERT INTO users VALUES (\'u1\', \'alice\')');
-  db.exec(`CREATE TABLE evil (_id TEXT PRIMARY KEY, title TEXT, "${WEIRD.replace(/"/g, '""')}" TEXT)`);
-  db.exec('INSERT INTO evil VALUES (\'e1\', \'t\', \'v\')');
+  db.exec(`CREATE TABLE evil (_id TEXT PRIMARY KEY, title TEXT, "${WEIRD.replace(/"/g, '""')}" TEXT, __present TEXT)`);
+  db.exec('INSERT INTO evil VALUES (\'e1\', \'t\', \'v\', NULL)');
 
   _sc.register({
     name: 'Evil',

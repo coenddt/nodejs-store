@@ -1,0 +1,30 @@
+[
+  {
+    "id": "G-01", "group": "G", "title": "不可翻译的 filter 必须显式（U1~U3 全局 Err）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "tags": "python" } },
+        "expect": { "kind": "error" } },
+      { "op": "query", "gql": "Enrollment($condition:@c0){_id}", "params": { "c0": { "coupon": { "code": "SAVE10" } } },
+        "expect": { "kind": "error" } },
+      { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "meta.seo.title": "X" } },
+        "expect": { "kind": "error" } }
+    ], "note": "G-01 / D2：array/object 字段与对象点号路径 filter → 所有后端（含 Mongo）统一显式报错；静默丢弃并返回全表=缺陷"
+  },
+  {
+    "id": "G-06", "group": "G", "title": "空逻辑组",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "$and": [] } },
+        "expect": { "kind": "error" } }
+    ], "note": "G-06：空 $and 不得产出无 WHERE 的全表查询"
+  },
+  {
+    "id": "G-10", "group": "G", "title": "Mongo 特有算子的 SQL 处理必须二择一（U1 全局 Err）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "tags": { "$elemMatch": { "$eq": "python" } } } },
+        "expect": { "kind": "error" } }
+    ], "note": "G-10 / D2：$elemMatch 作用于数组字段 → 所有后端（含 Mongo）统一显式报错"
+  }
+]

@@ -1,0 +1,9 @@
+{
+  "name": "course-platform",
+  "title": "在线课程平台",
+  "backends": ["mongodb", "postgres", "mysql", "sqlite"],
+  "baseline": "mongodb",
+  "roles": ["guest", "student", "instructor", "editor", "admin", "super_admin"],
+  "pseudoRoles": ["creator"],
+  "note": "schema 体系与覆盖点映射见 skill 的 subs/business-scenario.md；本场景按后端逐一以 default 源复用同一套 schema/seed（A~H 组）。联邦 I 组由既有 tests/test_federation_e2e.py 另行覆盖，不在本场景矩阵内跑。"
+}

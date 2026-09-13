@@ -16,17 +16,18 @@
  *   - [`id`]：ID 生成与 mutation ID 池遍历
  *   - [`query`]：读路径
  *   - [`write`]：写路径
- *   - [`mutation`]：mutation / upsert / 原生聚合
+ *   - [`mutation`]：mutation / upsert
  */
 
-const { setConnections, _nowFor, _ctx, _call, _exec, _substitute, resolvePlaceholders } = require('./exec');
+const { setConnections, setDb, _nowFor, _ctx, _call, _exec, _substitute, resolvePlaceholders } = require('./exec');
 const { _generateId, _truthy, _newIdPool } = require('./id');
 const { query, queryOne, queryWithCount, queryFederated } = require('./query');
 const { insert, insertMany, update, updateMany, remove, exists, count } = require('./write');
-const { mutation, upsert, aggregate } = require('./mutation');
+const { mutation, upsert } = require('./mutation');
 
 module.exports = {
   setConnections,
+  setDb,
   query,
   queryOne,
   queryWithCount,
@@ -40,7 +41,6 @@ module.exports = {
   count,
   mutation,
   upsert,
-  aggregate,
   // ── Host 契约件（供跨语言同构契约测试与高级用法；下划线表示内部语义） ──
   _substitute,
   resolvePlaceholders,

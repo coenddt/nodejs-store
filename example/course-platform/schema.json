@@ -1,0 +1,158 @@
+[
+  {
+    "name": "User", "collection": "users", "idPrefix": "u", "timestamps": true,
+    "read": [], "write": ["admin"],
+    "fields": {
+      "_id":    { "type": "string" },
+      "name":   { "type": "string" },
+      "email":  { "type": "string" },
+      "role":   { "type": "string", "read": ["admin"] },
+      "avatar": { "type": "string" },
+      "profile": { "type": "object", "fields": {
+        "bio":   { "type": "string" },
+        "city":  { "type": "string" },
+        "links": { "type": "array" }
+      } },
+      "createdBy": { "type": "string" }
+    },
+    "relations": {},
+    "computes": {
+      "displayName": { "type": "string", "asyncFn": true, "fnRef": "user_display_name", "depends": ["name"], "read": ["admin"] }
+    }
+  },
+  {
+    "name": "Category", "collection": "categories", "idPrefix": "cat", "timestamps": false,
+    "read": [], "write": ["admin", "editor"],
+    "fields": {
+      "_id":      { "type": "string" },
+      "name":     { "type": "string" },
+      "parentId": { "type": "string" },
+      "sort":     { "type": "int" },
+      "createdBy":{ "type": "string" }
+    },
+    "relations": {
+      "parent":   { "model": "Category", "type": "one",  "localField": "parentId", "foreignField": "_id" },
+      "children": { "model": "Category", "type": "many", "localField": "_id", "foreignField": "parentId" }
+    }
+  },
+  {
+    "name": "Course", "collection": "courses", "idPrefix": "c", "timestamps": true,
+    "read": ["admin", "editor", "instructor", "student"],
+    "write": ["admin", "editor", "instructor", "creator"],
+    "fields": {
+      "_id":           { "type": "string" },
+      "title":         { "type": "string" },
+      "summary":       { "type": "string" },
+      "status":        { "type": "string" },
+      "price":         { "type": "float" },
+      "enrolledCount": { "type": "int" },
+      "rating":        { "type": "float" },
+      "tags":          { "type": "array" },
+      "meta":          { "type": "object", "fields": {
+        "cover": { "type": "string" },
+        "level": { "type": "string" },
+        "seo":   { "type": "object", "fields": {
+          "title": { "type": "string" },
+          "desc":  { "type": "string" }
+        } }
+      } },
+      "secret":    { "type": "string", "read": ["admin"] },
+      "categoryId":{ "type": "string" },
+      "createdBy": { "type": "string" }
+    },
+    "relations": {
+      "category":  { "model": "Category", "type": "one",  "localField": "categoryId", "foreignField": "_id" },
+      "lessons":   { "model": "Lesson",   "type": "many", "localField": "_id", "foreignField": "courseId" },
+      "reviews":   { "model": "Review",   "type": "many", "localField": "_id", "foreignField": "courseId", "read": ["admin", "editor"] }
+    },
+    "computes": {
+      "revenue":     { "type": "float", "fn": true, "fnRef": "course_revenue", "depends": ["price", "enrolledCount"] },
+      "lessonCount": { "type": "int", "agg": { "$count": "lessons" } }
+    }
+  },
+  {
+    "name": "Lesson", "collection": "lessons", "idPrefix": "l", "timestamps": true,
+    "read": ["admin", "editor", "instructor", "student"], "write": ["admin", "editor", "instructor", "creator"],
+    "fields": {
+      "_id":       { "type": "string" },
+      "courseId":  { "type": "string" },
+      "parentId":  { "type": "string" },
+      "title":     { "type": "string" },
+      "seq":       { "type": "int" },
+      "duration":  { "type": "int" },
+      "videoUrl":  { "type": "string" },
+      "free":      { "type": "bool" },
+      "createdBy": { "type": "string" }
+    },
+    "relations": {
+      "course":   { "model": "Course", "type": "one",  "localField": "courseId", "foreignField": "_id" },
+      "parent":   { "model": "Lesson", "type": "one",  "localField": "parentId", "foreignField": "_id" },
+      "children": { "model": "Lesson", "type": "many", "localField": "_id", "foreignField": "parentId" }
+    }
+  },
+  {
+    "name": "Enrollment", "collection": "enrollments", "idPrefix": "e", "timestamps": true,
+    "read": ["admin", "creator"], "write": ["admin", "creator"],
+    "fields": {
+      "_id":      { "type": "string" },
+      "userId":   { "type": "string" },
+      "courseId": { "type": "string" },
+      "amount":   { "type": "float" },
+      "paid":     { "type": "bool" },
+      "paidAt":   { "type": "datetime" },
+      "status":   { "type": "string" },
+      "coupon":   { "type": "object", "fields": {
+        "code": { "type": "string" },
+        "off":  { "type": "float" }
+      } },
+      "createdBy": { "type": "string" }
+    },
+    "relations": {
+      "user":   { "model": "User",   "type": "one", "localField": "userId",   "foreignField": "_id" },
+      "course": { "model": "Course", "type": "one", "localField": "courseId", "foreignField": "_id" }
+    }
+  },
+  {
+    "name": "Review", "collection": "reviews", "idPrefix": "r", "timestamps": true,
+    "read": ["admin", "editor", "student"], "write": ["admin", "student", "creator"],
+    "fields": {
+      "_id":      { "type": "string" },
+      "courseId": { "type": "string" },
+      "userId":   { "type": "string" },
+      "score":    { "type": "int" },
+      "content":  { "type": "string" },
+      "tags":     { "type": "array" },
+      "createdBy":{ "type": "string" }
+    },
+    "relations": {}
+  },
+  {
+    "name": "StudyNote", "collection": "study_notes", "idPrefix": "n", "timestamps": true,
+    "read": ["creator", "admin"], "write": ["creator", "admin"],
+    "fields": {
+      "_id":      { "type": "string" },
+      "title":    { "type": "string" },
+      "content":  { "type": "string" },
+      "courseId": { "type": "string" },
+      "tags":     { "type": "array" },
+      "meta":     { "type": "object", "fields": { "pinned": { "type": "bool" }, "color": { "type": "string" } } },
+      "createdBy":{ "type": "string" }
+    },
+    "relations": {
+      "course": { "model": "Course", "type": "one", "localField": "courseId", "foreignField": "_id" }
+    }
+  },
+  {
+    "name": "AuditLog", "collection": "audit_logs", "idPrefix": "a", "timestamps": false,
+    "read": ["admin"], "write": [],
+    "fields": {
+      "_id":     { "type": "string" },
+      "actorId": { "type": "string" },
+      "action":  { "type": "string" },
+      "target":  { "type": "string" },
+      "at":      { "type": "datetime" },
+      "detail":  { "type": "object", "fields": { "before": { "type": "object" }, "after": { "type": "object" } } }
+    },
+    "relations": {}
+  }
+]

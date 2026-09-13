@@ -100,11 +100,6 @@ function list() {
   return core.list();
 }
 
-/** 开关用户 $pipeline 直通（默认允许；AI 问数宿主建议关闭作纵深防御） */
-function setAllowUserPipeline(allow = true) {
-  core.setAllowUserPipeline(Boolean(allow));
-}
-
 /**
  * 开关「上下文强制」（默认关闭 = fail-open，与 JS 原版语义一致）。
  *
@@ -115,9 +110,14 @@ function setRequireContext(needCtx = true) {
   core.setRequireContext(Boolean(needCtx));
 }
 
+/** 「上下文强制」开关当前值（对齐 py_store.schema.require_context） */
+function requireContext() {
+  return core.requireContext();
+}
+
 /** 取 asyncFn 计算列实现（fnRef 缺省 = 计算列 key 名） */
 function getAsyncFn(fnRef) {
   return _asyncFns[fnRef];
 }
 
-module.exports = { core, register, get, has, list, setAllowUserPipeline, setRequireContext, getAsyncFn };
+module.exports = { core, register, get, has, list, setRequireContext, requireContext, getAsyncFn };

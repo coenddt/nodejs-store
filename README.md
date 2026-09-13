@@ -123,7 +123,11 @@ Model($condition:@c0,$sort:@s1,$skip:@sk,$limit:@l1) {
 
 - Values come from the params object: `{ c0: {...}, s1: {...} }`.
 - Object sub-fields use dot notation; relations are declared in the schema (`type: 'many' | 'one'`) and resolved automatically — **do not hand-write `$lookup`**.
-- `$pipeline` passes a raw aggregation through as-is (no compute/defaults/permission trimming) — use with care; prefer `store.aggregate(model, pipeline)` for group/sum needs.
+
+> **Breaking change**: user `$pipeline` passthrough and `store.aggregate()` were removed
+> (raw aggregation escape hatch). A GQL containing `$pipeline` now fails explicitly instead
+> of being silently ignored. Use `$condition`/`$sort`/`$skip`/`$limit` + relations; normalized
+> aggregation (`$group`/`$sum`) is being redesigned and will return under a single GQL syntax.
 
 ## Query & write API
 
@@ -142,7 +146,6 @@ await store.updateMany('Post', { type: t }, { status: 'live' });
 const r      = await store.remove('Post', { _id: pid });  // archives to <collection>_deleted first
 await store.mutation('Post', { ... });                    // smart upsert + recursive relation children
 await store.upsert('Post', { code: 'A1' }, { ... });      // explicit-condition upsert (no relation handling)
-const rows   = await store.aggregate('Post', pipeline);   // native aggregation
 ```
 
 Notes:
@@ -203,7 +206,7 @@ a missing context and always passes. `setRequireContext(false)` restores the def
   },
   computes: {
     total: { type: 'float', depends: ['amount'], fn: (d) => d.amount * 1.1 },
-    itemCount: { type: 'int', lookup: { $size: { $ifNull: ['$items', []] } } },
+    itemCount: { type: 'int', agg: { $count: 'items' } },
   },
   indexes: [
     { keys: { status: 1 } },
@@ -256,13 +259,6 @@ const defs = await store.syncSchema({
 });
 ```
 
-### `store.setAllowUserPipeline(allow = true)`
-
-Registry-level guard for user-supplied `$pipeline` passthrough. Default is **allow**
-(backward compatible); AI / 问数 hosts should call `store.setAllowUserPipeline(false)` as
-defense in depth. `store.setRequireContext(...)` (fail-secure mode) is documented under
-[Fail-secure mode](#fail-secure-mode-opt-in).
-
 ### `store.setFeedbackSink(fn)`
 
 Take over the unified feedback channel used for fallback / degradation / interception
@@ -284,7 +280,6 @@ The package re-exports its building blocks for advanced hosts:
 ```js
 const {
   init, store, Store,
-  aggregate,                    // standalone aggregate(schemaName, pipeline, routeOverride)
   PermissionError,              // thrown on denied access (status = 403)
   PushdownUnsupportedError,     // thrown when a command cannot be safely pushed down
   datasource, schema, permission, crud, executors, feedback, introspect,

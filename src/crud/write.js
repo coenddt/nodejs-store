@@ -109,7 +109,7 @@ async function exists(schemaName, condition, routeOverride = null) {
 
 /** 统计符合条件的文档数量 */
 async function count(schemaName, filter = null, routeOverride = null) {
-  const cmd = _call(() => _core.planCount(schemaName, filter ?? null, routeOverride));
+  const cmd = _call(() => _core.planCount(schemaName, filter ?? null, _ctx(), routeOverride));
   return _exec(cmd);
 }
 

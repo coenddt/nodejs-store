@@ -1,5 +1,62 @@
 # Changelog
 
+## 2.0.0 (2026-09-14)
+
+### Breaking Changes
+
+- **计算列 `lookup` 形态归一为 `agg` 算子（多后端归一化 P4）**：schema `computes`
+  的 `lookup`（Mongo 专用）形态移除，改用归一 `agg` 白名单算子 `$count`/`$sum`/`$avg`/
+  `$min`/`$max`：`{"$count": "orders"}`（关系整名计数）、`{"$sum": "orders.amount"}`
+  （必须带单级「关系.字段」）。`$count` 只取关系整名，`$sum/$avg/$min/$max` 必须带字段，
+  二级路径首批不支持，且与 `fn`/`asyncFn` 互斥。空集语义（§9.7）：`$count` → `0`；
+  `$sum/$avg/$min/$max` → `null`。执行按后端下推：SQL 走派生表
+  `LEFT JOIN (… GROUP BY fk)`，Mongo 走 `$lookup` + `$addFields`。
+- **删除用户 `$pipeline` 直通与 `store.aggregate()`**：多后端归一化执行计划 P3
+  砍掉「直通聚合」逃生舱（对齐 D3 / D18）。GQL 中的 `$pipeline` 参数**显式报错**
+  （不再静默忽略）；`store.aggregate(...)`、`store.setAllowUserPipeline(...)` 一并移除。
+  归一聚合（`$group`/`$sum`）将按统一 GQL 语法（固定阶段序，下推优先 + 内存兜底）
+  重新设计后回归。
+- **读路径关系权限收口（R0-1）**：GQL 显式请求的关系，若 `relation.read` 不可读、
+  或目标 model 的 `schema.read` 不可读，规划期**直接抛错** `ERR_PERMISSION`
+  （错误码稳定前缀 `ERR_PERMISSION:`，Host 映射为 403）。此前是「静默裁剪该关系字段、
+  查询照样成功」，现在改为直接失败。`ctx = null`（未设置上下文）维持 fail-open 放行，未变。
+- **SQL 后端 `object` / `array` 字段不再静默丢弃**：
+  - 读：显式投影 schema 声明为 `object` / `array` 的字段（SQL 侧无对应列）→ **显式抛错**
+    （此前静默把这列从 SELECT 里丢掉、返回残缺行）；
+  - 写：`$set` / `$inc` 目标是 `object` / `array` 字段 → **显式抛错**
+    （此前静默跳过、数据悄悄不落库）。`$unset` 维持跳过语义不变。
+
+### New Features
+
+- **归一化 P5：根级聚合与关系聚合谓词**：新增根级 `$group` / `$having` 聚合；新增 §9.6
+  关系聚合谓词（`$condition` 中以关系名作键的 semi/anti-join 谓词，主形式
+  `filter` / `agg` / `having`，简写 `$exists` / `$count` / `$sum`… + `$of`）。
+  宿主无需改动，纯 API 能力增强。
+
+### Migration
+
+- 计算列原 `lookup` 声明改写为 `agg`：关系计数 `{"$count": "<关系名>"}`、关系字段聚合
+  `{"$sum"|"$avg"|"$min"|"$max": "<关系>.<字段>"}`；结果语义不变，且 SQL 后端自此同语法可用。
+- 关系/计算列查询不受影响（`$condition`/`$sort`/`$skip`/`$limit` + 关系字段照常）。
+- 原先依赖 `store.aggregate(schema, pipeline)` 的调用方：等待归一聚合语法上线后改写。
+- **受影响调用要捕获权限错误**：显式请求不可读关系现在会直接抛 `ERR_PERMISSION`
+  （Host 侧 403），不要再假设「查询成功 + 关系被裁剪」了，按需自己 try/catch。
+- **别依赖 `object` / `array` 字段在 SQL 后端被静默忽略 / 静默不落库**：这些字段在 SQL 后端
+  仍**不支持读写**（DDL 不建列），只是失败方式由「静默」变成「显式抛错」，跨后端代码要按
+  「可能抛错」处理。
+
+### Bug Fixes
+
+- **`store.count()` 漏传调用上下文**：`planCount` 少传 `ctx`，导致 `routeOverride`
+  （多租户路由）与 owner 范围条件（R1/E-08）未生效 —— 与 py-store 同构对齐。
+- **PostgreSQL upsert 的 `__present` 歧义**：`ON CONFLICT … DO UPDATE` 中哨兵列现值
+  引用改为限定目标表（core 方言修复），否则 PG 报 `column reference "__present" is ambiguous`。
+- **SQL 布尔列回读归一**：MySQL `TINYINT(1)` / SQLite `INTEGER` 的布尔列此前回读为
+  `1`/`0`，现由 core 按 schema 声明类型归一为 `true`/`false`（PG 原生 `BOOLEAN` no-op），
+  与 Mongo 一致。
+- **PostgreSQL 浮点过滤报错**：整数列与浮点值比较（如 `{"$gt": 2.5}`）此前被 PG 推断为
+  `integer` 而报 `invalid input syntax for type integer`，现由 core 显式 `CAST` 修复。
+
 ## 1.1.0 (2026-09-12)
 
 宿主接入守卫（对齐 py-store `c44001e` / rust-store `ab643f4`，依赖 `rust-store-node`>=1.0.0）。

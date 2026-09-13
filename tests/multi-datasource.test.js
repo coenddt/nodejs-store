@@ -205,8 +205,8 @@ test('B4: 同连接双 namespace（attached db），各自命中不串表', asyn
   const db = new Database(':memory:');
   db.exec("ATTACH ':memory:' AS app_a");
   db.exec("ATTACH ':memory:' AS app_b");
-  db.exec('CREATE TABLE app_a.b4_rows (_id TEXT PRIMARY KEY, tag TEXT)');
-  db.exec('CREATE TABLE app_b.b4_rows (_id TEXT PRIMARY KEY, tag TEXT)');
+  db.exec('CREATE TABLE app_a.b4_rows (_id TEXT PRIMARY KEY, tag TEXT, __present TEXT)');
+  db.exec('CREATE TABLE app_b.b4_rows (_id TEXT PRIMARY KEY, tag TEXT, __present TEXT)');
 
   _sc.register({
     name: 'B4RowA',
@@ -290,8 +290,8 @@ test('B10: MongoClient 缺 namespace → 显式报错', () => {
 test('B8: routeOverride 多租户路由（insert/query/count 落租户库）', async () => {
   const db = new Database(':memory:');
   db.exec("ATTACH ':memory:' AS tenant_42");
-  db.exec('CREATE TABLE b8_rows (_id TEXT PRIMARY KEY, tag TEXT)');
-  db.exec('CREATE TABLE tenant_42.b8_rows (_id TEXT PRIMARY KEY, tag TEXT)');
+  db.exec('CREATE TABLE b8_rows (_id TEXT PRIMARY KEY, tag TEXT, __present TEXT)');
+  db.exec('CREATE TABLE tenant_42.b8_rows (_id TEXT PRIMARY KEY, tag TEXT, __present TEXT)');
 
   _sc.register({
     name: 'B8Row',
@@ -321,7 +321,7 @@ test('B8: routeOverride 多租户路由（insert/query/count 落租户库）', a
 test('B11: syncSchema({ namespace }) 回写 def 的 namespace，与手动声明等价', async () => {
   const db = new Database(':memory:');
   db.exec("ATTACH ':memory:' AS aux");
-  db.exec('CREATE TABLE aux.b11_widgets (_id TEXT PRIMARY KEY, sku TEXT)');
+  db.exec('CREATE TABLE aux.b11_widgets (_id TEXT PRIMARY KEY, sku TEXT, __present TEXT)');
 
   const defs = await store.syncSchema({
     backend: 'sqlite',
