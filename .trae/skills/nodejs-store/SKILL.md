@@ -20,7 +20,7 @@ npm install nodejs-store
 ```
 
 - 要求 Node.js **>= 18**（`package.json engines`）。
-- 关键依赖 `rust-store-node`（Rust 原生核心绑定，独立仓库 `rust-store/core-node` 发布）。**仓库内开发期**该依赖尚未发布到 npm，用 `LOCAL_CORE=1` 从相邻 `rust-store/core-node/dist` 加载（`src/core.js`；`scripts/test.js` 会自动开启）。
+- 关键依赖 `rust-store-node`（Rust 原生核心绑定，独立仓库 `rust-store/core-node` 发布，**2.0.0 起已上架 npm**）。仓库内开发期优先 `LOCAL_CORE=1` 从相邻 `rust-store/core-node/dist` 加载本地产物，缺失时自动回落 npm 依赖（`src/core.js`；`scripts/test.js` 会自动开启）。
 - 本地开发依赖：`npm install`（devDeps: eslint / c8 / @eslint/js / globals）。
 
 ## 3. 快速上手（与当前 README 一致）
@@ -163,13 +163,13 @@ npm run test:coverage   # c8 覆盖率门禁：statements/lines 90、functions 8
 npm run lint            # eslint（零告警门禁）
 ```
 
-- 测试文件：`tests/test-nodejs-store.js`、`tests/host-contract.test.js`、`tests/guards.test.js`、`tests/multi-datasource.test.js`、`tests/require-context.test.js`、`tests/sql-executor.test.js`、`tests/index-feedback.test.js`、`tests/real-backends-e2e.test.js`、`tests/federation-e2e.test.js`。
+- 测试文件：`tests/test-nodejs-store.js`、`tests/host-contract.test.js`、`tests/guards.test.js`、`tests/multi-datasource.test.js`、`tests/require-context.test.js`、`tests/sql-executor.test.js`、`tests/index-feedback.test.js`、`tests/real-backends-e2e.test.js`、`tests/federation-e2e.test.js`、`tests/scenario-course-platform.test.js`、`tests/store-facade.test.js`。
 - 压测脚本：`scripts/stress.js`。
-- 发布：`.github/workflows/release-npm.yml`，推 `v*` tag；**前置：`rust-store-node` 需已发布**。CI（`.github/workflows/ci.yml`）临时摘除未发布的 `rust-store-node` 依赖并走 `LOCAL_CORE=1` 兜底，再跑 lint + 覆盖率门禁。
+- 发布：`.github/workflows/release-npm.yml`，推 `v*` tag；**前置：`rust-store-node` 需已发布**。CI（`.github/workflows/ci.yml`）`npm ci` 安装含 `rust-store-node` 的真实依赖（2.0.0 起已上架，不再摘除依赖），再跑 lint + 覆盖率门禁。
 
 ## 8. 常见坑
 
-1. **`LOCAL_CORE` 环境变量**：仓库内开发必须 `LOCAL_CORE=1`（且 `NODE_ENV != 'production'`）才能从相邻 `rust-store/core-node/dist` 加载原生核心；生产只从 npm 依赖加载。`npm test` 已自动开启。
+1. **`LOCAL_CORE` 环境变量**：仓库内开发设 `LOCAL_CORE=1`（且 `NODE_ENV != 'production'`）时优先从相邻 `rust-store/core-node/dist` 加载原生核心，该路径不存在则回落到 npm 依赖；生产只从 npm 依赖加载。`npm test` 已自动开启。
 2. **R4 批量写空条件一票否决**：`updateMany` / `remove` 条件为 `{}`、`null`、空逻辑组时**显式拒绝**，绝不落全表。
 3. **`__present` 是 SQL 内部哨兵列**：用于区分「显式 null」与「缺失」，由翻译层注入/消费（PostgreSQL upsert 曾因未限定表名报 `column reference "__present" is ambiguous`，已修）。Host/用户不要触碰。
 4. **Mongo 命令 vs SQL 差异**：`executors.shapeResult` 把 SQL 路径的中立包络塑形为 **mongodb 驱动等价返回值**（如 `{ modifiedCount }` / `{ deletedCount }`），上层 CRUD 对两条路径透明。
