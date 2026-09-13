@@ -7,6 +7,12 @@ name: ci
 # 说明：rust-store-node（Rust 原生核心）已发布到 npm（2.0.0 起），CI 直接安装该依赖。
 # 本地开发走 LOCAL_CORE=1 兜底（scripts/test.js 自动开启，从相邻 rust-store/
 # core-node/dist 加载）；CI 无相邻仓库，兜底自然失败后回落到 npm 依赖（见 src/core.js）。
+#
+# 三库就绪（D2：不静默跳过）：测试套件以真实 MySQL / PostgreSQL / MongoDB 跑
+# real-backends-e2e / federation-e2e / scenario-course-platform，
+# 缺任一后端会走显式 skip 并连带拉低 src/executors、src/introspect 覆盖率、
+# 使门禁失败 —— 故 CI 起三个真实服务，库名/账号与测试默认 URI 对齐
+# （`e2e/e2e123`；MySQL `mongo_store_e2e{,_real,_fed}`，PG `mongo_store_e2e{,_real}`）。
 
 on:
   push:
@@ -21,18 +27,57 @@ jobs:
   lint-test:
     name: lint + test (coverage gate)
     runs-on: ubuntu-latest
-    # 场景矩阵（tests/scenario-course-platform.test.js）以 Mongo 结果作 oracle 对拍
-    # SQL 后端，缺 oracle 时 H/J 组「行集一致性」用例无法判定 —— 故 CI 起真实 mongod。
     services:
       mongo:
         image: mongo:7
         ports:
           - 27017:27017
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_USER: e2e
+          MYSQL_PASSWORD: e2e123
+          MYSQL_DATABASE: mongo_store_e2e
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: e2e
+          POSTGRES_PASSWORD: e2e123
+          POSTGRES_DB: mongo_store_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -h 127.0.0.1 -U e2e"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # 测试用独立库（real / fed）需先建库并授权；服务镜像只创建了 mongo_store_e2e
+      - name: Prepare MySQL databases
+        run: |
+          mysql -h 127.0.0.1 -uroot -proot -e "
+            CREATE DATABASE IF NOT EXISTS mongo_store_e2e_real;
+            CREATE DATABASE IF NOT EXISTS mongo_store_e2e_fed;
+            GRANT ALL ON mongo_store_e2e_real.* TO 'e2e'@'%';
+            GRANT ALL ON mongo_store_e2e_fed.*  TO 'e2e'@'%';
+            FLUSH PRIVILEGES;"
+      - name: Prepare PostgreSQL databases
+        env:
+          PGPASSWORD: e2e123
+        run: |
+          psql -h 127.0.0.1 -U e2e -d postgres -c 'CREATE DATABASE mongo_store_e2e_real';
       - name: Install deps
         run: npm ci --no-audit --no-fund
       - name: Lint

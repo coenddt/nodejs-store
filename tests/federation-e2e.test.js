@@ -164,7 +164,9 @@ describe('跨库联邦 A5/A6', () => {
   });
 
   it('单源（未跨源）联邦查询与单库 query 同形', async (t) => {
-    if (!state.mongoReady) return t.skip(state.reason);
+    // 与 `before` 同条件：FedUser/FedOrder 的注册依赖两库连接均就绪，
+    // 只判 Mongo 会在缺 MySQL 时误把「schema 未注册」当失败（D2：不可用须显式 skip）。
+    if (!state.mongoReady || !state.mysqlReady) return t.skip(state.reason);
 
     const doc = await store.insert('FedUser', { name: 'Solo' });
     const items = await store.queryFederated('FedUser($condition:@c0){_id, name}', { c0: {} });
