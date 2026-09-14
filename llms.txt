@@ -1,0 +1,44 @@
+# nodejs-store
+
+> Lightweight multi-backend data layer for Node.js: pure JSON schemas plus a MongoDB-style GQL tree query dialect that runs on MongoDB, MySQL, SQLite and PostgreSQL, with built-in role-based access control, computed columns and soft-delete.
+
+`nodejs-store` lets a Node.js service define a model once as JSON and query it with a single dialect across MongoDB (native aggregation) and MySQL / PostgreSQL / SQLite (parameterized SQL). Nested relations compile to one native query per backend — no hand-written `$lookup` or JOINs. It is the Node.js host over the shared Rust engine [`rust-store`](https://github.com/coenddt/rust-store) (binding: `rust-store-node`); its Python twin is [`py-store`](https://github.com/coenddt/py-store) (pip `storepy`).
+
+- npm package: `nodejs-store`
+- Runtime: Node.js 18+
+- Backends: MongoDB, MySQL, SQLite, PostgreSQL
+- License: MIT
+
+## When to use it
+
+- One codebase against several databases (MongoDB in dev, PostgreSQL in prod, or per tenant)
+- Nested / relational reads without writing `$lookup` or JOINs
+- Admin backends and internal CRUD services with schema-driven models
+- Row-level and field-level access control (role whitelists, `creator` ownership, owner-condition injection)
+- Multi-tenant SaaS (schema bound to `source` / `namespace`, runtime route override)
+- Migrating between MongoDB and SQL while keeping one query syntax
+- AI / natural-language data-QA layers (plan-only `buildPipeline()`, deterministic command JSON, structured feedback events)
+
+## Docs
+
+- [README](https://github.com/coenddt/nodejs-store#readme): full overview, quick start, GQL syntax, API, schema reference, FAQ
+- [Chinese README](https://github.com/coenddt/nodejs-store/blob/main/README.zh-CN.md): 中文文档
+- [Use cases](https://github.com/coenddt/nodejs-store/tree/main/doc/use-cases): scenario walkthroughs (multi-tenant SaaS, AI data-QA, cross-database migration, admin CRUD)
+- [Scenario test suite](https://github.com/coenddt/nodejs-store/tree/main/example/course-platform): real-data, four-backend scenario cases (fields, relations, computes, permissions, aggregation, boundaries)
+- [CHANGELOG](https://github.com/coenddt/nodejs-store/blob/main/CHANGELOG.md)
+
+## Concepts
+
+- [GQL tree syntax](https://github.com/coenddt/nodejs-store#gql-syntax): `Model($condition:@c0,$sort:@s1,$limit:@l){ field, Relation{ f } }`
+- [Aggregation](https://github.com/coenddt/nodejs-store#aggregation): root-level `$group` / `$having`, relation aggregate predicates (semi/anti-join), relation-rolling computed columns
+- [Query & write API](https://github.com/coenddt/nodejs-store#query--write-api): `query`, `queryOne`, `queryWithCount`, `insert`, `update`, `remove`, `mutation`, `upsert`
+- [Permissions](https://github.com/coenddt/nodejs-store#permission-context): `setContext`, `scopedRoles`, `runAsInternal`, fail-secure `setRequireContext(true)`
+- [Multi-datasource & multi-tenant](https://github.com/coenddt/nodejs-store#multi-datasource-connections): `(source, namespace, collection)` and route override
+- [Schema reference](https://github.com/coenddt/nodejs-store#schema-reference): fields, relations, computes, indexes, read/write whitelists
+- [Advanced API](https://github.com/coenddt/nodejs-store#advanced-api): `buildPipeline`, `syncSchema`, `setFeedbackSink`, low-level modules
+- [Transactions](https://github.com/coenddt/nodejs-store#transaction-boundary): per-source atomicity guarantees
+
+## Optional
+
+- [py-store (Python twin)](https://github.com/coenddt/py-store): same schemas, same GQL, snake_case API
+- [rust-store (shared Rust core)](https://github.com/coenddt/rust-store): GQL parsing, permissions, computed columns, command planning, SQL dialect translation

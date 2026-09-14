@@ -1,0 +1,484 @@
+# nodejs-store — full documentation for LLMs
+
+> Source of truth: https://github.com/coenddt/nodejs-store
+> npm: `nodejs-store` | Node.js 18+ | MIT
+> Backends: MongoDB, MySQL, SQLite, PostgreSQL
+
+This file is a single-file, plain-text snapshot of the nodejs-store documentation, intended
+for direct ingestion by language models. It mirrors README.md plus the FAQ and use-case
+summaries.
+
+---
+
+## 1. What nodejs-store is
+
+nodejs-store is a lightweight, backend-agnostic **data layer** for Node.js (not a full ORM).
+
+You describe each model once as **pure JSON** — `fields`, `relations`, `computes`, `indexes`,
+`read` / `write` role whitelists. From that description the library derives:
+
+- **command planning**: GQL → MongoDB command JSON (`find` / `aggregate` / `countDocuments` / …),
+- **dialect translation**: command JSON → parameterized SQL for MySQL / PostgreSQL / SQLite,
+- **permission checks**: schema-level and field-level read/write, owner-condition injection,
+- **computed columns**: `fn` (sync), `asyncFn` (async), `agg` (relation aggregation),
+- **soft-delete archives**: every schema auto-registers a `<Model>Deleted` collection/table,
+- **result rehydration**: flat JOIN rows → nested documents.
+
+MongoDB is the **primary dialect**: queries are written in a MongoDB-flavoured GQL, and the
+three relational backends adapt to it. That is what makes one schema portable across a
+document store and three relational stores.
+
+### Architecture: three repositories
+
+- `rust-store` — the shared **Rust core engine**. Implements GQL parsing, permission engine,
+  computed columns, command planning and SQL dialect translation. Pure logic, **no IO, no
+  clock, no random source** (`now` / `newId` are passed in by the host).
+- `rust-store-node` (npm) — napi-rs binding exposing the core's command contract to JS hosts.
+- `nodejs-store` (npm) — **this package**: the Node.js host. Owns driver IO, callbacks and
+  placeholder substitution.
+- `py-store` (pip `storepy`, import `py_store`) — the Python asyncio twin of nodejs-store.
+
+Same schemas, same GQL, same semantics across Node and Python.
+
+---
+
+## 2. Installation
+
+```bash
+npm install nodejs-store
+```
+
+Requires Node.js 18+ and one supported backend (MongoDB / MySQL / SQLite / PostgreSQL).
+
+---
+
+## 3. Quick start
+
+```js
+const { MongoClient } = require('mongodb');
+const { init, store } = require('nodejs-store');
+
+const client = new MongoClient('mongodb://localhost:27017');
+await client.connect();
+await init(client.db('mydb')); // idempotently creates indexes for registered schemas
+
+store.register({
+  name: 'Post',
+  collection: 'posts',   // optional, defaults to name
+  idPrefix: 'PT',        // string _id: prefix + base36 timestamp + random
+  fields: {
+    title: { type: 'string', default: '' },
+    status: { type: 'string', default: 'draft' },
+    tags: { type: 'array', default: [] },
+  },
+  computes: {
+    statusLabel: { type: 'string', depends: ['status'], fn: (doc) => (doc.status || '').toUpperCase() },
+  },
+  indexes: [{ keys: { status: 1, createdAt: -1 } }],
+});
+
+const doc = await store.insert('Post', { title: 'Hello' });
+
+const items = await store.query(
+  'Post($condition:@c0,$sort:@s1,$limit:@l) { title, status, statusLabel }',
+  { c0: { status: 'draft' }, s1: { createdAt: -1 }, l: 20 },
+);
+```
+
+The same schema and query run against PostgreSQL — only the datasource changes:
+
+```js
+await init({ default: { kind: 'postgres', exec } });
+const items = await store.query('Post($condition:@c0) { title, status }', { c0: { status: 'draft' } });
+```
+
+---
+
+## 4. Supported backends
+
+| Backend | Notes |
+| --- | --- |
+| MongoDB | native aggregation pipeline (`find` / `aggregate` / `$lookup`) |
+| MySQL | parameterized SQL, `information_schema` introspection |
+| SQLite | parameterized SQL, `sqlite_master` + `PRAGMA` introspection. **Sync driver** (`better-sqlite3`) — calls block the event loop by design; for high-concurrency hot paths prefer MySQL/PostgreSQL/MongoDB or isolate SQLite in its own process |
+| PostgreSQL | parameterized SQL (`$n`), `RETURNING` support |
+
+GQL tree queries compile to a single native query per backend.
+
+---
+
+## 5. GQL tree syntax
+
+```text
+Model($condition:@c0,$sort:@s1,$skip:@sk,$limit:@l1) {
+  field1, field2, obj.subField,
+  Relation($condition:@c2,$sort:@s3,$limit:@l2) { f3, Nested { f4 } }
+}
+```
+
+- Parameter values are referenced from the params object by `@key`: `{ c0: {...}, s1: {...} }`.
+- Object sub-fields use dot notation.
+- Relations are declared in the schema (`type: 'many' | 'one'`) and resolved automatically —
+  never hand-write `$lookup`.
+- `many` relations return arrays (`[]` when empty); `one` relations merge into the parent
+  document (`null` when missing).
+- Relation-level `$sort` / `$skip` / `$limit` are **per-parent top-N** (each parent gets its
+  own window; translated to a SQL window function).
+
+Fixed execution order for grouping queries:
+`$condition` (WHERE) → `$group` (GROUP BY) → `$having` (HAVING) → `$sort` → `$skip`/`$limit` → projection.
+
+> Removing an escape hatch: `$pipeline` passthrough and `store.aggregate()` were removed.
+> A GQL containing `$pipeline` fails explicitly instead of being silently ignored.
+
+---
+
+## 6. Aggregation
+
+Normalized aggregation lives **inside GQL** — there is no separate aggregate API.
+
+### 6.1 Root-level `$group` / `$having`
+
+```js
+const rows = await store.query(
+  'Course($condition:@c0,$group:@g0,$having:@h0,$sort:@s0,$limit:@l0){ status, n, total }',
+  {
+    c0: { status: { $ne: 'deleted' } },
+    g0: { by: ['status'], agg: { n: { $count: '*' }, total: { $sum: 'price' } } },
+    h0: { n: { $gt: 1 } },
+    s0: { total: -1 },
+    l0: 20,
+  },
+);
+```
+
+- Whitelisted operators: `$count` / `$sum` / `$avg` / `$min` / `$max`.
+- `$count` accepts `'*'` (row count) or a scalar field name (non-null count).
+- Omit `by` (or pass `[]`) for a single all-table group; empty input still returns one row
+  (`$count` → `0`, others → `null`).
+- Sorting / pagination apply to the **grouped result**.
+- `$having` must be used with `$group`.
+
+### 6.2 Relation aggregate predicates (semi-join / anti-join)
+
+Filter parents by an aggregate over a relation, **without fanning out**:
+
+```js
+await store.query('Product($condition:@c0,$sort:@s0){ _id, name }', {
+  c0: {
+    $and: [
+      { status: 'onSale' },
+      { orders: { $count: { $gt: 3 } } },
+      { $not: { orders: { $sum: { $of: 'amount', $gt: 10000 } } } },
+    ],
+  },
+  s0: { name: 1 },
+});
+```
+
+- Shorthand form: `{ "<relation>": { $exists: true | false } }`,
+  `{ "$count": { "$of"?: field, "<cmp>": value } }`,
+  `{ "$sum" | "$avg" | "$min" | "$max": { "$of": field, "<cmp>": value } }`, optionally with
+  a `$filter` block.
+- Main form: `{ filter?, agg, having }`.
+- Comparison operators: `$gt` / `$gte` / `$lt` / `$lte` / `$eq` / `$ne`.
+- Semantics: semi-join — parent row count and document shape are unchanged.
+- `$not` around a single relation predicate, or `$exists: false`, means anti-join.
+- Translates to `EXISTS` / `NOT EXISTS` on SQL and `$lookup` + `$match` on MongoDB.
+- Only **one level** of relation is supported (`orders.items.price` is rejected).
+
+### 6.3 Relation-rolling computed columns
+
+Declare once in the schema, request by name in the selection set:
+
+```js
+computes: {
+  itemCount: { type: 'int', agg: { $count: 'items' } },       // 0 when the relation is empty
+  itemsTotal: { type: 'float', agg: { $sum: 'items.qty' } },  // null when empty
+}
+```
+
+Supported `agg` operators: `$count` / `$sum` / `$avg` / `$min` / `$max`.
+
+---
+
+## 7. Query & write API
+
+```js
+const items  = await store.query(gql, params);            // Array
+const one    = await store.queryOne(gql, params);         // object | null
+const page   = await store.queryWithCount(gql, params);   // { items, total, hasMore, page, pageSize }
+const exists = await store.exists('Post', { _id: pid });
+const n      = await store.count('Post', { status: 'active' });
+
+const doc    = await store.insert('Post', { ... });       // auto _id / createdAt / updatedAt
+const docs   = await store.insertMany('Post', [{ ... }, ...]);
+await store.update('Post', { _id: pid }, { status: 'live' });      // plain fields → $set
+await store.update('Post', { _id: pid }, { $inc: { views: 1 } });  // '$'-prefixed keys pass through as operators
+await store.updateMany('Post', { type: t }, { status: 'live' });
+const r      = await store.remove('Post', { _id: pid });  // archives to <collection>_deleted first
+await store.mutation('Post', { ... });                    // smart upsert + recursive relation children
+await store.upsert('Post', { code: 'A1' }, { ... });      // explicit-condition upsert (no relation handling)
+```
+
+Notes:
+
+- `null` / `undefined` values are stripped before persisting; `_id` cannot be changed via `update`.
+- `createdAt` / `updatedAt` (ms) are framework-maintained; do not set them manually.
+- `queryWithCount` accepts `page` / `pageSize` (recommended) or `$skip` / `$limit` params;
+  `pageSize` is capped at 5000.
+- `updateMany` / `remove` with an **empty condition** (`{}`, `null`, `{ "$and": [] }`) is
+  rejected outright — it never falls through to a full-table write.
+
+---
+
+## 8. Permissions
+
+```js
+store.setContext({ userId: uid, roles: ['editor'] });          // once per request
+store.scopedRoles(['viewer'], () => store.query(gql, params));  // nested-safe role scoping
+await store.runAsInternal(() => store.remove('Post', { _id: pid })); // system / cron jobs
+```
+
+- `super_admin` / `admin` / `internal` pass everything.
+- Other roles are checked against schema-level and field-level `read` / `write` whitelists.
+- `guest` can never write.
+- `creator` is a pseudo-role resolved by `doc.createdBy === ctx.userId`; schemas granting it
+  automatically get owner conditions injected on queries and ownership checks on update/remove.
+- No context set → permission checks disabled (backward compatible).
+- Denied access throws `store.PermissionError` with `status = 403`.
+
+### Fail-secure mode (opt-in)
+
+```js
+store.setRequireContext(true);
+// every query/write without a context now throws `ERR_NO_CONTEXT:...`
+await store.runAsInternal(() => store.remove('Post', { _id: pid }));
+```
+
+`runAsInternal` marks the call as `{ internal: true }` (distinct from a missing context, and
+always passes). `setRequireContext(false)` restores the default fail-open behaviour.
+
+---
+
+## 9. Multi-datasource and multi-tenant
+
+Every schema is located by the triple `(source, namespace, collection)`, which must be
+globally unique across the registry (duplicate registration throws instead of silently
+mis-routing).
+
+- `source` — connection key in `init({...})` (default `"default"`).
+- `namespace` — database/schema inside the connection: Mongo db name, PG schema, MySQL
+  database, SQLite attached db. Optional; `null` = connection default.
+- `collection` — table/collection name.
+
+```js
+await init({ mongo_main: db, pg_a: { kind: 'postgres', exec } });
+
+await init({ cluster: client });
+store.register({ name: 'User', collection: 'users', datasource: 'cluster', namespace: 'tenant_42', ... });
+
+// SQL cross-namespace joins are pushed down natively; only Mongo cross-db relations
+// fall back to in-memory federation.
+```
+
+Multi-tenant route override — one schema definition, N tenants:
+
+```js
+await store.query('User($condition:@c0){...}', params, { namespace: 'tenant_42' });
+await store.insert('Order', data, { source: 'pg_cluster', namespace: 'tenant_7' });
+```
+
+**Security note**: `routeOverride` is a trusted server-side parameter with no origin check.
+Forwarding user-controlled input into it lets a caller re-target another tenant's
+`source` / `namespace` (CWE-639 authorization-bypass surface). Never pass raw request data.
+
+---
+
+## 10. Schema reference
+
+```js
+{
+  name: 'Order',
+  collection: 'orders',
+  idPrefix: 'OD',
+  timestamps: true,                  // auto-maintain createdAt / updatedAt (ms)
+  fields: {
+    _id: 'string',                                            // shorthand
+    title: { type: 'string', default: '' },
+    meta: { type: 'object', default: {}, fields: { ... } },   // nested object fields
+  },
+  relations: {
+    items: { model: 'OrderItem', type: 'many', localField: '_id', foreignField: 'orderId' },
+  },
+  computes: {
+    total: { type: 'float', depends: ['amount'], fn: (d) => d.amount * 1.1 },
+    itemCount: { type: 'int', agg: { $count: 'items' } },
+  },
+  indexes: [
+    { keys: { status: 1 } },
+    { keys: { code: 1 }, options: { unique: true } },
+  ],
+  read: ['editor', 'viewer'],
+  write: ['editor'],
+}
+```
+
+Types: `string | int | long | float | double | boolean | array | object | date | any`.
+
+Boundary rules (all fail explicitly, never silently degrade):
+
+- Filtering directly on array fields, on a whole object field, or on object dot-paths is
+  rejected on every backend. Model cross-entity semantics as `relations` instead.
+- Relation predicates support one level of relation only.
+- An unreadable relation is an error, not a silent `false`.
+
+---
+
+## 11. Advanced API
+
+### `store.buildPipeline(gql, params?)`
+
+Compiles GQL to the command plan **without executing it**; returns
+`{ tokens, ast, pipeline, projection }`. Permissions and computes are not applied.
+Useful for debugging query shape, asserting pushdown behaviour, or building tooling such as
+an AI query agent that validates a plan before running it.
+
+```js
+const plan = store.buildPipeline('Post($condition:@c0){ title }', { c0: { status: 'draft' } });
+```
+
+### `store.syncSchema(opts)`
+
+Pulls a SQL backend's physical structure into the registry
+(`introspect → schemaFromRows → mergeSchema(overlay) → register`). It only **reads**
+structure and never writes DDL back.
+
+| Option | Type | Meaning |
+| --- | --- | --- |
+| `backend` | `'mysql' \| 'postgres' \| 'sqlite'` | required |
+| `driver` | object | required; prefer a read-only account |
+| `introspectOptions` | object | passed through to introspection (e.g. PG `schema`) |
+| `overlay` | `Array` | local schemaJSON merged on top (permissions / computes / overrides) |
+| `datasource` | string | bind every merged def to this source |
+| `namespace` | string | bind every merged def to this namespace |
+| `registerDefs` | boolean (default `true`) | `false` = return defs without registering |
+
+### `store.setFeedbackSink(fn)`
+
+Takes over the unified feedback channel for fallback / degradation / interception events.
+Pass `null` to restore the default stderr printer.
+
+```js
+store.setFeedbackSink((e) => logger.warn({ code: e.code }, e.hint));
+// event shape: { type, code, layer, message, hint, ... }
+//   type   federation_degraded | sql_pushdown_unsupported | ...
+//   code   crossSourceSort | pushdownUnsupported | ...
+//   layer  federation | dialect | ...
+```
+
+Non-pushdownable commands also throw `PushdownUnsupportedError`.
+
+### Low-level modules
+
+```js
+const {
+  init, store, Store,
+  PermissionError,
+  PushdownUnsupportedError,
+  datasource, schema, permission, crud, executors, feedback, introspect,
+  syncSchema,
+} = require('nodejs-store');
+
+const rows = await introspect.run('mysql', pool, {});
+await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) });
+```
+
+---
+
+## 12. Transaction boundary
+
+- **Single SQL source**: `mutation` parent-child step sequences and `remove` (archive +
+  delete) run inside one driver transaction on one checked-out connection — any step failure
+  rolls back the whole sequence.
+- **Each SQL write command** is itself atomic (multi-statement plans are transaction-wrapped).
+- **Mongo sources**: single-document writes are atomic; multi-step `mutation` and `remove`
+  run sequentially and are **not** atomic across steps (Mongo transactions require a replica
+  set). Use an SQL source or application-level compensation if you need cross-step atomicity.
+- **Archive idempotency**: `remove` archives with upsert-by-`_id` semantics, so retries after
+  partial failure do not collide.
+- **Cross-source steps** cannot be atomic; they run sequentially by design.
+
+---
+
+## 13. FAQ
+
+**How do I use one schema for both MongoDB and PostgreSQL in Node.js?**
+Define the schema once as JSON, call `init()` with your datasource(s), and run the same GQL
+against either. MongoDB uses native aggregation; MySQL/PostgreSQL/SQLite get parameterized SQL.
+
+**How do I query nested / related data without writing `$lookup` or JOINs?**
+Declare the relation in `relations` (`{ model, type: 'many' | 'one', localField, foreignField }`)
+and reference the relation name in the GQL selection set. It becomes `$lookup` on Mongo and a
+`JOIN` on SQL, returned as nested documents.
+
+**Does it support GROUP BY / COUNT / SUM / AVG?**
+Yes — root-level `$group` / `$having` and relation aggregate predicates are part of GQL.
+Operators: `$count` / `$sum` / `$avg` / `$min` / `$max`, pushed down to all four backends.
+
+**Can I filter parents by an aggregate of their children ("products with more than 3 orders")?**
+Yes — relation aggregate predicates implement semi/anti-join without fanning out; SQL uses
+`EXISTS` / `NOT EXISTS`.
+
+**How do I implement row-level permissions?**
+`store.setContext({ userId, roles })` plus schema-level `read` / `write` whitelists. The
+`creator` pseudo-role adds automatic ownership checks and owner-condition injection. `guest`
+can never write. Enable `setRequireContext(true)` for fail-secure behaviour.
+
+**How do I do soft delete?**
+Every registered model automatically gets a `<Model>Deleted` archive collection/table.
+`store.remove()` archives the document first, then deletes it; the archive write is
+upsert-by-`_id`, so re-creating the same `_id` does not collide.
+
+**Is it usable for multi-tenant applications?**
+Yes. Bind a schema to `(source, namespace, collection)` and pass a `{ source, namespace }`
+route override per request. Treat `routeOverride` as trusted server-side input only.
+
+**Does it run migrations?**
+No. `syncSchema()` only *reads* physical structure via introspection. Schema changes / DDL
+are your migration tool's job.
+
+**Can I see the generated query without running it?**
+Yes — `store.buildPipeline(gql, params)` returns the compiled plan with no execution and no
+permission/compute application.
+
+**What happens when SQL pushdown isn't possible?**
+The command throws `PushdownUnsupportedError` **and** emits a `sql_pushdown_unsupported`
+feedback event. Cross-source pagination/sort degradations emit `federation_degraded` events.
+Nothing fails silently.
+
+**How is it related to py-store and rust-store?**
+`rust-store` is the shared Rust engine (GQL parsing, permissions, computed columns, command
+planning, SQL dialect translation — pure logic, no IO). `nodejs-store` and `py-store` are
+thin hosts in front of it owning driver IO, callbacks and placeholder substitution.
+
+---
+
+## 14. Comparison positioning
+
+Short version: use an ORM when you want compile-time types and migrations; use nodejs-store
+when you want one runtime schema and one query dialect spanning MongoDB and SQL, with RBAC
+and computed columns built in.
+
+| | nodejs-store | Mongoose | Prisma | TypeORM / Sequelize | Drizzle |
+| --- | --- | --- | --- | --- | --- |
+| Primary shape | JSON schema + GQL data layer | ODM (MongoDB) | Schema DSL + generated client | Decorator/entity ORM | TypeScript SQL builder |
+| Backends | MongoDB, MySQL, SQLite, PostgreSQL | MongoDB | PostgreSQL, MySQL, SQLite, SQL Server, MongoDB, CockroachDB | MySQL, PostgreSQL, SQLite, MSSQL, Oracle (+ MongoDB) | PostgreSQL, MySQL, SQLite, … |
+| One query dialect across Mongo and SQL | yes | no (Mongo only) | no (one client per provider) | partial | no (SQL only) |
+| Nested relation reads in one query | yes | yes (`populate()`) | yes (`include`) | yes | manual joins |
+| Built-in role / field-level RBAC + owner injection | yes | no | no (via extensions) | no | no |
+| Read-time computed columns (sync / async / relation-agg) | yes | getters only | no | no | no |
+| Soft-delete archive table auto-provisioned | yes | no | no | no | no |
+| Migration / DDL engine | no (introspection read-only) | no | yes | yes | yes |
+| Static type generation | no (runtime JSON, cross-language parity) | no | yes | partial | yes |
+| Shared native core across Node and Python | yes (Rust `rust-store`) | no | no | no | no |
