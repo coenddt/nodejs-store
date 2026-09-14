@@ -482,3 +482,25 @@ and computed columns built in.
 | Migration / DDL engine | no (introspection read-only) | no | yes | yes | yes |
 | Static type generation | no (runtime JSON, cross-language parity) | no | yes | partial | yes |
 | Shared native core across Node and Python | yes (Rust `rust-store`) | no | no | no | no |
+
+---
+
+## 15. Scenario walkthroughs
+
+Step-by-step use cases live in
+[`doc/use-cases/`](https://github.com/coenddt/nodejs-store/tree/main/doc/use-cases):
+
+1. **Multi-tenant SaaS** — bind a schema to `(source, namespace, collection)` and re-target each
+   request with a trusted `{ source, namespace }` route override.
+2. **AI data-QA agent** — compile and validate a GQL plan with `buildPipeline()` before
+   executing it, and capture degraded / non-pushdownable paths with `setFeedbackSink()`.
+3. **MongoDB → PostgreSQL migration** — same schema, same GQL, only the `init()` datasource
+   changes; introspect the physical structure read-only with `syncSchema()`.
+4. **Admin CRUD backend** — schema-driven CRUD with computed columns, soft-delete archives,
+   role whitelists, the `creator` pseudo-role and `queryWithCount` pagination.
+5. **Avoiding N+1 reads** — one nested GQL read instead of a parent-then-children loop (a single
+   `$lookup` aggregation on MongoDB, a single `LEFT JOIN` statement on SQL), including when the
+   planner switches to a two-phase read.
+6. **Serverless and connection reuse** — hoist `init()` and schema registration, keep the driver
+   client warm across invocations, and isolate each request with `setContext` plus fail-secure
+   `setRequireContext(true)`.
