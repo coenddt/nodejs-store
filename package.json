@@ -1,9 +1,8 @@
 {
   "name": "nodejs-store",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "Multi-backend data layer for Node.js (MongoDB, MySQL, SQLite, PostgreSQL): pure JSON schemas, GQL tree queries compiled to a single native query, GROUP BY/HAVING aggregation, computed columns, soft-delete and role-based access control",
   "main": "src/index.js",
-  "homepage": "https://coenddt.github.io/nodejs-store/",
   "files": [
     "src",
     "README.md",
@@ -57,7 +56,7 @@
   "bugs": {
     "url": "https://github.com/coenddt/nodejs-store/issues"
   },
-  "homepage": "https://github.com/coenddt/nodejs-store#readme",
+  "homepage": "https://coenddt.github.io/nodejs-store/",
   "engines": {
     "node": ">=18"
   },
