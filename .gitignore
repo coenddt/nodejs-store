@@ -9,3 +9,8 @@ tmp/
 *.tgz
 .env
 .env.*
+
+# GitHub Pages build artifacts (see .github/pages/assemble.sh)
+/_config.yml
+/_site/
+/_site_src/

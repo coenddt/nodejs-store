@@ -1,0 +1,30 @@
+title: "nodejs-store"
+tagline: "One data layer for MongoDB, MySQL, SQLite and PostgreSQL"
+description: >-
+  nodejs-store is a Node.js data layer that defines each model once as a pure JSON schema and
+  queries it with one MongoDB-style GQL tree dialect across MongoDB, MySQL, SQLite and PostgreSQL.
+  Nested relations compile to a single native query per backend, with role-based access control,
+  computed columns and soft-delete built into the schema.
+url: "https://coenddt.github.io"
+baseurl: "/nodejs-store"
+repository: "coenddt/nodejs-store"
+registry_url: "https://www.npmjs.com/package/nodejs-store"
+registry_label: "npm"
+install: "npm install nodejs-store"
+lang: en
+
+markdown: kramdown
+kramdown:
+  input: GFM
+  hard_wrap: false
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor

@@ -13,6 +13,8 @@
 > Also looking for the Python version? See [`py-store`](https://github.com/coenddt/py-store) (pip `storepy`). Both are thin hosts over the shared Rust engine [`rust-store`](https://github.com/coenddt/rust-store).
 > 中文文档见 [README.zh-CN.md](README.zh-CN.md)。
 
+**Documentation site:** <https://coenddt.github.io/nodejs-store/> — every scenario walkthrough with runnable code and the engine's exact limits, one indexable page per scenario.
+
 ---
 
 ## Table of contents
