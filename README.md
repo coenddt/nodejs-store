@@ -2,6 +2,12 @@
 
 **One data layer for MongoDB, MySQL, SQLite and PostgreSQL — define models as pure JSON, query them with a MongoDB-style GQL tree syntax, and get role-based access control, computed columns and soft-delete out of the box.**
 
+![npm version](https://img.shields.io/npm/v/nodejs-store)
+![license](https://img.shields.io/npm/l/nodejs-store)
+![node](https://img.shields.io/node/v/nodejs-store)
+![backends](https://img.shields.io/badge/backends-MongoDB%20%7C%20MySQL%20%7C%20SQLite%20%7C%20PostgreSQL-blue)
+![query dialect](https://img.shields.io/badge/query%20dialect-GQL%20(MongoDB--flavoured)-green)
+
 `nodejs-store` lets a Node.js service talk to MongoDB (native aggregation), MySQL, PostgreSQL and SQLite through a **single schema definition and a single query dialect**. Nested relations compile to **one native query per backend** — you never hand-write `$lookup` or raw SQL.
 
 > Also looking for the Python version? See [`py-store`](https://github.com/coenddt/py-store) (pip `storepy`). Both are thin hosts over the shared Rust engine [`rust-store`](https://github.com/coenddt/rust-store).
@@ -42,6 +48,26 @@ A lightweight, backend-agnostic data layer for Node.js. You describe your models
 - **computed columns**, **soft-delete archives**, and **result rehydration** (flat JOIN rows → nested documents).
 
 MongoDB is the *primary dialect*: queries are written in a MongoDB-flavoured GQL, and the three relational backends adapt to it. That is what makes one schema portable across a document store and three relational stores.
+
+### How it relates to py-store and rust-store
+
+```
+                 ┌──────────────────────────────┐
+   Node.js  ──▶  │  nodejs-store (npm, host)    │ -┐
+                 └──────────────────────────────┘  │  rust-store-node (napi-rs)
+                                                   ▼
+                                     ┌───────────────────────────────┐
+                                     │ rust-store/core (pure logic)  │
+                                     │ GQL · permissions · computes  │
+                                     │ command planning · dialects   │
+                                     └───────────────────────────────┘
+                                                   ▲
+                 ┌──────────────────────────────┐  │  rust-store-py (PyO3)
+   Python   ──▶  │  py-store (pip, host)        │ -┘
+                 └──────────────────────────────┘
+```
+
+The **Rust core** owns GQL parsing, permission checks, computed columns, command planning and SQL dialect translation — it never touches a database. The **hosts** (`nodejs-store`, `py-store`) own driver IO, callbacks and placeholder substitution. Behaviour therefore cannot drift between Node.js and Python: there is only one implementation.
 
 ## When to use it
 
@@ -92,6 +118,16 @@ General positioning, not a benchmark — always verify against each tool's curre
 | Migration / DDL engine | ➖ (introspection read-only) | ➖ | ✅ | ✅ | ✅ |
 | Static type generation | ➖ (runtime JSON, cross-language parity) | ➖ | ✅ | ⚠️ (decorators + TS) | ✅ |
 | Shared native core across Node & Python | ✅ (Rust `rust-store`) | ➖ | ➖ | ➖ | ➖ |
+
+### How it differs from specific libraries
+
+Positioning only, based on those projects' public documentation at the time of writing — verify against your own requirements.
+
+- **vs Mongoose** — Mongoose is MongoDB-only. `nodejs-store` uses a similar MongoDB-style query syntax (`$gt`, `$or`, `$set`, `$inc`) but the same query also runs unchanged against MySQL, SQLite and PostgreSQL.
+- **vs `mongoosql-core`** — the closest in spirit: it also runs Mongoose-style queries on MongoDB, PostgreSQL and MySQL. `nodejs-store` additionally targets SQLite, ships schema-level permissions (role/field whitelists plus `creator` owner-condition injection), read-time computed columns (`fn` / `asyncFn` / relation-`agg`), an auto-provisioned `<Model>Deleted` soft-delete archive, and shares one Rust engine with a Python host so Node.js and Python cannot drift apart.
+- **vs `unsql`** — `unsql` generates SQL from plain JavaScript objects for MySQL, PostgreSQL and SQLite. It does not target MongoDB, and it is a query/CRUD helper rather than a schema-driven data layer with permissions and computed columns.
+- **vs Prisma** — Prisma is a schema DSL plus generated client with a migration engine and compile-time types. `nodejs-store` is a runtime JSON schema with no DDL or migration responsibility (it only *reads* physical structure via introspection) and no type generation — in exchange for one query dialect spanning a document store and three relational stores.
+- **vs TypeORM / Sequelize / Drizzle** — Sequelize and Drizzle are SQL-only; TypeORM models MongoDB separately from its SQL entities. `nodejs-store` treats MongoDB as the primary dialect and compiles the same GQL to SQL for the other three backends.
 
 Short version: use an ORM when you want **compile-time types and migrations**; use `nodejs-store` when you want **one runtime schema + one query dialect spanning MongoDB and SQL**, with RBAC and computed columns built in.
 

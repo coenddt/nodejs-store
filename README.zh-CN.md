@@ -2,6 +2,12 @@
 
 **面向 MongoDB、MySQL、SQLite 与 PostgreSQL 的统一数据层 —— 用纯 JSON 定义模型，用 MongoDB 风格的 GQL 树语法查询，开箱即得基于角色的访问控制、计算列与软删除。**
 
+![npm version](https://img.shields.io/npm/v/nodejs-store)
+![license](https://img.shields.io/npm/l/nodejs-store)
+![node](https://img.shields.io/node/v/nodejs-store)
+![backends](https://img.shields.io/badge/backends-MongoDB%20%7C%20MySQL%20%7C%20SQLite%20%7C%20PostgreSQL-blue)
+![query dialect](https://img.shields.io/badge/query%20dialect-GQL%20(MongoDB--flavoured)-green)
+
 > English docs: [README.md](README.md)
 
 `nodejs-store` 让 Node.js 服务通过**单一 schema 定义、单一查询方言**同时对接 MongoDB（原生聚合）、MySQL、PostgreSQL 与 SQLite。嵌套关系会编译为**每个后端一条原生查询** —— 你永远不必手写 `$lookup` 或原生 SQL。
@@ -43,6 +49,26 @@
 - **计算列**、**软删除归档**，以及**结果还原**（扁平 JOIN 行 → 嵌套文档）。
 
 MongoDB 是*主方言*：查询以 MongoDB 风格的 GQL 编写，三种关系型后端向它适配。这正是让同一份 schema 可同时运行在文档库与三种关系库上的原因。
+
+### 与 py-store、rust-store 的关系
+
+```
+                 ┌──────────────────────────────┐
+   Node.js  ──▶  │  nodejs-store (npm, host)    │ -┐
+                 └──────────────────────────────┘  │  rust-store-node (napi-rs)
+                                                   ▼
+                                     ┌───────────────────────────────┐
+                                     │ rust-store/core (pure logic)  │
+                                     │ GQL · permissions · computes  │
+                                     │ command planning · dialects   │
+                                     └───────────────────────────────┘
+                                                   ▲
+                 ┌──────────────────────────────┐  │  rust-store-py (PyO3)
+   Python   ──▶  │  py-store (pip, host)        │ -┘
+                 └──────────────────────────────┘
+```
+
+**Rust 核心**负责 GQL 解析、权限校验、计算列、命令规划与 SQL 方言翻译 —— 它从不接触数据库。**宿主**（`nodejs-store`、`py-store`）负责驱动 IO、回调与占位符替换。因此 Node.js 与 Python 之间不会出现行为漂移：只有一份实现。
 
 ## 什么时候该用它
 
@@ -93,6 +119,16 @@ MongoDB 是*主方言*：查询以 MongoDB 风格的 GQL 编写，三种关系�
 | 迁移 / DDL 引擎 | ➖（introspection 只读） | ➖ | ✅ | ✅ | ✅ |
 | 静态类型生成 | ➖（运行时 JSON，跨语言一致） | ➖ | ✅ | ⚠️（装饰器 + TS） | ✅ |
 | Node 与 Python 共享原生核心 | ✅（Rust `rust-store`） | ➖ | ➖ | ➖ | ➖ |
+
+### 与具体库的差异
+
+仅为定位说明，基于撰写时这些项目的公开文档 —— 请以你自己的需求为准进行核实。
+
+- **vs Mongoose** —— Mongoose 仅支持 MongoDB。`nodejs-store` 使用类似的 MongoDB 风格查询语法（`$gt`、`$or`、`$set`、`$inc`），但同一条查询也能原样跑在 MySQL、SQLite 与 PostgreSQL 上。
+- **vs `mongoosql-core`** —— 精神上最接近：它同样能在 MongoDB、PostgreSQL 与 MySQL 上运行 Mongoose 风格的查询。`nodejs-store` 还额外面向 SQLite，内置 schema 级权限（角色/字段白名单，外加 `creator` 属主条件注入）、读时计算列（`fn` / `asyncFn` / 关系 `agg`）、自动置备的 `<Model>Deleted` 软删除归档，并与 Python 宿主共享同一个 Rust 引擎，因此 Node.js 与 Python 不会产生漂移。
+- **vs `unsql`** —— `unsql` 从普通 JavaScript 对象为 MySQL、PostgreSQL 与 SQLite 生成 SQL。它不面向 MongoDB，且只是一个查询/CRUD 辅助工具，而非带权限与计算列的 schema 驱动数据层。
+- **vs Prisma** —— Prisma 是 schema DSL 加生成的客户端，配有迁移引擎与编译期类型。`nodejs-store` 是运行时 JSON schema，不承担 DDL 或迁移职责（仅通过 introspection *读取*物理结构），也不生成类型 —— 以此换取一套横跨文档库与三种关系库的查询方言。
+- **vs TypeORM / Sequelize / Drizzle** —— Sequelize 与 Drizzle 仅支持 SQL；TypeORM 把 MongoDB 与其 SQL 实体分开建模。`nodejs-store` 以 MongoDB 为主方言，并把同一份 GQL 编译为其余三种后端的 SQL。
 
 一句话：想要**编译期类型与迁移**就用 ORM；想要**一份运行时 schema + 一套横跨 MongoDB 与 SQL 的查询方言**，并内置 RBAC 与计算列，就用 `nodejs-store`。
 
