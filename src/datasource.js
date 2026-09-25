@@ -235,6 +235,39 @@ async function execSql(source, connection, cmd) {
   return executors.shapeResult(cmd, out);
 }
 
+/** 原生 SQL 入口的显式错误（非 SQL 源 / 执行器未接入） */
+class RawSqlError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'RawSqlError';
+  }
+}
+
+/**
+ * 在指定 SQL 源上执行原生 SQL（Host 层逃生口，绕开 core 的 dialectTranslate）
+ *
+ *   - 事务作用域内经 `connectionFor` 落到事务专用连接 → 支持 SELECT ... FOR UPDATE；
+ *   - 占位符沿用各后端原生风格（mysql/sqlite 用 `?`，postgres 用 `$1..$n`）；
+ *   - 仅支持 SQL 源；Mongo 源显式报错（绝不静默）；
+ *   - `isWrite=false` 视为读（取行）；`true` 视为写（取影响行数）；
+ *   - 返回 `{ rows, affectedRows }`。
+ *   对齐 py_store/datasource.py#execute_raw。
+ */
+async function executeRaw(source, sql, params = [], isWrite = false) {
+  const conn = connectionFor(source);
+  if (!conn || typeof conn.kind !== 'string') {
+    throw new RawSqlError(
+      `数据源 ${source} 不是 SQL 源（原生 SQL 入口仅支持 mysql/postgres/sqlite）`,
+    );
+  }
+  if (typeof conn.exec !== 'function') {
+    throw new RawSqlError(`SQL 数据源 ${source}(${conn.kind}) 的执行器未接入`);
+  }
+  const stmt = { text: sql, params: Array.from(params || []), isWrite: Boolean(isWrite) };
+  const out = await conn.exec({ stmts: [stmt] });
+  return { rows: out.rows ?? null, affectedRows: Number(out.affectedRows || 0) };
+}
+
 module.exports = {
   DEFAULT_SOURCE,
   setConnections,
@@ -250,5 +283,7 @@ module.exports = {
   dbOfSchema,
   route,
   execSql,
+  executeRaw,
   PushdownUnsupportedError,
+  RawSqlError,
 };
