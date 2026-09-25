@@ -98,7 +98,7 @@ Typical concrete scenarios (see [`doc/use-cases/`](doc/use-cases/) for full walk
 
 Being explicit about the boundary saves you time:
 
-- **You want a full ORM with a migration engine.** `nodejs-store` is a *data layer*, not a migration tool. It can **read** a SQL backend's physical structure (`syncSchema` → introspection) but it never writes DDL back. Pair it with your migration tool of choice.
+- **You want a full ORM with a migration engine.** `nodejs-store` is a *data layer*, not a migration tool. It can **read** a SQL backend's physical structure (`syncSchema` → introspection) but it never writes DDL back. Pair it with your migration tool of choice. There is an optional `generateDdl()` that renders `CREATE TABLE` text from your registered schemas — pure text, it never connects to or writes to the database.
 - **You need a type-safe generated client.** Schemas are runtime JSON, not TypeScript types. You get flexibility and cross-language parity (same schema runs in Node and Python), not compile-time type inference.
 - **You only ever use one database and rarely join.** A plain driver (or a single-database ODM/ORM) will be simpler.
 - **You need raw aggregation escape hatches.** `$pipeline` passthrough and `store.aggregate()` were deliberately removed. Use `$condition` / `$group` / `$having` / relations; anything that cannot be safely translated fails **explicitly** rather than silently.
@@ -117,7 +117,7 @@ General positioning, not a benchmark — always verify against each tool's curre
 | Built-in role / field-level RBAC + owner injection | ✅ | ➖ | ➖ (via extensions) | ➖ | ➖ |
 | Read-time computed columns (sync / async / relation-agg) | ✅ | ➖ (getters) | ➖ | ➖ | ➖ |
 | Soft-delete archive table auto-provisioned | ✅ | ➖ | ➖ | ➖ | ➖ |
-| Migration / DDL engine | ➖ (introspection read-only) | ➖ | ✅ | ✅ | ✅ |
+| Migration / DDL engine | ➖ (introspection read-only; optional `generateDdl` text) | ➖ | ✅ | ✅ | ✅ |
 | Static type generation | ➖ (runtime JSON, cross-language parity) | ➖ | ✅ | ⚠️ (decorators + TS) | ✅ |
 | Shared native core across Node & Python | ✅ (Rust `rust-store`) | ➖ | ➖ | ➖ | ➖ |
 
@@ -128,7 +128,7 @@ Positioning only, based on those projects' public documentation at the time of w
 - **vs Mongoose** — Mongoose is MongoDB-only. `nodejs-store` uses a similar MongoDB-style query syntax (`$gt`, `$or`, `$set`, `$inc`) but the same query also runs unchanged against MySQL, SQLite and PostgreSQL.
 - **vs `mongoosql-core`** — the closest in spirit: it also runs Mongoose-style queries on MongoDB, PostgreSQL and MySQL. `nodejs-store` additionally targets SQLite, ships schema-level permissions (role/field whitelists plus `creator` owner-condition injection), read-time computed columns (`fn` / `asyncFn` / relation-`agg`), an auto-provisioned `<Model>Deleted` soft-delete archive, and shares one Rust engine with a Python host so Node.js and Python cannot drift apart.
 - **vs `unsql`** — `unsql` generates SQL from plain JavaScript objects for MySQL, PostgreSQL and SQLite. It does not target MongoDB, and it is a query/CRUD helper rather than a schema-driven data layer with permissions and computed columns.
-- **vs Prisma** — Prisma is a schema DSL plus generated client with a migration engine and compile-time types. `nodejs-store` is a runtime JSON schema with no DDL or migration responsibility (it only *reads* physical structure via introspection) and no type generation — in exchange for one query dialect spanning a document store and three relational stores.
+- **vs Prisma** — Prisma is a schema DSL plus generated client with a migration engine and compile-time types. `nodejs-store` is a runtime JSON schema with no migration engine (it only *reads* physical structure via introspection, and `generateDdl()` only *renders* `CREATE TABLE` text without touching the database) and no type generation — in exchange for one query dialect spanning a document store and three relational stores.
 - **vs TypeORM / Sequelize / Drizzle** — Sequelize and Drizzle are SQL-only; TypeORM models MongoDB separately from its SQL entities. `nodejs-store` treats MongoDB as the primary dialect and compiles the same GQL to SQL for the other three backends.
 
 Short version: use an ORM when you want **compile-time types and migrations**; use `nodejs-store` when you want **one runtime schema + one query dialect spanning MongoDB and SQL**, with RBAC and computed columns built in.
@@ -301,6 +301,38 @@ Notes:
 - `createdAt`/`updatedAt` (ms) are framework-maintained — do not set them manually.
 - `queryWithCount` accepts `page`/`pageSize` (recommended) or the traditional `$skip`/`$limit` params.
 - `updateMany` / `remove` with an **empty condition** (`{}`, `null`, `{ "$and": [] }`) is rejected outright — it never falls through to a full-table write.
+
+### Transactions and raw SQL
+
+```js
+async function transfer() {
+  const rows = await store.executeRaw(
+    'default', 'SELECT * FROM accounts WHERE _id = ? FOR UPDATE', [accId]);
+  await store.executeRaw(
+    'default', 'UPDATE accounts SET balance = ? WHERE _id = ?', [newBalance, accId],
+    true);
+}
+
+await store.transaction('default', transfer);
+```
+
+- `store.transaction(source, fn)` opens a transaction scope on one SQL source: every `executeRaw` / CRUD call inside `fn` lands on that source's transaction connection, with `commit` / `rollback` as one unit (reuses the internal `runInTransaction`). Mongo sources or executors without transactions run `fn` as-is — it never pretends to be atomic.
+- `store.executeRaw(source, sql, params, isWrite)` runs raw SQL, bypassing GQL parsing and dialect translation. Placeholders follow each backend's native style: `?` for MySQL / SQLite, `$1..$n` for PostgreSQL. SQL sources only — a Mongo source throws `RawSqlError` (`store.RawSqlError`).
+- `isWrite=false` (default) returns `{ rows, affectedRows }` with the result-set rows; `isWrite=true` returns the affected-row count.
+
+### DDL generation
+
+```js
+let sql = store.generateDdl('mysql');                       // every registered model
+sql     = store.generateDdl('postgres', ['Course', 'CourseDeleted']);
+```
+
+`store.generateDdl(backend, names)` maps one registered schema def to one `CREATE TABLE` — the inverse of `syncSchema()`, which only *reads*. The generator is **pure text**: it never connects to, or writes to, the database (iron rule 6 still holds).
+
+- Only scalar fields become columns; `object` / `array` fields do not.
+- Every table gets the `__present` sentinel column; `timestamps` models also get `createdAt` / `updatedAt`; the `<collection>_deleted` archive table is generated like any other registered def.
+- No `CREATE INDEX` is emitted — SQL backends keep indexes as metadata only.
+- MySQL `__present` is `VARCHAR(255)`; a schema whose present-token string would overflow emits a `ddlPresentOverflow` feedback event rather than failing silently.
 
 ## Multi-datasource connections
 
@@ -528,7 +560,7 @@ Every registered model automatically gets a `<Model>Deleted` archive collection/
 Yes. Bind a schema to `(source, namespace, collection)` and pass a `{ source, namespace }` route override per request. Treat `routeOverride` as trusted server-side input only.
 
 **Does it run migrations?**
-No. `syncSchema()` only *reads* physical structure via introspection (introspect → merge overlay → register). Schema changes / DDL are your migration tool's job.
+No. `syncSchema()` only *reads* physical structure via introspection (introspect → merge overlay → register). Schema changes / DDL are your migration tool's job. If you want a starting point, `store.generateDdl(backend)` renders `CREATE TABLE` text from the registered schemas — but it is pure text generation: it never runs or writes DDL.
 
 **Can I see the generated query without running it?**
 Yes — `store.buildPipeline(gql, params)` returns the compiled plan (`{ tokens, ast, pipeline, projection }`) with no execution and no permission/compute application.

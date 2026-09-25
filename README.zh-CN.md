@@ -97,7 +97,7 @@ MongoDB 是*主方言*：查询以 MongoDB 风格的 GQL 编写，三种关系�
 
 明确边界能为你省下时间：
 
-- **你想要带迁移引擎的完整 ORM。** `nodejs-store` 是*数据层*，不是迁移工具。它可以**读取** SQL 后端的物理结构（`syncSchema` → introspection），但从不把 DDL 写回。请与你自选的迁移工具搭配使用。
+- **你想要带迁移引擎的完整 ORM。** `nodejs-store` 是*数据层*，不是迁移工具。它可以**读取** SQL 后端的物理结构（`syncSchema` → introspection），但从不把 DDL 写回。请与你自选的迁移工具搭配使用。另有一个可选的 `generateDdl()`，可从已注册 schema 渲染出 `CREATE TABLE` 文本 —— 纯文本，绝不连接或写入数据库。
 - **你需要带类型安全、自动生成的客户端。** schema 是运行时 JSON，而非 TypeScript 类型。你获得的是灵活性与跨语言一致性（同一份 schema 在 Node 与 Python 中都可用），而不是编译期类型推断。
 - **你只用一种数据库，且几乎不做关联。** 直接用裸驱动（或只针对单一数据库的 ODM/ORM）会更简单。
 - **你需要原生聚合逃生舱。** `$pipeline` 透传与 `store.aggregate()` 已被有意移除。请使用 `$condition` / `$group` / `$having` / 关系；任何无法安全翻译的内容都会**显式**失败，而不会静默降级。
@@ -116,7 +116,7 @@ MongoDB 是*主方言*：查询以 MongoDB 风格的 GQL 编写，三种关系�
 | 内置角色 / 字段级 RBAC + 属主注入 | ✅ | ➖ | ➖（通过扩展） | ➖ | ➖ |
 | 读时计算列（同步 / 异步 / 关系聚合） | ✅ | ➖（getter） | ➖ | ➖ | ➖ |
 | 自动置备软删除归档表 | ✅ | ➖ | ➖ | ➖ | ➖ |
-| 迁移 / DDL 引擎 | ➖（introspection 只读） | ➖ | ✅ | ✅ | ✅ |
+| 迁移 / DDL 引擎 | ➖（introspection 只读；可选 `generateDdl` 文本） | ➖ | ✅ | ✅ | ✅ |
 | 静态类型生成 | ➖（运行时 JSON，跨语言一致） | ➖ | ✅ | ⚠️（装饰器 + TS） | ✅ |
 | Node 与 Python 共享原生核心 | ✅（Rust `rust-store`） | ➖ | ➖ | ➖ | ➖ |
 
@@ -127,7 +127,7 @@ MongoDB 是*主方言*：查询以 MongoDB 风格的 GQL 编写，三种关系�
 - **vs Mongoose** —— Mongoose 仅支持 MongoDB。`nodejs-store` 使用类似的 MongoDB 风格查询语法（`$gt`、`$or`、`$set`、`$inc`），但同一条查询也能原样跑在 MySQL、SQLite 与 PostgreSQL 上。
 - **vs `mongoosql-core`** —— 精神上最接近：它同样能在 MongoDB、PostgreSQL 与 MySQL 上运行 Mongoose 风格的查询。`nodejs-store` 还额外面向 SQLite，内置 schema 级权限（角色/字段白名单，外加 `creator` 属主条件注入）、读时计算列（`fn` / `asyncFn` / 关系 `agg`）、自动置备的 `<Model>Deleted` 软删除归档，并与 Python 宿主共享同一个 Rust 引擎，因此 Node.js 与 Python 不会产生漂移。
 - **vs `unsql`** —— `unsql` 从普通 JavaScript 对象为 MySQL、PostgreSQL 与 SQLite 生成 SQL。它不面向 MongoDB，且只是一个查询/CRUD 辅助工具，而非带权限与计算列的 schema 驱动数据层。
-- **vs Prisma** —— Prisma 是 schema DSL 加生成的客户端，配有迁移引擎与编译期类型。`nodejs-store` 是运行时 JSON schema，不承担 DDL 或迁移职责（仅通过 introspection *读取*物理结构），也不生成类型 —— 以此换取一套横跨文档库与三种关系库的查询方言。
+- **vs Prisma** —— Prisma 是 schema DSL 加生成的客户端，配有迁移引擎与编译期类型。`nodejs-store` 是运行时 JSON schema，不承担迁移引擎职责（仅通过 introspection *读取*物理结构，`generateDdl()` 也只*渲染* `CREATE TABLE` 文本而不触碰数据库），也不生成类型 —— 以此换取一套横跨文档库与三种关系库的查询方言。
 - **vs TypeORM / Sequelize / Drizzle** —— Sequelize 与 Drizzle 仅支持 SQL；TypeORM 把 MongoDB 与其 SQL 实体分开建模。`nodejs-store` 以 MongoDB 为主方言，并把同一份 GQL 编译为其余三种后端的 SQL。
 
 一句话：想要**编译期类型与迁移**就用 ORM；想要**一份运行时 schema + 一套横跨 MongoDB 与 SQL 的查询方言**，并内置 RBAC 与计算列，就用 `nodejs-store`。
@@ -300,6 +300,38 @@ await store.upsert('Post', { code: 'A1' }, { ... });      // 显式条件的 ups
 - `createdAt`/`updatedAt`（毫秒）由框架维护 —— 不要手动设置。
 - `queryWithCount` 接受 `page`/`pageSize`（推荐）或传统的 `$skip`/`$limit` 参数。
 - 带**空条件**（`{}`、`null`、`{ "$and": [] }`）的 `updateMany` / `remove` 会被直接拒绝 —— 它绝不会退化为全表写入。
+
+### 事务与原生 SQL
+
+```js
+async function transfer() {
+  const rows = await store.executeRaw(
+    'default', 'SELECT * FROM accounts WHERE _id = ? FOR UPDATE', [accId]);
+  await store.executeRaw(
+    'default', 'UPDATE accounts SET balance = ? WHERE _id = ?', [newBalance, accId],
+    true);
+}
+
+await store.transaction('default', transfer);
+```
+
+- `store.transaction(source, fn)` 在单个 SQL 源上开启事务作用域：`fn` 内的每个 `executeRaw` / CRUD 调用都落到该源的事务连接，`commit` / `rollback` 作为一个整体（复用内部的 `runInTransaction`）。Mongo 源或不支持事务的执行器会按原样执行 `fn` —— 绝不假装已原子。
+- `store.executeRaw(source, sql, params, isWrite)` 执行原生 SQL，绕开 GQL 解析与方言翻译。占位符沿用各后端原生风格：MySQL / SQLite 用 `?`，PostgreSQL 用 `$1..$n`。仅限 SQL 源 —— Mongo 源会抛出 `RawSqlError`（`store.RawSqlError`）。
+- `isWrite=false`（默认）返回 `{ rows, affectedRows }` 含结果集行；`isWrite=true` 返回影响行数。
+
+### DDL 生成
+
+```js
+let sql = store.generateDdl('mysql');                       // 所有已注册模型
+sql     = store.generateDdl('postgres', ['Course', 'CourseDeleted']);
+```
+
+`store.generateDdl(backend, names)` 把一个已注册 schema def 映射为一条 `CREATE TABLE` —— 是 `syncSchema()`（只*读取*）的逆操作。生成器是**纯文本**：它绝不连接、也绝不写入数据库（铁律 6 依然成立）。
+
+- 只有标量字段成为列；`object` / `array` 字段不建列。
+- 每张表都会获得 `__present` 哨兵列；`timestamps` 模型还会获得 `createdAt` / `updatedAt`；`<collection>_deleted` 归档表与其它已注册 def 一样生成。
+- 不生成 `CREATE INDEX` —— SQL 后端仅把索引保留为元数据。
+- MySQL 的 `__present` 为 `VARCHAR(255)`；若某 schema 的 present 令牌串会超限，则发出 `ddlPresentOverflow` 反馈事件，而非静默失败。
 
 ## 多数据源连接
 
@@ -525,7 +557,7 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
 可以。把 schema 绑定到 `(source, namespace, collection)`，并按请求传入 `{ source, namespace }` 路由覆盖。仅把 `routeOverride` 当作受信的服务端输入。
 
 **它会执行迁移吗？**
-不会。`syncSchema()` 只通过 introspection *读取*物理结构（introspect → 合并 overlay → 注册）。schema 变更 / DDL 是你所用迁移工具的职责。
+不会。`syncSchema()` 只通过 introspection *读取*物理结构（introspect → 合并 overlay → 注册）。schema 变更 / DDL 是你所用迁移工具的职责。若想要一个起点，`store.generateDdl(backend)` 可从已注册 schema 渲染 `CREATE TABLE` 文本 —— 但它只是纯文本生成：绝不执行、也不写入 DDL。
 
 **能否在不运行的情况下查看生成的查询？**
 可以 —— `store.buildPipeline(gql, params)` 返回编译后的计划（`{ tokens, ast, pipeline, projection }`），不执行，也不应用权限/计算列。
