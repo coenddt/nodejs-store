@@ -23,6 +23,7 @@
 
 const crud = require('./crud');
 const datasource = require('./datasource');
+const ddl = require('./ddl');
 const executors = require('./executors');
 const feedback = require('./feedback');
 const introspect = require('./introspect');
@@ -113,6 +114,33 @@ class Store {
     return syncSchema(opts);
   }
 
+  // ── 事务 + 原生 SQL（复用 datasource.runInTransaction；见 README「事务边界」）──
+  /**
+   * 事务作用域：单 SQL 源「同连接 + 同事务」执行 fn（复用 runInTransaction）
+   *
+   * fn 内 executeRaw / CRUD 均落到该源的事务连接（commit/rollback 一体）；
+   * Mongo 源或执行器未实现 withTransaction 时按原样执行（跨源无法原子），
+   * 绝不静默假装已事务化。单源场景 source 传 'default'。
+   */
+  async transaction(source, fn) {
+    return datasource.runInTransaction(source, fn);
+  }
+
+  /**
+   * 在指定 SQL 源执行原生 SQL（事务内可用；占位符按各后端原生风格）
+   *
+   * mysql/sqlite 用 `?`，postgres 用 `$1..$n`；仅支持 SQL 源（Mongo 源抛 RawSqlError）。
+   * isWrite=false 取行（rows），true 取影响行数（affectedRows）。对齐 py-store store.execute_raw。
+   */
+  async executeRaw(source, sql, params, isWrite) {
+    return datasource.executeRaw(source, sql, params, isWrite);
+  }
+
+  /** 从已注册 schema def 生成指定后端 DDL 文本（纯函数，不连库、不回写；铁律 6） */
+  generateDdl(backend, names) {
+    return ddl.generate(backend, names);
+  }
+
   // ── 底层工具（调试/高级用法） ──
   /** 解析 GQL 并构建 pipeline，返回 `{tokens, ast, pipeline, projection}` */
   buildPipeline(gql, params) {
@@ -163,6 +191,8 @@ class Store {
 
 /** 自定义权限错误（实例可被 store.PermissionError 捕获） */
 Store.prototype.PermissionError = permission.PermissionError;
+/** 原生 SQL 入口错误（实例可被 store.RawSqlError 捕获） */
+Store.prototype.RawSqlError = datasource.RawSqlError;
 
 const store = new Store();
 
@@ -255,7 +285,9 @@ module.exports = {
   Store,
   PermissionError: permission.PermissionError,
   PushdownUnsupportedError: datasource.PushdownUnsupportedError,
+  RawSqlError: datasource.RawSqlError,
   datasource,
+  ddl,
   schema,
   permission,
   crud,
