@@ -1,5 +1,31 @@
 # Changelog
 
+## 2.3.0 (未发布)
+
+### New Features
+
+- **调用档位（profile）门面**：`store.setProfile('standard' | 'text2query')` / `store.getProfile()`
+  （模块级别名同名）；未知档位由 core 抛错，**禁静默回落**。
+- **`text2query()` 上下文**：`await store.text2query(async () => { ... })`（模块级
+  `require('nodejs-store').text2query(fn)` 同构；`AsyncLocalStorage` 内设档 + 强制用户上下文，
+  退出恢复原档，嵌套安全、异常亦恢复）。
+- **档位违规错误 + 自动反馈**：`text2query` 档越限抛 `ProfileViolation`（`status = 400`；core
+  前缀 `ERR_TEXT2QUERY:` 映射），同时产出 `profile_blocked` 反馈事件（含 `profile` / `feature` /
+  `layer` / `hint`）—— 允许拦截，禁止静默。
+- **`routeOverride` 受信来源门禁（Host 兜底）**：`text2query` 档传非空 `routeOverride` 即
+  `ProfileViolation` + emit（core 已判，Host 再兜一层）；`standard` 档保持受信可用（CWE-639）。
+
+### Breaking Changes
+
+- **`object` / `array` 列改落 JSON 列**：DDL 生成器由「跳过 object/array 字段」改为建 JSON 列
+  （MySQL `JSON` / PG `jsonb` / SQLite `TEXT`），`course-platform` 示例 DDL（sqlite/mysql/postgres）同步。
+- **U1~U4 分档**：数组字段过滤（U1）、对象整值过滤（U2）、对象点号路径过滤（U3）/排序（U4）——
+  `standard` 档放行（四库可下推；U2 对象键序差异**告警**），`text2query` 档显式抛错；
+  数组索引路径（`tags.0`）两档一律抛错。
+- **超深关系嵌套不再静默降级**：深度 / 分页深度超限由「静默返回残缺数据」改为**显式抛错**（两档一致）。
+- **根级 `$pipeline` 按档分流**：`standard` 档放行（Mongo 源可用；SQL 源逐阶段翻译、无法映射即
+  `PushdownUnsupportedError`），`text2query` 档 `ProfileViolation`；`$out` / `$merge` 写副作用阶段两档均拒。
+
 ## 2.0.0 (2026-09-14)
 
 ### Breaking Changes
