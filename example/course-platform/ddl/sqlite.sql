@@ -1,4 +1,4 @@
--- SQLite 物理表（内存库，无 token）。object/array 字段不建列。SQLite 标识符大小写不敏感。
+-- SQLite 物理表（内存库，无 token）。object/array 字段建 JSON 列（TEXT 存 JSON 文本）。SQLite 标识符大小写不敏感。
 -- `__present` = 「缺失 vs null 三态」哨兵列：存每行显式存在的标量字段令牌集合（,f1,f2,），
 --              读侧据此区分「显式 null（有键）」与「缺失（无键）」（F-07/H-01/A-19）。
 DROP TABLE IF EXISTS audit_logs_deleted;
@@ -20,13 +20,13 @@ DROP TABLE IF EXISTS users;
 
 CREATE TABLE users (
   _id TEXT PRIMARY KEY,
-  name TEXT, email TEXT, role TEXT, avatar TEXT,
+  name TEXT, email TEXT, role TEXT, avatar TEXT, profile TEXT,
   createdBy TEXT, createdAt INTEGER, updatedAt INTEGER,
   __present TEXT
 );
 CREATE TABLE users_deleted (
   _id TEXT PRIMARY KEY,
-  name TEXT, email TEXT, role TEXT, avatar TEXT,
+  name TEXT, email TEXT, role TEXT, avatar TEXT, profile TEXT,
   createdBy TEXT, createdAt INTEGER, updatedAt INTEGER, deletedAt INTEGER,
   __present TEXT
 );
@@ -46,6 +46,7 @@ CREATE TABLE courses (
   _id TEXT PRIMARY KEY,
   title TEXT, summary TEXT, status TEXT, price REAL,
   enrolledCount INTEGER, rating REAL, secret TEXT,
+  tags TEXT, meta TEXT,
   categoryId TEXT, createdBy TEXT, createdAt INTEGER, updatedAt INTEGER,
   __present TEXT
 );
@@ -53,6 +54,7 @@ CREATE TABLE courses_deleted (
   _id TEXT PRIMARY KEY,
   title TEXT, summary TEXT, status TEXT, price REAL,
   enrolledCount INTEGER, rating REAL, secret TEXT,
+  tags TEXT, meta TEXT,
   categoryId TEXT, createdBy TEXT, createdAt INTEGER, updatedAt INTEGER, deletedAt INTEGER,
   __present TEXT
 );
@@ -75,52 +77,52 @@ CREATE TABLE lessons_deleted (
 CREATE TABLE enrollments (
   _id TEXT PRIMARY KEY,
   userId TEXT, courseId TEXT, amount REAL,
-  paid INTEGER, paidAt INTEGER, status TEXT, createdBy TEXT,
+  paid INTEGER, paidAt INTEGER, status TEXT, coupon TEXT, createdBy TEXT,
   createdAt INTEGER, updatedAt INTEGER,
   __present TEXT
 );
 CREATE TABLE enrollments_deleted (
   _id TEXT PRIMARY KEY,
   userId TEXT, courseId TEXT, amount REAL,
-  paid INTEGER, paidAt INTEGER, status TEXT, createdBy TEXT,
+  paid INTEGER, paidAt INTEGER, status TEXT, coupon TEXT, createdBy TEXT,
   createdAt INTEGER, updatedAt INTEGER, deletedAt INTEGER,
   __present TEXT
 );
 
 CREATE TABLE reviews (
   _id TEXT PRIMARY KEY,
-  courseId TEXT, userId TEXT, score INTEGER, content TEXT, createdBy TEXT,
+  courseId TEXT, userId TEXT, score INTEGER, content TEXT, tags TEXT, createdBy TEXT,
   createdAt INTEGER, updatedAt INTEGER,
   __present TEXT
 );
 CREATE TABLE reviews_deleted (
   _id TEXT PRIMARY KEY,
-  courseId TEXT, userId TEXT, score INTEGER, content TEXT, createdBy TEXT,
+  courseId TEXT, userId TEXT, score INTEGER, content TEXT, tags TEXT, createdBy TEXT,
   createdAt INTEGER, updatedAt INTEGER, deletedAt INTEGER,
   __present TEXT
 );
 
 CREATE TABLE study_notes (
   _id TEXT PRIMARY KEY,
-  title TEXT, content TEXT, courseId TEXT, createdBy TEXT,
+  title TEXT, content TEXT, courseId TEXT, tags TEXT, meta TEXT, createdBy TEXT,
   createdAt INTEGER, updatedAt INTEGER,
   __present TEXT
 );
 CREATE TABLE study_notes_deleted (
   _id TEXT PRIMARY KEY,
-  title TEXT, content TEXT, courseId TEXT, createdBy TEXT,
+  title TEXT, content TEXT, courseId TEXT, tags TEXT, meta TEXT, createdBy TEXT,
   createdAt INTEGER, updatedAt INTEGER, deletedAt INTEGER,
   __present TEXT
 );
 
 CREATE TABLE audit_logs (
   _id TEXT PRIMARY KEY,
-  actorId TEXT, action TEXT, target TEXT, at INTEGER,
+  actorId TEXT, action TEXT, target TEXT, at INTEGER, detail TEXT,
   __present TEXT
 );
 CREATE TABLE audit_logs_deleted (
   _id TEXT PRIMARY KEY,
-  actorId TEXT, action TEXT, target TEXT, at INTEGER, deletedAt INTEGER,
+  actorId TEXT, action TEXT, target TEXT, at INTEGER, detail TEXT, deletedAt INTEGER,
   __present TEXT
 );
 

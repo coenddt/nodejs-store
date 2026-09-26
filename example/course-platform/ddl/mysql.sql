@@ -1,5 +1,5 @@
--- MySQL 物理表（固定 example 库，无 token）。object/array 字段不建列（引擎跳过，行为需
--- 由用例显式断言 Err/unsupported，不得静默丢条件）。归档表 <collection>_deleted。
+-- MySQL 物理表（固定 example 库，无 token）。object/array 字段建 JSON 列（存 JSON 文本）。
+-- 归档表 <collection>_deleted。
 -- `__present` = 「缺失 vs null 三态」哨兵列（F-07/H-01/A-19）：存每行显式存在的标量字段
 -- 令牌集合（,f1,f2,），读侧据此区分「显式 null（有键）」与「缺失（无键）」。
 DROP TABLE IF EXISTS audit_logs_deleted;
@@ -25,6 +25,7 @@ CREATE TABLE users (
   email VARCHAR(255),
   role VARCHAR(255),
   avatar VARCHAR(255),
+  profile JSON,
   createdBy VARCHAR(64),
   createdAt BIGINT,
   updatedAt BIGINT,
@@ -37,6 +38,7 @@ CREATE TABLE users_deleted (
   email VARCHAR(255),
   role VARCHAR(255),
   avatar VARCHAR(255),
+  profile JSON,
   createdBy VARCHAR(64),
   createdAt BIGINT,
   updatedAt BIGINT,
@@ -74,6 +76,8 @@ CREATE TABLE courses (
   enrolledCount INT,
   rating DOUBLE,
   secret VARCHAR(255),
+  tags JSON,
+  meta JSON,
   categoryId VARCHAR(64),
   createdBy VARCHAR(64),
   createdAt BIGINT,
@@ -90,6 +94,8 @@ CREATE TABLE courses_deleted (
   enrolledCount INT,
   rating DOUBLE,
   secret VARCHAR(255),
+  tags JSON,
+  meta JSON,
   categoryId VARCHAR(64),
   createdBy VARCHAR(64),
   createdAt BIGINT,
@@ -139,6 +145,7 @@ CREATE TABLE enrollments (
   paid TINYINT(1),
   paidAt BIGINT,
   status VARCHAR(64),
+  coupon JSON,
   createdBy VARCHAR(64),
   createdAt BIGINT,
   updatedAt BIGINT,
@@ -153,6 +160,7 @@ CREATE TABLE enrollments_deleted (
   paid TINYINT(1),
   paidAt BIGINT,
   status VARCHAR(64),
+  coupon JSON,
   createdBy VARCHAR(64),
   createdAt BIGINT,
   updatedAt BIGINT,
@@ -167,6 +175,7 @@ CREATE TABLE reviews (
   userId VARCHAR(64),
   score INT,
   content VARCHAR(255),
+  tags JSON,
   createdBy VARCHAR(64),
   createdAt BIGINT,
   updatedAt BIGINT,
@@ -179,6 +188,7 @@ CREATE TABLE reviews_deleted (
   userId VARCHAR(64),
   score INT,
   content VARCHAR(255),
+  tags JSON,
   createdBy VARCHAR(64),
   createdAt BIGINT,
   updatedAt BIGINT,
@@ -192,6 +202,8 @@ CREATE TABLE study_notes (
   title VARCHAR(255),
   content VARCHAR(255),
   courseId VARCHAR(64),
+  tags JSON,
+  meta JSON,
   createdBy VARCHAR(64),
   createdAt BIGINT,
   updatedAt BIGINT,
@@ -203,6 +215,8 @@ CREATE TABLE study_notes_deleted (
   title VARCHAR(255),
   content VARCHAR(255),
   courseId VARCHAR(64),
+  tags JSON,
+  meta JSON,
   createdBy VARCHAR(64),
   createdAt BIGINT,
   updatedAt BIGINT,
@@ -217,6 +231,7 @@ CREATE TABLE audit_logs (
   action VARCHAR(64),
   target VARCHAR(64),
   at BIGINT,
+  detail JSON,
   __present VARCHAR(255),
   PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -226,6 +241,7 @@ CREATE TABLE audit_logs_deleted (
   action VARCHAR(64),
   target VARCHAR(64),
   at BIGINT,
+  detail JSON,
   deletedAt BIGINT,
   __present VARCHAR(255),
   PRIMARY KEY (_id)

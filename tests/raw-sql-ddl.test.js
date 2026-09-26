@@ -106,7 +106,7 @@ test('transaction 无 withTransaction 时按原样执行', async () => {
 
 // ─── ② ddl.generate ─────────────────────────────────────────
 
-test('ddl 只建标量列 + __present + 归档表', () => {
+test('ddl 标量列 + object/array JSON 列 + __present + 归档表', () => {
   store.register({
     name: 'DdlProbe', collection: 'ddl_probes', idPrefix: 'd', timestamps: false,
     fields: {
@@ -124,9 +124,9 @@ test('ddl 只建标量列 + __present + 归档表', () => {
   assert.ok(sql.includes('`__present` VARCHAR(255)'));
   assert.ok(sql.includes('`deletedAt` BIGINT'));
   assert.ok(sql.includes('PRIMARY KEY (`_id`)'));
-  // object / array 不建列（同 core scalarColumn）
-  assert.ok(!sql.includes('`nested`'));
-  assert.ok(!sql.includes('`tags`'));
+  // object / array 建 JSON 列（同 core field_column_ref::Json）
+  assert.ok(sql.includes('`nested` JSON'));
+  assert.ok(sql.includes('`tags` JSON'));
 });
 
 test('ddl timestamps 且不生成索引', () => {
@@ -166,6 +166,25 @@ test('ddl 三后端类型映射', () => {
   assert.ok(pg.includes('"s" TEXT') && pg.includes('"f" DOUBLE PRECISION') && pg.includes('"ok" BOOLEAN'));
   assert.ok(lite.includes('"s" TEXT') && lite.includes('"f" REAL') && lite.includes('"ok" INTEGER'));
   assert.ok(lite.includes('"at" INTEGER'));
+});
+
+test('ddl object/array JSON 列三后端类型映射', () => {
+  store.register({
+    name: 'DdlJson', collection: 'ddl_json', idPrefix: 'j', timestamps: false,
+    fields: {
+      _id: { type: 'string' },
+      obj: { type: 'object' },
+      arr: { type: 'array' },
+    },
+  });
+
+  const my = store.generateDdl('mysql', ['DdlJson']);
+  const pg = store.generateDdl('postgres', ['DdlJson']);
+  const lite = store.generateDdl('sqlite', ['DdlJson']);
+
+  assert.ok(my.includes('`obj` JSON') && my.includes('`arr` JSON'));
+  assert.ok(pg.includes('"obj" jsonb') && pg.includes('"arr" jsonb'));
+  assert.ok(lite.includes('"obj" TEXT') && lite.includes('"arr" TEXT'));
 });
 
 test('ddl 未知后端抛错', () => {

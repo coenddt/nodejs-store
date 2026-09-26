@@ -1,4 +1,4 @@
--- PostgreSQL 物理表（固定 example 库，无 token）。object/array 字段不建列。
+-- PostgreSQL 物理表（固定 example 库，无 token）。object/array 字段建 jsonb 列（存 JSON 文本）。
 -- PG 标识符区分大小写：mixed-case 列一律双引号（与 core dialect_translate 的引号策略一致）。
 -- `__present`（全小写、不引号）= 「缺失 vs null 三态」哨兵列（F-07/H-01/A-19）：存每行
 -- 显式存在的标量字段令牌集合（,f1,f2,），读侧据此区分「显式 null（有键）」与「缺失（无键）」。
@@ -21,13 +21,13 @@ DROP TABLE IF EXISTS users CASCADE;
 
 CREATE TABLE users (
   _id TEXT PRIMARY KEY,
-  name TEXT, email TEXT, role TEXT, avatar TEXT,
+  name TEXT, email TEXT, role TEXT, avatar TEXT, profile jsonb,
   "createdBy" TEXT, "createdAt" BIGINT, "updatedAt" BIGINT,
   __present TEXT
 );
 CREATE TABLE users_deleted (
   _id TEXT PRIMARY KEY,
-  name TEXT, email TEXT, role TEXT, avatar TEXT,
+  name TEXT, email TEXT, role TEXT, avatar TEXT, profile jsonb,
   "createdBy" TEXT, "createdAt" BIGINT, "updatedAt" BIGINT, "deletedAt" BIGINT,
   __present TEXT
 );
@@ -47,6 +47,7 @@ CREATE TABLE courses (
   _id TEXT PRIMARY KEY,
   title TEXT, summary TEXT, status TEXT, price DOUBLE PRECISION,
   "enrolledCount" INTEGER, rating DOUBLE PRECISION, secret TEXT,
+  tags jsonb, meta jsonb,
   "categoryId" TEXT, "createdBy" TEXT, "createdAt" BIGINT, "updatedAt" BIGINT,
   __present TEXT
 );
@@ -54,6 +55,7 @@ CREATE TABLE courses_deleted (
   _id TEXT PRIMARY KEY,
   title TEXT, summary TEXT, status TEXT, price DOUBLE PRECISION,
   "enrolledCount" INTEGER, rating DOUBLE PRECISION, secret TEXT,
+  tags jsonb, meta jsonb,
   "categoryId" TEXT, "createdBy" TEXT, "createdAt" BIGINT, "updatedAt" BIGINT, "deletedAt" BIGINT,
   __present TEXT
 );
@@ -76,52 +78,52 @@ CREATE TABLE lessons_deleted (
 CREATE TABLE enrollments (
   _id TEXT PRIMARY KEY,
   "userId" TEXT, "courseId" TEXT, amount DOUBLE PRECISION,
-  paid BOOLEAN, "paidAt" BIGINT, status TEXT, "createdBy" TEXT,
+  paid BOOLEAN, "paidAt" BIGINT, status TEXT, coupon jsonb, "createdBy" TEXT,
   "createdAt" BIGINT, "updatedAt" BIGINT,
   __present TEXT
 );
 CREATE TABLE enrollments_deleted (
   _id TEXT PRIMARY KEY,
   "userId" TEXT, "courseId" TEXT, amount DOUBLE PRECISION,
-  paid BOOLEAN, "paidAt" BIGINT, status TEXT, "createdBy" TEXT,
+  paid BOOLEAN, "paidAt" BIGINT, status TEXT, coupon jsonb, "createdBy" TEXT,
   "createdAt" BIGINT, "updatedAt" BIGINT, "deletedAt" BIGINT,
   __present TEXT
 );
 
 CREATE TABLE reviews (
   _id TEXT PRIMARY KEY,
-  "courseId" TEXT, "userId" TEXT, score INTEGER, content TEXT, "createdBy" TEXT,
+  "courseId" TEXT, "userId" TEXT, score INTEGER, content TEXT, tags jsonb, "createdBy" TEXT,
   "createdAt" BIGINT, "updatedAt" BIGINT,
   __present TEXT
 );
 CREATE TABLE reviews_deleted (
   _id TEXT PRIMARY KEY,
-  "courseId" TEXT, "userId" TEXT, score INTEGER, content TEXT, "createdBy" TEXT,
+  "courseId" TEXT, "userId" TEXT, score INTEGER, content TEXT, tags jsonb, "createdBy" TEXT,
   "createdAt" BIGINT, "updatedAt" BIGINT, "deletedAt" BIGINT,
   __present TEXT
 );
 
 CREATE TABLE study_notes (
   _id TEXT PRIMARY KEY,
-  title TEXT, content TEXT, "courseId" TEXT, "createdBy" TEXT,
+  title TEXT, content TEXT, "courseId" TEXT, tags jsonb, meta jsonb, "createdBy" TEXT,
   "createdAt" BIGINT, "updatedAt" BIGINT,
   __present TEXT
 );
 CREATE TABLE study_notes_deleted (
   _id TEXT PRIMARY KEY,
-  title TEXT, content TEXT, "courseId" TEXT, "createdBy" TEXT,
+  title TEXT, content TEXT, "courseId" TEXT, tags jsonb, meta jsonb, "createdBy" TEXT,
   "createdAt" BIGINT, "updatedAt" BIGINT, "deletedAt" BIGINT,
   __present TEXT
 );
 
 CREATE TABLE audit_logs (
   _id TEXT PRIMARY KEY,
-  "actorId" TEXT, action TEXT, target TEXT, at BIGINT,
+  "actorId" TEXT, action TEXT, target TEXT, at BIGINT, detail jsonb,
   __present TEXT
 );
 CREATE TABLE audit_logs_deleted (
   _id TEXT PRIMARY KEY,
-  "actorId" TEXT, action TEXT, target TEXT, at BIGINT, "deletedAt" BIGINT,
+  "actorId" TEXT, action TEXT, target TEXT, at BIGINT, detail jsonb, "deletedAt" BIGINT,
   __present TEXT
 );
 

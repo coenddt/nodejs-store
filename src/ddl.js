@@ -4,7 +4,9 @@
  * DDL 生成（schema def → CREATE TABLE 文本；纯函数，不连库、不回写）
  *
  * 与 core 契约严格对齐（schema→DDL 单向映射）：
- *   - 只对 scalar 字段建列（object/array 不建列；同 core dialect::scalar_column）；
+ *   - 标量字段按声明类型建列；object/array 字段建 **JSON 列**（MySQL `JSON` / PG `jsonb` /
+ *     SQLite `TEXT`，同 core dialect::Backend::json_type_name）——落单列存 JSON 文本，
+ *     读侧由 core row::parse_json_col 还原为嵌套对象，跨后端对齐 Mongo 嵌套文档；
  *   - 每表必建 __present 哨兵列（形态 ,f1,f2,；同 core write/insert.rs::present_value）；
  *   - timestamps !== false → 追加 createdAt / updatedAt（同 core schema/registry.rs::add_timestamp_fields）；
  *   - 归档表 <collection>_deleted 由 registry 自动派生，本模块按已注册 def 逐表生成（不特判）；
@@ -33,6 +35,8 @@ const TYPES = {
   date: ['BIGINT', 'BIGINT', 'INTEGER'],
 };
 const NON_COLUMN = ['object', 'array'];
+// object/array 字段的列类型（JSON 文本列；同 core Backend::json_type_name）
+const JSON_TYPE = ['JSON', 'jsonb', 'TEXT'];
 const ID_TYPE = ['VARCHAR(64)', 'TEXT', 'TEXT'];
 const PRESENT_TYPE = ['VARCHAR(255)', 'TEXT', 'TEXT'];
 const TIMESTAMP_FIELDS = ['createdAt', 'updatedAt'];
@@ -52,16 +56,20 @@ function declaredType(fieldDef) {
   return fieldDef && typeof fieldDef === 'object' ? fieldDef.type : fieldDef;
 }
 
-/** 返回 [[name, sqlType, pk]]，顺序：声明的标量字段 → timestamps → __present */
+/** 返回 [[name, sqlType, pk]]，顺序：声明的字段（标量 / object·array JSON 列）→ timestamps → __present */
 function columns(defn, backend) {
   const i = idx(backend);
   const cols = [];
   const fields = defn.fields || {};
   for (const [name, fdef] of Object.entries(fields)) {
     const ftype = declaredType(fdef);
-    if (NON_COLUMN.includes(ftype)) continue;
     if (name === '_id') {
       cols.push([name, ID_TYPE[i], true]);
+      continue;
+    }
+    if (NON_COLUMN.includes(ftype)) {
+      // object/array → 单列 JSON 文本（同 core field_column_ref::Json）
+      cols.push([name, JSON_TYPE[i], false]);
       continue;
     }
     if (!Object.prototype.hasOwnProperty.call(TYPES, ftype)) {
