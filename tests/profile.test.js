@@ -8,7 +8,9 @@
  *   2. `text2query(fn)` 上下文：进入设档、退出恢复原档（token-set/reset，嵌套安全）；
  *   3. text2query 档强制 ctx：无 ctx 即 ProfileViolation + emit `profile_blocked`（禁静默）；
  *   4. `_call` 前缀映射：`ERR_TEXT2QUERY:` → ProfileViolation（400）并提取 feature；
- *   5. standard 档 fail-open：无 ctx 照常查询（既有调用方零感知）。
+ *   5. standard 档 fail-open：无 ctx 照常查询（既有调用方零感知）；
+ *   6. `routeOverride` 受信来源 Host 兜底：text2query 档非空即拒 + emit（layer='host'）；
+ *      standard 档放行（判决唯一在 core，Host 仅兜底）。
  *
  * 运行：node scripts/test.js（scripts/test.js 会置 LOCAL_CORE=1）
  */
@@ -22,6 +24,7 @@ const {
   text2query, ProfileViolation,
 } = require('../src');
 const { _call } = require('../src/crud');
+const { _guardRouteOverride } = require('../src/crud/query');
 
 const SRC = 'pq_src';
 
@@ -172,4 +175,54 @@ test('profile: standard 档无 ctx 照常查询', async () => {
   _reset();
   const items = await store.query('PqModel{ title }');
   assert.ok(Array.isArray(items));
+});
+
+// ── 6. routeOverride 受信来源 Host 兜底 ───────────────────────
+
+test('profile: text2query 档传 routeOverride —— Host 兜底拒 + emit', async () => {
+  _reset();
+  const events = [];
+  feedback.setSink((e) => events.push(e));
+  await assert.rejects(
+    () => text2query(() => store.query('PqModel{ title }', null, { source: SRC })),
+    (e) => {
+      assert.ok(e instanceof ProfileViolation, '应为 ProfileViolation');
+      assert.equal(e.status, 400, '档位拒绝 = 调用方合约违反（400）');
+      assert.match(e.message, /route_override/);
+      return true;
+    },
+  );
+  assert.equal(events.length, 1, '兜底命中必产反馈（允许拦截，禁止静默）');
+  const ev = events[0];
+  assert.equal(ev.type, 'profile_blocked');
+  assert.equal(ev.code, 'profileBlocked');
+  assert.equal(ev.layer, 'host', "layer='host' 表明 core 层未拦住");
+  assert.equal(ev.profile, 'text2query');
+  assert.equal(ev.feature, 'route_override');
+  assert.ok(ev.hint);
+  _reset();
+});
+
+test('profile: standard 档 routeOverride 受信可用（Host 兜底放行）', async () => {
+  _reset();
+  const events = [];
+  feedback.setSink((e) => events.push(e));
+  _guardRouteOverride({ source: SRC });
+  _guardRouteOverride(null);
+  assert.equal(events.length, 0);
+  _reset();
+});
+
+test('profile: text2query 档 queryOne / queryWithCount 同样拒 routeOverride', async () => {
+  _reset();
+  feedback.setSink(() => {});
+  await assert.rejects(
+    () => text2query(() => store.queryOne('PqModel{ title }', null, { source: SRC })),
+    (e) => { assert.ok(e instanceof ProfileViolation); return true; },
+  );
+  await assert.rejects(
+    () => text2query(() => store.queryWithCount('PqModel{ title }', null, { source: SRC })),
+    (e) => { assert.ok(e instanceof ProfileViolation); return true; },
+  );
+  _reset();
 });

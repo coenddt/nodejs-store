@@ -5,9 +5,34 @@
  * / 跨库联邦（逐源执行 → 内存 hash join）
  */
 
-const { core: _core, getAsyncFn } = require('../schema');
+const { core: _core, getAsyncFn, getProfile } = require('../schema');
 const { emit: _emitFeedback } = require('../feedback');
-const { _call, _ctx, _exec, _execOn, resolvePlaceholders } = require('./exec');
+const {
+  _call, _ctx, _exec, _execOn, resolvePlaceholders, ProfileViolation, _PROFILE_HINT,
+} = require('./exec');
+
+/**
+ * Host 兜底：text2query 档禁用 `routeOverride`（受信参数，禁 AI 侧指定）
+ *
+ * 判决唯一在 core（执行文档 §4.2 ⑤：各 `planQuery*` 入口已判并 Err）；此为第二层
+ * 防护——即使 core 判决被绕过，Host 也不放行受信参数（CWE-639）。命中即 emit
+ * `profile_blocked`，`layer: 'host'` 本身即反馈：core 层未拦住，须回溯加固
+ * （自动反馈原则：允许拦截，禁止静默）。
+ */
+function _guardRouteOverride(routeOverride) {
+  if (routeOverride == null || getProfile() !== 'text2query') return;
+  const detail = 'text2query 档禁用 route_override（受信参数，禁 AI 侧指定）';
+  _emitFeedback({
+    type: 'profile_blocked',
+    code: 'profileBlocked',
+    layer: 'host',
+    profile: 'text2query',
+    feature: 'route_override',
+    message: detail,
+    hint: _PROFILE_HINT,
+  });
+  throw new ProfileViolation(detail);
+}
 
 /** 执行读命令序列：find 快路径 / 两阶段（取 ID → 关联 → 还原排序）/ 标准聚合 */
 async function _runQueryPlan(plan) {
@@ -44,12 +69,14 @@ async function _finalize(plan, items) {
  * 权限/计算列仍按结构 schema 判定（见 multi-datasource-routing-plan.md §6）。
  */
 async function query(gql, params = null, routeOverride = null) {
+  _guardRouteOverride(routeOverride);
   const plan = _call(() => _core.planQuery(gql, params ?? {}, _ctx(), routeOverride));
   return _finalize(plan, await _runQueryPlan(plan));
 }
 
 /** GQL 查询（返回单条）—— 走 core `planQueryOne`：未显式 `$limit` 时下推 `$limit(1)` */
 async function queryOne(gql, params = null, routeOverride = null) {
+  _guardRouteOverride(routeOverride);
   const plan = _call(() => _core.planQueryOne(gql, params ?? {}, _ctx(), routeOverride));
   const items = await _finalize(plan, await _runQueryPlan(plan));
   return items.length ? items[0] : null;
@@ -106,6 +133,7 @@ async function queryFederated(gql, params = null) {
  * pageSize 上限 5000，防止拖库。
  */
 async function queryWithCount(gql, params = null, routeOverride = null) {
+  _guardRouteOverride(routeOverride);
   const plan = _call(() =>
     _core.planQueryWithCount(gql, params ?? {}, _ctx(), null, routeOverride));
   const items = await _finalize(plan, await _runQueryPlan(plan));
@@ -119,4 +147,6 @@ async function queryWithCount(gql, params = null, routeOverride = null) {
   };
 }
 
-module.exports = { query, queryOne, queryWithCount, queryFederated };
+module.exports = {
+  query, queryOne, queryWithCount, queryFederated, _guardRouteOverride,
+};

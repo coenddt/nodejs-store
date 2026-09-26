@@ -41,6 +41,9 @@ const _PROFILE_PREFIX = 'ERR_TEXT2QUERY:';
  */
 const _FEATURE_RE = /\[(.+?)\]/;
 
+/** 档位拦截反馈的统一提示（反馈事件契约 §4.6 的一部分；单点定义防文案漂移） */
+const _PROFILE_HINT = '上游（LLM 产出的 GQL / 调用方入参）越界；text2query 档白名单见 SKILL.md §后端无关性与边界';
+
 /**
  * 档位（profile）拒绝：text2query 档违反功能收缩 / 硬限制
  *
@@ -99,7 +102,7 @@ function _call(fn) {
         profile: 'text2query',
         feature: m ? m[1] : null,
         message: detail,
-        hint: '上游（LLM 产出的 GQL / 调用方入参）越界；text2query 档白名单见 SKILL.md §后端无关性与边界',
+        hint: _PROFILE_HINT,
       });
       throw new ProfileViolation(detail);
     }
@@ -166,6 +169,7 @@ module.exports = {
   _ctx,
   _call,
   ProfileViolation,
+  _PROFILE_HINT,
   _exec,
   _execOn,
   _substitute,
