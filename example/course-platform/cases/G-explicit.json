@@ -58,5 +58,23 @@
         "params": { "c0": { "lessons": { "$filter": { "children.seq": { "$gt": 1 } }, "$count": { "$gt": 0 } } } },
         "expect": { "kind": "error", "code": "嵌套关系路径" } }
     ], "note": "G-13 / 8c-2：text2query 档关系聚合谓词子级 filter 的嵌套关系下钻一律显式 Err（功能收缩，禁静默）；standard 档放行（见 J-13）"
+  },
+  {
+    "id": "G-14", "group": "G", "title": "text2query 档：$pipeline 直通 / $group.by 点号路径 显式 Err（功能收缩）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] }, "profile": "text2query",
+    "steps": [
+      { "op": "query", "gql": "Course($pipeline:@p0){ title }",
+        "params": { "p0": [ { "$match": { "status": "published" } } ] },
+        "expect": { "kind": "error", "code": "$pipeline 直通" } },
+      { "op": "query", "gql": "Course($pipeline:@p0){ title }",
+        "params": { "p0": [ { "$match": { "status": "published" } } ] },
+        "expect": { "kind": "feedback", "code": "profileBlocked" } },
+      { "op": "query", "gql": "Course($group:@g0){ meta.level, n }",
+        "params": { "g0": { "by": ["meta.level"], "agg": { "n": { "$count": "*" } } } },
+        "expect": { "kind": "error", "code": "$group.by object 点号路径" } },
+      { "op": "query", "gql": "Course($group:@g0){ meta.level, n }",
+        "params": { "g0": { "by": ["meta.level"], "agg": { "n": { "$count": "*" } } } },
+        "expect": { "kind": "feedback", "code": "profileBlocked" } }
+    ], "note": "G-14 / 9a+9b：text2query 档 `$pipeline` 直通（DB 独有能力）与 `$group.by` object 点号路径一律 `forbid_t2q` 显式 Err（功能收缩，禁静默）；step2/step4 断言 Host 侧必须同时 emit `profileBlocked` 反馈（自动反馈原则：允许拦截，禁止静默失守）。standard 档放行见 J-14 / J-15。"
   }
 ]

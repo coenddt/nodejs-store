@@ -244,5 +244,63 @@
           "agg": { "n": { "$count": "*" } }, "having": { "n": { "$gte": 1 } } } }, "s0": { "_id": 1 } },
         "expect": { "kind": "rows", "rows": [ { "_id": "c1" } ], "normalize": { "sortBy": ["_id"] } } }
     ], "note": "J-13 / 8c-2：关系聚合谓词子级 filter 内**一层嵌套关系下钻**（`lessons.children.seq`，孙表 = Lesson 自关联）在 standard 档四方言一致；Mongo 走内层 $lookup + 点号路径数组 ANY，SQL 走嵌套 EXISTS（挂在子表 c 上，不扇出）。步骤 2 验证嵌套条件与子级标量条件在同一 filter 内 AND 并存；步骤 3 为负例（无匹配 → 空集）；步骤 4 为主形式 filter+agg+having。另：$or/$nor 内嵌套路径与三级路径一律 Err（core 单测覆盖）"
+  },
+  {
+    "id": "J-14", "group": "J", "title": "§4.1 #5 → 9a $group.by object 点号路径（standard 放行；DB 独有能力）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] }, "sqlPolicy": "explicit-or-parity",
+    "steps": [
+      { "op": "query", "gql": "Course($group:@g0){ meta.level, n }",
+        "params": { "g0": { "by": ["meta.level"], "agg": { "n": { "$count": "*" } } } },
+        "expect": { "kind": "rows", "rows": [
+          { "meta": { "level": "beginner" }, "n": 3 },
+          { "meta": { "level": "advanced" }, "n": 2 },
+          { "meta": { "level": "" }, "n": 1 },
+          { "meta": { "level": null }, "n": 1 }
+        ] } },
+      { "op": "query", "gql": "Course($group:@g0){ meta.level, status, n }",
+        "params": { "g0": { "by": ["meta.level", "status"], "agg": { "n": { "$count": "*" } } } },
+        "expect": { "kind": "rows", "rows": [
+          { "meta": { "level": "beginner" }, "status": "published", "n": 3 },
+          { "meta": { "level": "advanced" }, "status": "published", "n": 2 },
+          { "meta": { "level": "" }, "status": "draft", "n": 1 },
+          { "meta": {}, "status": "archived", "n": 1 }
+        ] } }
+    ], "note": "J-14 / 9a：$group.by 的 **object 点号路径**（`meta.level`）在 standard 档放行（Mongo 原生下钻，投影还原嵌套对象 `meta.level` → `{meta:{level:…}}`）。单键直接取 `$meta.level`；多键经 `insert_nested` 还原为嵌套 `_id` 后按 `_id.<点号路径>` 回取。SQL 侧 `scalar_column` 无此列 → 显式 Err（本用例 case 级 `sqlPolicy: explicit-or-parity`，绝不静默丢键）。text2query 档禁用见 G-14。注：多键步骤 c4（无 `meta`）的分组键回取为 `meta: {}`，与单键路径的 `meta: {level: null}` 不同 —— 此为 Mongo 原生语义（缺失路径在 `$group._id` 对象构造中被省略，投影 `$_id.meta.level` 遂建成空对象），非 core 失真；单键 `_id` 为标量故 missing → `null`。"
+  },
+  {
+    "id": "J-15", "group": "J", "title": "§4.1 #5 → 9b 根级 $pipeline 直通（standard 放行）+ 阶段可翻译 → 四方言一致",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($pipeline:@p0){ title, price }",
+        "params": { "p0": [ { "$match": { "status": "published" } }, { "$sort": { "price": -1 } }, { "$limit": 2 } ] },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "c5", "title": "分布式", "price": 1000000000000000.0 },
+          { "_id": "c2", "title": "Go进阶", "price": 100.5 }
+        ] } },
+      { "op": "query", "gql": "Course($pipeline:@p0,$sort:@s0,$limit:@l0){ title, price }",
+        "params": { "p0": [ { "$match": { "status": "published" } } ], "s0": { "price": -1 }, "l0": 1 },
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "c5", "title": "分布式", "price": 1000000000000000.0 }
+        ] } }
+    ], "note": "J-15 / 9b：根级 `$pipeline` 直通（⚠️ DB 独有能力，standard 档放行；text2query 档禁用见 G-14）。step1 用 `$match`+`$sort`+`$limit` 用户自控分页；step2 验证根参数 `$sort`/`$limit` 按「覆盖/追加」语义落位到用户 pipeline（Mongo 与 SQL 逐行一致）。阶段数组末段由 core 追加顶层 `$project`（仅 GQL 请求字段，R9）。"
+  },
+  {
+    "id": "J-16", "group": "J", "title": "§4.1 #5 → 9b $pipeline 含 Mongo 独有阶段（$addFields）→ SQL 显式 Err",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($pipeline:@p0){ title }",
+        "params": { "p0": [ { "$match": { "status": "published" } }, { "$addFields": { "x": 1 } } ] },
+        "sqlPolicy": "explicit-or-parity",
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "c1", "title": "Python入门" },
+          { "_id": "c2", "title": "Go进阶" },
+          { "_id": "c5", "title": "分布式" },
+          { "_id": "c6", "title": "浮点精度" },
+          { "_id": "c7", "title": "基础数学" }
+        ] } },
+      { "op": "query", "gql": "Course($pipeline:@p0){ title }",
+        "params": { "p0": [ { "$match": { "status": "published" } }, { "$addFields": { "x": 1 } } ] },
+        "expect": { "kind": "unsupported" } }
+    ], "note": "J-16 / 9b：`$pipeline` 携带 Mongo 独有阶段（`$addFields` 非已解析计算列）—— step1 证明 Mongo 源 standard 档原生可用（结果行据实断言；SQL 侧 step 级 `explicit-or-parity` 允许显式 Err）；step2 断言 SQL 侧必须显式 Err/告警（`kind: unsupported`，静默返回未加工原始行即判失败）。写副作用阶段 `$out`/`$merge` 两档一律拒（core 单测覆盖）。"
   }
 ]
