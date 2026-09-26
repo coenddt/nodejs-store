@@ -4,10 +4,10 @@
 
 | 后端 | 可达 | 断言通过 | 用例总数 | skip 原因 |
 |---|---|---|---|---|
-| `mongodb` | 可达 | 95/95 | 95 | - |
-| `postgres` | 可达 | 95/95 | 95 | - |
-| `mysql` | 可达 | 95/95 | 95 | - |
-| `sqlite` | 可达 | 95/95 | 95 | - |
+| `mongodb` | 可达 | 97/97 | 97 | - |
+| `postgres` | 可达 | 97/97 | 97 | - |
+| `mysql` | 可达 | 97/97 | 97 | - |
+| `sqlite` | 可达 | 97/97 | 97 | - |
 
 > 本报告只出证据，不修实现。判定规则：SQL 结果集与 Mongo(oracle) 逐行相等，或显式 Err / `unsupported` + feedback 告警；静默不一致判缺陷。
 
@@ -21,9 +21,9 @@
 | D | 7 | mongodb,postgres,mysql,sqlite | 28 | 0 | - |
 | E | 15 | mongodb,postgres,mysql,sqlite | 60 | 0 | - |
 | F | 8 | mongodb,postgres,mysql,sqlite | 32 | 0 | - |
-| G | 5 | mongodb,postgres,mysql,sqlite | 20 | 0 | - |
+| G | 6 | mongodb,postgres,mysql,sqlite | 24 | 0 | - |
 | H | 10 | mongodb,postgres,mysql,sqlite | 40 | 0 | - |
-| J | 12 | mongodb,postgres,mysql,sqlite | 48 | 0 | - |
+| J | 13 | mongodb,postgres,mysql,sqlite | 52 | 0 | - |
 
 分组含义：A=A 字段形态；B=B 写路径；C=C 关系/自关联/嵌套/分页；D=D 计算列；E=E 权限矩阵；F=F 边界（时间/数值/布尔/三态）；G=G 不可翻译必须显式；H=H 多后端一致性；J=J 根级 $group/$having/关系聚合谓词。
 

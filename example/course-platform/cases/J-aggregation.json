@@ -225,5 +225,24 @@
         "params": { "c0": { "course": { "$filter": { "meta": { "cover": "c1.png", "level": "beginner", "seo": { "title": "看Python", "desc": "从零开始" } } }, "$count": { "$gt": 0 } } }, "s0": { "_id": 1 } },
         "expect": { "kind": "rows", "rows": [ { "_id": "e1" }, { "_id": "e4" } ], "normalize": { "sortBy": ["_id"] } } }
     ], "note": "J-12 / 8c-1：关系聚合谓词子级 filter 的 U1（数组整值，many 关系 reviews.tags）/ U3（对象点号，one 关系 course.meta.level）/ U2（对象整值，one 关系 course.meta）在 standard 档四方言一致；EXISTS 子查询内与根条件同源下推 JSON 列表达式，父行不扇出。text2query 档仍 Err（见 G-12）"
+  },
+  {
+    "id": "J-13", "group": "J", "title": "§4.1 #4 → 8c-2 关系谓词子级 filter 内嵌套关系下钻（一层，standard 放行）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0,$sort:@s0){ _id }",
+        "params": { "c0": { "lessons": { "$filter": { "children.seq": { "$gt": 1 } }, "$count": { "$gt": 0 } } }, "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1" } ], "normalize": { "sortBy": ["_id"] } } },
+      { "op": "query", "gql": "Course($condition:@c0,$sort:@s0){ _id }",
+        "params": { "c0": { "lessons": { "$filter": { "duration": { "$gte": 10 }, "children.seq": { "$gt": 1 } }, "$count": { "$gt": 0 } } }, "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1" } ], "normalize": { "sortBy": ["_id"] } } },
+      { "op": "query", "gql": "Course($condition:@c0,$sort:@s0){ _id }",
+        "params": { "c0": { "lessons": { "$filter": { "children.seq": { "$gt": 5 } }, "$count": { "$gt": 0 } } }, "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [], "normalize": { "sortBy": ["_id"] } } },
+      { "op": "query", "gql": "Course($condition:@c0,$sort:@s0){ _id }",
+        "params": { "c0": { "lessons": { "filter": { "children.seq": { "$gt": 1 } },
+          "agg": { "n": { "$count": "*" } }, "having": { "n": { "$gte": 1 } } } }, "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1" } ], "normalize": { "sortBy": ["_id"] } } }
+    ], "note": "J-13 / 8c-2：关系聚合谓词子级 filter 内**一层嵌套关系下钻**（`lessons.children.seq`，孙表 = Lesson 自关联）在 standard 档四方言一致；Mongo 走内层 $lookup + 点号路径数组 ANY，SQL 走嵌套 EXISTS（挂在子表 c 上，不扇出）。步骤 2 验证嵌套条件与子级标量条件在同一 filter 内 AND 并存；步骤 3 为负例（无匹配 → 空集）；步骤 4 为主形式 filter+agg+having。另：$or/$nor 内嵌套路径与三级路径一律 Err（core 单测覆盖）"
   }
 ]

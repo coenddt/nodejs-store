@@ -49,5 +49,14 @@
         "params": { "c0": { "course": { "$filter": { "meta.level": "beginner" }, "$count": { "$gt": 0 } } } },
         "expect": { "kind": "error", "code": "U3" } }
     ], "note": "G-12 / 8c-1：text2query 档关系聚合谓词子级 filter 的 U1~U3 一律显式 Err（与根条件同源门禁，禁静默）；standard 档放行（见 J-12）"
+  },
+  {
+    "id": "G-13", "group": "G", "title": "text2query 档：关系谓词子级 filter 内嵌套关系下钻仍显式 Err（功能收缩）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] }, "profile": "text2query",
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id}",
+        "params": { "c0": { "lessons": { "$filter": { "children.seq": { "$gt": 1 } }, "$count": { "$gt": 0 } } } },
+        "expect": { "kind": "error", "code": "嵌套关系路径" } }
+    ], "note": "G-13 / 8c-2：text2query 档关系聚合谓词子级 filter 的嵌套关系下钻一律显式 Err（功能收缩，禁静默）；standard 档放行（见 J-13）"
   }
 ]
