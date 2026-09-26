@@ -115,9 +115,35 @@ function requireContext() {
   return core.requireContext();
 }
 
+/**
+ * 设置查询档位：`'standard'`（默认，功能最大化 + 跨 DB 对齐）/
+ * `'text2query'`（功能收缩 + 硬限制）
+ *
+ * 判决唯一在 core；未知档位由 core 抛错（禁静默回落到默认档）。
+ */
+function setProfile(profile) {
+  core.setProfile(profile);
+}
+
+/** 当前档位字符串（`'standard'` / `'text2query'`；对齐 py_store.schema.get_profile） */
+function getProfile() {
+  return core.profile();
+}
+
 /** 取 asyncFn 计算列实现（fnRef 缺省 = 计算列 key 名） */
 function getAsyncFn(fnRef) {
   return _asyncFns[fnRef];
 }
 
-module.exports = { core, register, get, has, list, setRequireContext, requireContext, getAsyncFn };
+module.exports = {
+  core,
+  register,
+  get,
+  has,
+  list,
+  setRequireContext,
+  requireContext,
+  setProfile,
+  getProfile,
+  getAsyncFn,
+};

@@ -21,6 +21,8 @@
  *   const items = await store.query('Model($condition:@c0) { field1, field2 }', { c0: {} });
  */
 
+const { AsyncLocalStorage } = require('node:async_hooks');
+
 const crud = require('./crud');
 const datasource = require('./datasource');
 const ddl = require('./ddl');
@@ -30,6 +32,29 @@ const introspect = require('./introspect');
 const permission = require('./permission');
 const schema = require('./schema');
 const { syncSchema } = require('./sync');
+
+/** 档位 AsyncLocalStorage：记录「进入 text2query 前的原档」，供退出恢复（嵌套安全） */
+const _profileAls = new AsyncLocalStorage();
+
+/**
+ * 以 text2query 档执行（功能收缩 + 硬限制），退出恢复原档位。
+ *
+ * AI 问数链路入口；与 permission.scopedRoles 同构（token-set/reset，嵌套安全）。
+ * 档位是 core 进程级状态（非本 ALS 隔离），ALS 仅记录「进入时的原档」以便正确恢复，
+ * 使异步 / 嵌套调用各自回到自己进入前的档位。进入档位即等效强制携带用户上下文
+ * （core `ensureProfileCtx`，见执行文档 §4.2）。
+ */
+async function text2query(fn) {
+  const prev = schema.getProfile();
+  schema.setProfile('text2query');
+  return _profileAls.run(prev, async () => {
+    try {
+      return await fn();
+    } finally {
+      schema.setProfile(prev);
+    }
+  });
+}
 
 class Store {
   // ── Schema 管理 ──
@@ -161,6 +186,26 @@ class Store {
     return schema.requireContext();
   }
 
+  // ── 查询档位（判决唯一在 core）：standard 默认放开 / text2query 功能收缩 ──
+  /**
+   * 设置查询档位：`'standard'`（默认，功能最大化 + 跨 DB 对齐）/
+   * `'text2query'`（功能收缩 + 硬限制）。进入档即等效强制 ctx；
+   * 未知档由 core 抛错（禁静默回落默认档）。
+   */
+  setProfile(profile) {
+    return schema.setProfile(profile);
+  }
+
+  /** 当前查询档位字符串（对齐 py-store store.get_profile） */
+  getProfile() {
+    return schema.getProfile();
+  }
+
+  /** text2query 便捷上下文（进入设档、退出恢复；同 scopedRoles 的 token-set/reset） */
+  async text2query(fn) {
+    return text2query(fn);
+  }
+
   /** 设置数据源连接映射（多后端路由；对齐 py-store store.set_connections） */
   setConnections(connections) {
     return datasource.setConnections(connections);
@@ -191,6 +236,8 @@ class Store {
 
 /** 自定义权限错误（实例可被 store.PermissionError 捕获） */
 Store.prototype.PermissionError = permission.PermissionError;
+/** 档位拒绝错误（实例可被 store.ProfileViolation 捕获；权限错误另见 PermissionError） */
+Store.prototype.ProfileViolation = crud.ProfileViolation;
 /** 原生 SQL 入口错误（实例可被 store.RawSqlError 捕获） */
 Store.prototype.RawSqlError = datasource.RawSqlError;
 
@@ -283,7 +330,9 @@ module.exports = {
   init,
   store,
   Store,
+  text2query,
   PermissionError: permission.PermissionError,
+  ProfileViolation: crud.ProfileViolation,
   PushdownUnsupportedError: datasource.PushdownUnsupportedError,
   RawSqlError: datasource.RawSqlError,
   datasource,

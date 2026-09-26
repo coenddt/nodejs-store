@@ -15,6 +15,7 @@
 const { PermissionError, getContext } = require('../permission');
 const datasource = require('../datasource');
 const { execMongo } = require('../executors/mongo');
+const { emit: _emitFeedback } = require('../feedback');
 const { get: _getSchema } = require('../schema');
 
 const _PHASE1_IDS = /^\{\{phase1\.ids\}\}$/;
@@ -26,6 +27,33 @@ const _STEP_PH = /^\{\{step\.(\d+)\._id\}\}$/;
  * 可自由调整，映射不随文案漂移而静默失效。构造 PermissionError 时剥离前缀。
  */
 const _PERM_PREFIX = 'ERR_PERMISSION:';
+
+/**
+ * 档位类错误识别：core text2query 档门禁统一携带 `ERR_TEXT2QUERY:` 稳定前缀
+ * （见 core `command/mod.rs::ERR_TEXT2QUERY`），同上按前缀映射。命中即 emit
+ * 反馈事件 `profile_blocked`（自动反馈原则：允许拦截，禁止静默）。
+ */
+const _PROFILE_PREFIX = 'ERR_TEXT2QUERY:';
+
+/**
+ * 从 core 文案 `... [$feature]（功能收缩）` 中提取门禁项名；无 `[..]` 时留白
+ * （null），不伪造 feature —— 缺值必须显式暴露（禁静默兜底）。
+ */
+const _FEATURE_RE = /\[(.+?)\]/;
+
+/**
+ * 档位（profile）拒绝：text2query 档违反功能收缩 / 硬限制
+ *
+ * 与权限错误（`PermissionError`，403）区分：档位拒绝是**调用方合约违反**（400），
+ * 非授权问题（见执行文档 §4.4）。`status` 供上层（HTTP 网关等）映射响应码。
+ */
+class ProfileViolation extends Error {
+  constructor(message, status = 400) {
+    super(message);
+    this.name = 'ProfileViolation';
+    this.status = status;
+  }
+}
 
 /** 设置数据源连接映射（对 `../datasource` 的路由入口做包内透出） */
 const setConnections = datasource.setConnections;
@@ -45,7 +73,14 @@ function _ctx() {
   return getContext() ?? null;
 }
 
-/** 绑定层调用包装：权限类错误（`ERR_PERMISSION:` 前缀）映射为 PermissionError */
+/**
+ * 绑定层调用包装：
+ *   - 权限类错误（`ERR_PERMISSION:` 前缀）→ PermissionError
+ *   - 档位类错误（`ERR_TEXT2QUERY:` 前缀）→ emit `profile_blocked` 反馈 + ProfileViolation
+ *
+ * 按前缀映射而非具体文案（core 文案可自由调整，映射不随文案漂移而静默失效）。
+ * 其余异常原样上抛（不吞错）。
+ */
 function _call(fn) {
   try {
     return fn();
@@ -53,6 +88,20 @@ function _call(fn) {
     const msg = e && e.message;
     if (typeof msg === 'string' && msg.startsWith(_PERM_PREFIX)) {
       throw new PermissionError(msg.slice(_PERM_PREFIX.length));
+    }
+    if (typeof msg === 'string' && msg.startsWith(_PROFILE_PREFIX)) {
+      const detail = msg.slice(_PROFILE_PREFIX.length);
+      const m = _FEATURE_RE.exec(detail);
+      _emitFeedback({
+        type: 'profile_blocked',
+        code: 'profileBlocked',
+        layer: 'core',
+        profile: 'text2query',
+        feature: m ? m[1] : null,
+        message: detail,
+        hint: '上游（LLM 产出的 GQL / 调用方入参）越界；text2query 档白名单见 SKILL.md §后端无关性与边界',
+      });
+      throw new ProfileViolation(detail);
     }
     throw e;
   }
@@ -116,6 +165,7 @@ module.exports = {
   _nowFor,
   _ctx,
   _call,
+  ProfileViolation,
   _exec,
   _execOn,
   _substitute,
