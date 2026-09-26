@@ -206,5 +206,24 @@
           "sumEnrolled": { "$sum": "enrolledCount" }, "avgEnrolled": { "$avg": "enrolledCount" } } } },
         "expect": { "kind": "rows" } }
     ], "note": "J-11：**int 字段**的 $sum/$avg（期望值由 Mongo oracle 产出）。原缺陷：PG/MySQL 聚合返回 `Decimal`，绑定层无法转 JSON → `TypeError`；修复：Host 执行器归一 `Decimal`→数值 + SQL 侧 `$avg` 前 CAST 到 double（§9.7），消除 MySQL `AVG(int)` 的 4 位小数截断"
+  },
+  {
+    "id": "J-12", "group": "J", "title": "§4.1 #4 → 8c-1 关系谓词子级 filter —— 数组/对象/点号路径（standard 放行）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0,$sort:@s0){ _id }",
+        "params": { "c0": { "reviews": { "$filter": { "tags": "helpful" }, "$count": { "$gt": 0 } } }, "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1" } ], "normalize": { "sortBy": ["_id"] } } },
+      { "op": "query", "gql": "Course($condition:@c0,$sort:@s0){ _id }",
+        "params": { "c0": { "reviews": { "filter": { "tags": "helpful" },
+          "agg": { "n": { "$count": "*" } }, "having": { "n": { "$gt": 0 } } } }, "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1" } ], "normalize": { "sortBy": ["_id"] } } },
+      { "op": "query", "gql": "Enrollment($condition:@c0,$sort:@s0){ _id }",
+        "params": { "c0": { "course": { "$filter": { "meta.level": "beginner" }, "$count": { "$gt": 0 } } }, "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "e1" }, { "_id": "e4" } ], "normalize": { "sortBy": ["_id"] } } },
+      { "op": "query", "gql": "Enrollment($condition:@c0,$sort:@s0){ _id }",
+        "params": { "c0": { "course": { "$filter": { "meta": { "cover": "c1.png", "level": "beginner", "seo": { "title": "看Python", "desc": "从零开始" } } }, "$count": { "$gt": 0 } } }, "s0": { "_id": 1 } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "e1" }, { "_id": "e4" } ], "normalize": { "sortBy": ["_id"] } } }
+    ], "note": "J-12 / 8c-1：关系聚合谓词子级 filter 的 U1（数组整值，many 关系 reviews.tags）/ U3（对象点号，one 关系 course.meta.level）/ U2（对象整值，one 关系 course.meta）在 standard 档四方言一致；EXISTS 子查询内与根条件同源下推 JSON 列表达式，父行不扇出。text2query 档仍 Err（见 G-12）"
   }
 ]

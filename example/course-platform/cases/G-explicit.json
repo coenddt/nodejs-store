@@ -34,5 +34,20 @@
       { "op": "query", "gql": "Course($sort:@s0){_id}", "params": { "s0": { "meta.level": 1 } },
         "expect": { "kind": "error", "code": "U4" } }
     ], "note": "G-11 / D2：text2query 档对象点号路径排序显式 Err；standard 档放行（见 A-08）"
+  },
+  {
+    "id": "G-12", "group": "G", "title": "text2query 档：关系谓词子级 filter U1~U3 仍显式 Err（功能收缩）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] }, "profile": "text2query",
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id}",
+        "params": { "c0": { "reviews": { "$filter": { "tags": "helpful" }, "$count": { "$gt": 0 } } } },
+        "expect": { "kind": "error", "code": "U1" } },
+      { "op": "query", "gql": "Enrollment($condition:@c0){_id}",
+        "params": { "c0": { "course": { "$filter": { "meta": { "level": "beginner" } }, "$count": { "$gt": 0 } } } },
+        "expect": { "kind": "error", "code": "U2" } },
+      { "op": "query", "gql": "Enrollment($condition:@c0){_id}",
+        "params": { "c0": { "course": { "$filter": { "meta.level": "beginner" }, "$count": { "$gt": 0 } } } },
+        "expect": { "kind": "error", "code": "U3" } }
+    ], "note": "G-12 / 8c-1：text2query 档关系聚合谓词子级 filter 的 U1~U3 一律显式 Err（与根条件同源门禁，禁静默）；standard 档放行（见 J-12）"
   }
 ]
