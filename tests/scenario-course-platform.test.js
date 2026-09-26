@@ -5,7 +5,7 @@
  *
  * 逐后端调用 `example/course-platform/impl/harness.js` 的 `runBackend`：
  * 先跑 MongoDB 产出 oracle，再跑三个 SQL 后端与 oracle 对拍；把结果写进
- * `nodejs-store/doc/test-eval/<YYYY>/<MM>/` 报告（`未处理-` 前缀）并转成断言。
+ * `nodejs-store/doc/test-eval/<YYYY>/<MM>/` 报告（测试报告不带「是否已完成」概念，无状态前缀）并转成断言。
  *
  * Registry 为进程级单例、`(source, namespace, collection)` 跨后端同名（同 triple），
  * 靠 `init({default: 连接})` 换后端 —— 故**必须串行**执行：四个后端在同一个
@@ -73,7 +73,7 @@ after(() => {
   const iso = `${year}-${month}-${String(today.getDate()).padStart(2, '0')}`;
   const outDir = path.join(ROOT, 'doc', 'test-eval', year, month);
   fs.mkdirSync(outDir, { recursive: true });
-  const outPath = path.join(outDir, `未处理-course-platform-场景矩阵-${iso}.md`);
+  const outPath = path.join(outDir, `course-platform-场景矩阵-${iso}.md`);
 
   const L = [];
   L.push(`# course-platform 场景矩阵 · 多后端对拍报告（${iso}）`);
