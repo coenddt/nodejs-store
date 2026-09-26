@@ -4,10 +4,10 @@
 
 | 后端 | 可达 | 断言通过 | 用例总数 | skip 原因 |
 |---|---|---|---|---|
-| `mongodb` | 可达 | 90/90 | 90 | - |
-| `postgres` | 可达 | 90/90 | 90 | - |
-| `mysql` | 可达 | 90/90 | 90 | - |
-| `sqlite` | 可达 | 90/90 | 90 | - |
+| `mongodb` | 可达 | 93/93 | 93 | - |
+| `postgres` | 可达 | 93/93 | 93 | - |
+| `mysql` | 可达 | 93/93 | 93 | - |
+| `sqlite` | 可达 | 93/93 | 93 | - |
 
 > 本报告只出证据，不修实现。判定规则：SQL 结果集与 Mongo(oracle) 逐行相等，或显式 Err / `unsupported` + feedback 告警；静默不一致判缺陷。
 
@@ -15,13 +15,13 @@
 
 | 组 | 用例数 | 后端 | 通过 | 失败 | skip(不可达) |
 |---|----|----|----|----|----|
-| A | 13 | mongodb,postgres,mysql,sqlite | 52 | 0 | - |
+| A | 15 | mongodb,postgres,mysql,sqlite | 60 | 0 | - |
 | B | 13 | mongodb,postgres,mysql,sqlite | 52 | 0 | - |
 | C | 10 | mongodb,postgres,mysql,sqlite | 40 | 0 | - |
 | D | 7 | mongodb,postgres,mysql,sqlite | 28 | 0 | - |
 | E | 15 | mongodb,postgres,mysql,sqlite | 60 | 0 | - |
 | F | 8 | mongodb,postgres,mysql,sqlite | 32 | 0 | - |
-| G | 3 | mongodb,postgres,mysql,sqlite | 12 | 0 | - |
+| G | 4 | mongodb,postgres,mysql,sqlite | 16 | 0 | - |
 | H | 10 | mongodb,postgres,mysql,sqlite | 40 | 0 | - |
 | J | 11 | mongodb,postgres,mysql,sqlite | 44 | 0 | - |
 

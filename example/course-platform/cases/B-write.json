@@ -54,13 +54,12 @@
     ], "note": "B-08：$inc 标量（数组算子 $push 另在 B-08b）"
   },
   {
-    "id": "B-08b", "group": "B", "title": "$push 数组算子", "reset": "seed",
-    "ctx": { "userId": "u1", "roles": ["admin"] }, "sqlPolicy": "explicit-or-parity",
+    "id": "B-08b", "group": "B", "title": "$push 数组算子（SQL 写路径显式 Err）", "reset": "seed",
+    "ctx": { "userId": "u1", "roles": ["admin"] },
     "steps": [
-      { "op": "update", "schema": "Course", "condition": { "_id": "c1" }, "data": { "$push": { "tags": "x" } } },
-      { "op": "query", "gql": "Course($condition:@c0){_id, tags}", "params": { "c0": { "_id": "c1" } },
-        "expect": { "kind": "rows", "rows": [ { "_id": "c1", "tags": ["python", "db", "x"] } ] } }
-    ], "note": "B-08：$push"
+      { "op": "update", "schema": "Course", "condition": { "_id": "c1" }, "data": { "$push": { "tags": "x" } },
+        "expect": { "kind": "unsupported" } }
+    ], "note": "B-08b：$push/$addToSet/$pull 等数组写算子在 JSON 单列上无法安全映射为标量 UPDATE → SQL 侧显式 Err（禁静默），Mongo 原生支持；数组写算子的跨后端对齐不在步骤 8（#3→#4）范围，另行立项"
   },
   {
     "id": "B-10", "group": "B", "title": "update_many 空条件必须拒绝",

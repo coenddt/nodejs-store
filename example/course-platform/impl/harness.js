@@ -465,6 +465,9 @@ async function runBackend(kind, oracle) {
         await seed();
       }
       const savedRequire = store.requireContext();
+      // 档位按用例声明切换（缺省 standard）；text2query 用例显式声明，结束复原
+      const savedProfile = sc.getProfile();
+      sc.setProfile(c.profile || 'standard');
       h.casePolicy = c.sqlPolicy || null;
       const stepsOut = [];
       const caseOracleSteps = [];
@@ -509,6 +512,7 @@ async function runBackend(kind, oracle) {
         });
       } finally {
         store.setRequireContext(savedRequire);
+        sc.setProfile(savedProfile);
       }
       results.push({
         id: c.id,

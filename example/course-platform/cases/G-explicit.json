@@ -1,15 +1,15 @@
 [
   {
-    "id": "G-01", "group": "G", "title": "不可翻译的 filter 必须显式（U1~U3 全局 Err）",
-    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "id": "G-01", "group": "G", "title": "text2query 档：U1~U3 过滤仍显式 Err（功能收缩）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] }, "profile": "text2query",
     "steps": [
       { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "tags": "python" } },
-        "expect": { "kind": "error" } },
+        "expect": { "kind": "error", "code": "U1" } },
       { "op": "query", "gql": "Enrollment($condition:@c0){_id}", "params": { "c0": { "coupon": { "code": "SAVE10" } } },
-        "expect": { "kind": "error" } },
+        "expect": { "kind": "error", "code": "U2" } },
       { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "meta.seo.title": "X" } },
-        "expect": { "kind": "error" } }
-    ], "note": "G-01 / D2：array/object 字段与对象点号路径 filter → 所有后端（含 Mongo）统一显式报错；静默丢弃并返回全表=缺陷"
+        "expect": { "kind": "error", "code": "U3" } }
+    ], "note": "G-01 / D2：text2query 档 U1~U3 一律显式 Err（功能收缩，禁静默）；standard 档放行（见 A-03/A-06/A-07）"
   },
   {
     "id": "G-06", "group": "G", "title": "空逻辑组",
@@ -20,11 +20,19 @@
     ], "note": "G-06：空 $and 不得产出无 WHERE 的全表查询"
   },
   {
-    "id": "G-10", "group": "G", "title": "Mongo 特有算子的 SQL 处理必须二择一（U1 全局 Err）",
+    "id": "G-10", "group": "G", "title": "Mongo 独有算子（$elemMatch）：Mongo 可用、SQL 显式 Err",
     "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
     "steps": [
       { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "tags": { "$elemMatch": { "$eq": "python" } } } },
-        "expect": { "kind": "error" } }
-    ], "note": "G-10 / D2：$elemMatch 作用于数组字段 → 所有后端（含 Mongo）统一显式报错"
+        "expect": { "kind": "unsupported" } }
+    ], "note": "G-10 / D2：$elemMatch 为 Mongo 独有能力 —— standard 档 Mongo 原生可用（结果集另由 A-03 覆盖），SQL 侧必须显式 Err/告警，不得静默丢弃条件"
+  },
+  {
+    "id": "G-11", "group": "G", "title": "text2query 档：U4 点号路径排序仍显式 Err（功能收缩）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] }, "profile": "text2query",
+    "steps": [
+      { "op": "query", "gql": "Course($sort:@s0){_id}", "params": { "s0": { "meta.level": 1 } },
+        "expect": { "kind": "error", "code": "U4" } }
+    ], "note": "G-11 / D2：text2query 档对象点号路径排序显式 Err；standard 档放行（见 A-08）"
   }
 ]

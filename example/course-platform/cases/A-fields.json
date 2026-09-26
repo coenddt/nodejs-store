@@ -24,36 +24,38 @@
     ], "note": "A-02：price>0 命中的是浮点边界可解析的行（按 seed 实际值）"
   },
   {
-    "id": "A-03", "group": "A", "title": "数组字段等值（U1 全局 Err）",
+    "id": "A-03", "group": "A", "title": "数组字段整值过滤（U1：standard 放行）",
     "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
     "steps": [
       { "op": "query", "gql": "Course($condition:@c0){_id, tags}", "params": { "c0": { "tags": "python" } },
-        "expect": { "kind": "error" } }
-    ], "note": "A-03 / D2：数组字段过滤 → 所有后端（含 Mongo）统一显式报错，绝不静默返回全表"
+        "expect": { "kind": "rows", "rows": [
+          { "_id": "c1", "tags": ["python", "db"] }, { "_id": "c6", "tags": ["python"] }
+        ], "normalize": { "sortBy": ["_id"] } } }
+    ], "note": "A-03：数组「包含元素」→ standard 档四方言一致（Mongo 原生 / MySQL JSON_CONTAINS / PG @> / SQLite json_each）；text2query 档仍 Err（见 G-01）"
   },
   {
-    "id": "A-06", "group": "A", "title": "对象字段整体等值（U2 全局 Err）",
+    "id": "A-06", "group": "A", "title": "对象字段整值过滤（U2：standard 放行）",
     "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
     "steps": [
       { "op": "query", "gql": "Enrollment($condition:@c0){_id, coupon}", "params": { "c0": { "coupon": { "code": "SAVE10", "off": 10 } } },
-        "expect": { "kind": "error" } }
-    ], "note": "A-06 / D2：对象深等值过滤 → 所有后端（含 Mongo）统一显式报错"
+        "expect": { "kind": "rows", "rows": [ { "_id": "e1", "coupon": { "code": "SAVE10", "off": 10 } } ] } }
+    ], "note": "A-06：对象整值等值 → standard 档四方言一致（JSON 整值比较；MySQL/PG 键序无关 vs Mongo 字段顺序敏感为已知差异，SQL 侧附告警）；text2query 档仍 Err（见 G-01）"
   },
   {
-    "id": "A-07", "group": "A", "title": "对象点号路径过滤（U3 全局 Err）",
+    "id": "A-07", "group": "A", "title": "对象点号路径过滤（U3：standard 放行）",
     "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
     "steps": [
       { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "meta.seo.title": "看Python" } },
-        "expect": { "kind": "error" } }
-    ], "note": "A-07 / D2：对象点号路径过滤 → 所有后端（含 Mongo）统一显式报错，绝不静默丢弃路径条件"
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1" } ] } }
+    ], "note": "A-07：对象点号路径过滤 → standard 档四方言一致（SQL 走 json_extract 标量提取）；text2query 档仍 Err（见 G-01）"
   },
   {
-    "id": "A-08", "group": "A", "title": "对象点号路径排序（U4 全局 Err）",
+    "id": "A-08", "group": "A", "title": "对象点号路径排序（U4：standard 放行）",
     "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
     "steps": [
-      { "op": "query", "gql": "Course($sort:@s0){_id, title}", "params": { "s0": { "meta.level": 1 } },
-        "expect": { "kind": "error" } }
-    ], "note": "A-08 / D2：对象点号路径排序 → 所有后端（含 Mongo）统一显式报错，绝不静默按未排序返回"
+      { "op": "query", "gql": "Course($sort:@s0){_id, meta}", "params": { "s0": { "meta.level": 1 } },
+        "expect": { "kind": "rows" } }
+    ], "note": "A-08：对象点号路径排序 → standard 档四方言结果集与序一致（与 Mongo oracle 对拍）；text2query 档仍 Err（见 G-11）"
   },
   {
     "id": "A-10", "group": "A", "title": "投影：包含式精确键集",
@@ -119,5 +121,21 @@
       { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "$or": [] } },
         "expect": { "kind": "error" } }
     ], "note": "A-20 / 历史一票否决：空 $or 不得产出无 WHERE 的全表查询"
+  },
+  {
+    "id": "A-21", "group": "A", "title": "数组字段整体等值（U1：standard 放行）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "tags": ["python", "db"] } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c1" } ] } }
+    ], "note": "A-21：数组整值等值（含元素顺序）→ 四方言一致（JSON 整值等值；c1 之外无 [\"python\",\"db\"]）"
+  },
+  {
+    "id": "A-22", "group": "A", "title": "数组字段 $exists:false（U1：standard 放行）",
+    "reset": "seed", "ctx": { "userId": "u1", "roles": ["admin"] },
+    "steps": [
+      { "op": "query", "gql": "Course($condition:@c0){_id}", "params": { "c0": { "tags": { "$exists": false } } },
+        "expect": { "kind": "rows", "rows": [ { "_id": "c4" } ] } }
+    ], "note": "A-22：数组字段缺失（c4 无 tags 键）→ 走 __present 哨兵；空数组 []（c3/c7）算「存在」，不得混入"
   }
 ]
