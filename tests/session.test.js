@@ -23,11 +23,12 @@ const { runAtomic } = require('../src/crud/exec');
 
 // ─── 假 SQL 执行器工厂（doc 4.1） ─────────────────────────────
 
-function makeFakeSqlExecutor(kind = 'sqlite') {
+function makeFakeSqlExecutor(kind = 'sqlite', savepoints = true) {
   const state = {
     opened: 0, committed: 0, rolled_back: 0, released: 0,
     tx_conns: [], exec_conns: [], rows: [],
     fail_on_write: false,
+    savepoints: [], released_sps: [], rolled_to_sps: [],
   };
   let n = 0;
 
@@ -48,7 +49,7 @@ function makeFakeSqlExecutor(kind = 'sqlite') {
     const connId = `conn-${n}`;
     state.tx_conns.push(connId);
     const done = { commit: false, rollback: false, release: false };
-    return {
+    const tx = {
       exec: (plan) => runOn(connId, plan),
       async commit() {
         if (done.commit) return;
@@ -66,12 +67,18 @@ function makeFakeSqlExecutor(kind = 'sqlite') {
         state.released += 1;
       },
     };
+    if (savepoints) {
+      tx.savepoint = async (name) => { state.savepoints.push([connId, name]); };
+      tx.releaseSavepoint = async (name) => { state.released_sps.push([connId, name]); };
+      tx.rollbackToSavepoint = async (name) => { state.rolled_to_sps.push([connId, name]); };
+    }
+    return tx;
   }
 
   async function withTransaction(body) {
     const tx = await openTransaction();
     try {
-      const out = await body(tx.exec);
+      const out = await body(tx.exec, tx);
       await tx.commit();
       return out;
     } catch (e) {
@@ -433,4 +440,109 @@ test('#13 非会话单源写：包事务且不声明 nonAtomic', async () => {
   assert.equal(state.opened, 1);
   assert.equal(state.committed, 1);
   assert.deepEqual(events.filter((e) => e.code === 'nonAtomic'), []);
+});
+
+// ─── #14 同源嵌套 transaction：内层失败只回滚内层、外层提交 ───
+
+test('#14 同源嵌套 transaction：内层失败回滚到保存点、外层提交', async () => {
+  const { descriptor, state } = makeFakeSqlExecutor();
+  datasource.setConnections({ sess_a: descriptor });
+
+  await store.transaction('sess_a', async () => {
+    await assert.rejects(
+      () => store.transaction('sess_a', async () => { throw new Error('inner-boom'); }),
+      /inner-boom/,
+    );
+  });
+
+  assert.equal(state.opened, 1, '嵌套同源事务只开一次事务');
+  assert.deepEqual(state.savepoints.map(([, n]) => n), ['sp_1']);
+  assert.deepEqual(state.rolled_to_sps.map(([, n]) => n), ['sp_1']);
+  assert.deepEqual(state.released_sps.map(([, n]) => n), ['sp_1']);
+  assert.equal(state.committed, 1);
+  assert.equal(state.rolled_back, 0, '外层捕获后仍整体提交');
+});
+
+// ─── #15 同源嵌套 transaction：内层成功只 RELEASE ────────────
+
+test('#15 同源嵌套 transaction：内层成功只 RELEASE 保存点', async () => {
+  const { descriptor, state } = makeFakeSqlExecutor();
+  datasource.setConnections({ sess_a: descriptor });
+
+  const out = await store.transaction(
+    'sess_a', () => store.transaction('sess_a', async () => 'inner-ok'));
+
+  assert.equal(out, 'inner-ok');
+  assert.equal(state.opened, 1);
+  assert.deepEqual(state.savepoints.map(([, n]) => n), ['sp_1']);
+  assert.deepEqual(state.rolled_to_sps, []);
+  assert.deepEqual(state.released_sps.map(([, n]) => n), ['sp_1']);
+  assert.equal(state.committed, 1);
+  assert.equal(state.rolled_back, 0);
+});
+
+// ─── #16 句柄无保存点原语：降级并入外层 + 同源只告警一次 ─────
+
+test('#16 句柄无保存点原语：降级并入外层，同一源只告警一次', async () => {
+  const { descriptor, state } = makeFakeSqlExecutor('sqlite', false);
+  datasource.setConnections({ sess_a: descriptor });
+  const events = [];
+  feedback.setSink((e) => events.push(e));
+  const ran = [];
+
+  await store.transaction('sess_a', async () => {
+    for (let i = 0; i < 2; i += 1) {
+      try {
+        await store.transaction('sess_a', async () => {
+          ran.push('inner');
+          throw new Error('inner-boom');
+        });
+      } catch (_) {
+        ran.push('caught');
+      }
+    }
+  });
+
+  assert.deepEqual(ran, ['inner', 'caught', 'inner', 'caught'], '降级：异常上抛由外层自行处理');
+  assert.equal(state.opened, 1);
+  assert.deepEqual(state.savepoints, []);
+  assert.deepEqual(state.released_sps, []);
+  const warned = events.filter((e) => e.code === 'nestedSavepointUnsupported');
+  assert.equal(warned.length, 1, '同一源（同一外层作用域）只告警一次');
+  assert.equal(warned[0].type, 'nested_savepoint_unsupported');
+  assert.equal(warned[0].source, 'sess_a');
+});
+
+// ─── #17 真实 SQLite：嵌套 transaction 内层回滚、外层提交 ─────
+
+test('#17 真实 SQLite：嵌套 transaction 内层回滚、外层提交', async () => {
+  const file = path.join(os.tmpdir(), `nest-${process.pid}-${Date.now()}.db`);
+  const db = new Database(file);
+  const db2 = new Database(file);
+  try {
+    db.exec('CREATE TABLE nest_t (_id TEXT PRIMARY KEY, v TEXT)');
+    datasource.setConnections({ nest_real: executors.createConnection('sqlite', db) });
+
+    const ins = (v) => store.executeRaw(
+      'nest_real', 'INSERT INTO nest_t (_id, v) VALUES (?, ?)', [v, v], true);
+
+    await store.transaction('nest_real', async () => {
+      await ins('keep');
+      await assert.rejects(
+        () => store.transaction('nest_real', async () => {
+          await ins('drop');
+          throw new Error('inner-boom');
+        }),
+        /inner-boom/,
+      );
+      await ins('outer');
+    });
+
+    const rows = db2.prepare('SELECT _id FROM nest_t ORDER BY _id').all().map((r) => r._id);
+    assert.deepEqual(rows, ['keep', 'outer'], '内层写入回滚，外层写入提交');
+  } finally {
+    db.close();
+    db2.close();
+    try { fs.unlinkSync(file); } catch (_) { /* 清理失败不掩盖用例结论 */ }
+  }
 });

@@ -21,7 +21,7 @@ const os = require('node:os');
 const path = require('node:path');
 const fs = require('node:fs');
 
-const { ddl, schema: _sc, datasource, introspect } = require('../src');
+const { ddl, schema: _sc, datasource, introspect, feedback } = require('../src');
 const { _newIdPool } = require('../src/crud/id');
 const mysqlExec = require('../src/executors/mysql');
 const pgExec = require('../src/executors/postgres');
@@ -84,6 +84,8 @@ test('datasource: 未配置源与执行器未接入均显式报错', async () =>
 });
 
 test('datasource: 同源嵌套事务并入外层（不新开事务）', async () => {
+  const events = [];
+  feedback.setSink((e) => events.push(e));
   const opened = [];
   const innerRan = [];
   datasource.setConnections({
@@ -105,6 +107,8 @@ test('datasource: 同源嵌套事务并入外层（不新开事务）', async ()
 
   assert.deepEqual(opened, [1], '嵌套同源事务只应开启一次');
   assert.deepEqual(innerRan, ['inner'], '内层体须并入外层事务执行');
+  const warned = events.filter((e) => e.code === 'nestedSavepointUnsupported');
+  assert.equal(warned.length, 1, '无保存点原语时降级须告警，且同一源只告警一次');
 });
 
 // ─── DDL：缺少 _id 字段 ─────────────────────────────────────
