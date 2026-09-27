@@ -175,12 +175,83 @@ function runWithSession(session, fn) {
   return _sessionStore.run(session, fn);
 }
 
+/** 嵌套作用域无保存点原语 → 降级并入外层（允许降级，禁止静默） */
+function warnSavepointUnavailable(source) {
+  _emitFeedback({
+    type: 'nested_savepoint_unsupported',
+    code: 'nestedSavepointUnsupported',
+    layer: 'datasource',
+    message: `数据源 ${source} 的事务句柄未提供保存点原语：嵌套作用域并入外层（该层失败将回滚整个外层事务）`,
+    hint: '为执行器 openTransaction 句柄补 savepoint / releaseSavepoint / rollbackToSavepoint',
+    source,
+  });
+}
+
+/** 错误路径保存点回滚 / 释放失败：发反馈，绝不掩盖原始错误 */
+function warnSavepointFailed(source, name, exc) {
+  _emitFeedback({
+    type: 'savepoint_failed',
+    code: 'savepointFailed',
+    layer: 'datasource',
+    message: `保存点回滚/释放失败（${name}，数据源 ${source}）：${exc}`,
+    hint: '检查该数据源连接与事务状态；该嵌套作用域可能未能独立回滚',
+    source,
+    savepoint: name,
+  });
+}
+
+/** 回滚到保存点并释放；任一失败发 savepoint_failed（不掩盖原始错误） */
+async function rollbackSavepoint(tx, source, name) {
+  const errors = [];
+  for (const op of ['rollbackToSavepoint', 'releaseSavepoint']) {
+    try {
+      await tx[op](name);
+    } catch (e) {
+      errors.push(e);
+    }
+  }
+  if (errors.length > 0) warnSavepointFailed(source, name, errors[0]);
+}
+
+/**
+ * 同源嵌套事务作用域：在已持有的事务连接上开保存点
+ *   - 外层句柄无 savepoint 原语 → 降级并入外层（同一外层作用域只告警一次）；
+ *   - 成功 RELEASE；失败 ROLLBACK TO + RELEASE 后原样上抛（外层可继续）。
+ */
+async function nestedSavepointScope(source, outer, fn) {
+  const tx = outer.tx;
+  if (!tx || typeof tx.savepoint !== 'function') {
+    if (!outer.spWarned) {
+      outer.spWarned = true;
+      warnSavepointUnavailable(source);
+    }
+    return fn();
+  }
+  const depth = (outer.spDepth || 0) + 1;
+  outer.spDepth = depth;
+  const name = `sp_${depth}`;
+  await tx.savepoint(name); // 创建失败直接上抛（保存点不存在，无需回滚）
+  let out;
+  try {
+    out = await fn();
+  } catch (e) {
+    await rollbackSavepoint(tx, source, name);
+    throw e;
+  } finally {
+    outer.spDepth = depth - 1;
+  }
+  await tx.releaseSavepoint(name);
+  return out;
+}
+
 /**
  * 事务作用域：在单个 SQL 源上以「同连接 + 同事务」执行 fn 内的全部命令
  *
  *   - fn 内经 `_exec` 路由到该 source 的命令全部落到事务连接（commit/rollback 一体）；
  *   - Mongo 源 / 执行器未实现 withTransaction / 多源混合时按原样执行
  *     （跨源无法原子 —— 信任边界见 README「事务边界」），绝不静默假装已事务化；
+ *   - 同源嵌套：在已持有的事务连接上开保存点 SAVEPOINT sp_<n>（内层失败 ROLLBACK TO 本层，
+ *     外层可继续）；句柄无保存点原语则降级并入外层发 nested_savepoint_unsupported；
  *   - 事务体抛错统一 rollback 后原样上抛。
  */
 async function runInTransaction(source, fn) {
@@ -194,14 +265,15 @@ async function runInTransaction(source, fn) {
   const parent = _txStore.getStore();
   const store = new Map(parent || []);
   if (store.has(source)) {
-    // 同源嵌套事务：外层已持有该源的事务连接，内层并入外层（不做保存点）
-    return fn();
+    // 同源嵌套事务：在已持有的事务连接上开保存点（内层失败只回滚本层，外层可继续）
+    return nestedSavepointScope(source, store.get(source), fn);
   }
-  const txDescriptor = { kind: conn.kind, exec: null };
+  const txDescriptor = { kind: conn.kind, exec: null, tx: null };
   store.set(source, txDescriptor);
   return _txStore.run(store, () =>
-    conn.withTransaction(async (execOnTx) => {
+    conn.withTransaction(async (execOnTx, tx) => {
       txDescriptor.exec = execOnTx;
+      txDescriptor.tx = tx;
       return fn();
     }),
   );
@@ -535,6 +607,9 @@ module.exports = {
   connectionFor,
   resolveConnection,
   runInTransaction,
+  nestedSavepointScope,
+  warnSavepointUnavailable,
+  warnSavepointFailed,
   mongoDb,
   sourceOfSchema,
   connectionOfSchema,
