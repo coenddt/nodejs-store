@@ -546,3 +546,85 @@ test('#17 真实 SQLite：嵌套 transaction 内层回滚、外层提交', async
     try { fs.unlinkSync(file); } catch (_) { /* 清理失败不掩盖用例结论 */ }
   }
 });
+
+// ─── #18 真实 SQLite：嵌套 session 内层回滚、外层提交 ─────────
+
+test('#18 真实 SQLite：嵌套 session 内层回滚、外层提交', async () => {
+  const file = path.join(os.tmpdir(), `nest-sess-${process.pid}-${Date.now()}.db`);
+  const db = new Database(file);
+  const db2 = new Database(file);
+  try {
+    db.exec('CREATE TABLE sess_t (_id TEXT PRIMARY KEY, v TEXT)');
+    datasource.setConnections({ nest_sess: executors.createConnection('sqlite', db) });
+
+    const ins = (v) => store.executeRaw(
+      'nest_sess', 'INSERT INTO sess_t (_id, v) VALUES (?, ?)', [v, v], true);
+
+    await store.session(async () => {
+      await ins('keep');
+      await assert.rejects(
+        () => store.session(async () => {
+          await ins('inner');
+          throw new Error('inner-boom');
+        }),
+        /inner-boom/,
+      );
+      await ins('outer');
+    });
+
+    const rows = db2.prepare('SELECT _id FROM sess_t ORDER BY _id').all().map((r) => r._id);
+    assert.deepEqual(rows, ['keep', 'outer'], '内层会话写入回滚，外层写入提交');
+  } finally {
+    db.close();
+    db2.close();
+    try { fs.unlinkSync(file); } catch (_) { /* 清理失败不掩盖用例结论 */ }
+  }
+});
+
+// ─── #19 嵌套 session：首次写开保存点、退出释放、共用外层事务 ──
+
+test('#19 嵌套 session：首次写开保存点、退出释放、共用外层事务', async () => {
+  const { descriptor, state } = makeFakeSqlExecutor();
+  registerSql('SessA', 'sess_a', 'SA');
+  datasource.setConnections({ sess_a: descriptor });
+
+  await store.session(async (outer) => {
+    await outer.insert('SessA', { v: '1' });
+    await store.session(async (inner) => {
+      await inner.insert('SessA', { v: '2' });
+    });
+  });
+
+  assert.equal(state.opened, 1, '嵌套会话共用外层事务连接');
+  assert.deepEqual(state.savepoints.map(([, n]) => n), ['sp_1'], '内层作用域首次写才开保存点');
+  assert.deepEqual(state.released_sps.map(([, n]) => n), ['sp_1']);
+  assert.equal(state.rolled_back, 0);
+  assert.equal(state.committed, 1);
+});
+
+// ─── #20 会话内 transaction：作为嵌套作用域（失败只回滚本层） ──
+
+test('#20 会话内 transaction：作为嵌套作用域，失败只回滚本层', async () => {
+  const { descriptor, state } = makeFakeSqlExecutor();
+  registerSql('SessA', 'sess_a', 'SA');
+  datasource.setConnections({ sess_a: descriptor });
+
+  await store.session(async (s) => {
+    await s.insert('SessA', { v: '1' });
+    await assert.rejects(
+      () => store.transaction('sess_a', async () => {
+        await store.insert('SessA', { v: '2' });
+        throw new Error('inner-boom');
+      }),
+      /inner-boom/,
+    );
+    await s.insert('SessA', { v: '3' });
+  });
+
+  assert.equal(state.opened, 1, '会话内 transaction 不另开事务');
+  assert.deepEqual(state.savepoints.map(([, n]) => n), ['sp_1']);
+  assert.deepEqual(state.rolled_to_sps.map(([, n]) => n), ['sp_1']);
+  assert.deepEqual(state.released_sps.map(([, n]) => n), ['sp_1']);
+  assert.equal(state.rolled_back, 0);
+  assert.equal(state.committed, 1);
+});
