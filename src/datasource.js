@@ -251,13 +251,13 @@ async function nestedSavepointScope(source, outer, fn) {
 }
 
 /**
- * 事务作用域：在单个 SQL 源上以「同连接 + 同事务」执行 fn 内的全部命令
+ * 事务作用域：在单个源上以「同连接 + 同事务」执行 fn 内的全部命令
  *
- *   - fn 内经 `_exec` 路由到该 source 的命令全部落到事务连接（commit/rollback 一体）；
- *   - Mongo 源 / 执行器未实现 withTransaction / 多源混合时按原样执行
- *     （跨源无法原子 —— 信任边界见 README「事务边界」），绝不静默假装已事务化；
- *   - 同源嵌套：在已持有的事务连接上开保存点 SAVEPOINT sp_<n>（内层失败 ROLLBACK TO 本层，
- *     外层可继续）；句柄无保存点原语则降级并入外层发 nested_savepoint_unsupported；
+ *   - 会话内调用：并入会话（事务边界由会话统一管理），不另开事务；
+ *   - SQL 源且执行器实现 withTransaction：包事务；同源嵌套开 SAVEPOINT sp_<n>；
+ *   - Mongo 源：探测可事务（replica set / sharded）→ 包 session 事务；standalone / unknown
+ *     → 发 `mongo_transaction_unsupported` 并按原样执行（绝不静默假装已事务化）；
+ *   - Mongo 无保存点原语：同源嵌套走既有 `nested_savepoint_unsupported` 降级声明；
  *   - 事务体抛错统一 rollback 后原样上抛。
  */
 async function runInTransaction(source, fn) {
@@ -267,24 +267,53 @@ async function runInTransaction(source, fn) {
     return session.nestedScope(fn);
   }
   const conn = getConnection(source);
-  if (!isSqlConnection(conn) || typeof conn.withTransaction !== 'function') {
+  const parent = _txStore.getStore() || new Map();
+
+  if (isSqlConnection(conn)) {
+    // ── SQL 分支（既有语义，保持不变）──
+    if (typeof conn.withTransaction !== 'function') return fn();
+    if (parent.has(source)) {
+      // 同源嵌套事务：在已持有的事务连接上开保存点（内层失败只回滚本层，外层可继续）
+      return nestedSavepointScope(source, parent.get(source), fn);
+    }
+    const txDescriptor = { kind: conn.kind, exec: null, tx: null };
+    const store = new Map(parent);
+    store.set(source, txDescriptor);
+    return _txStore.run(store, () =>
+      conn.withTransaction(async (execOnTx, tx) => {
+        txDescriptor.exec = execOnTx;
+        txDescriptor.tx = tx;
+        return fn();
+      }),
+    );
+  }
+
+  // ── Mongo 分支 ──
+  if (parent.has(source)) {
+    // 同源嵌套：Mongo 无保存点 → 复用降级声明（内层失败将回滚整个外层事务）
+    return nestedSavepointScope(source, parent.get(source), fn);
+  }
+  const cap = await mongoTransactable(conn);
+  if (cap !== true) {
+    warnMongoUnsupported(source, cap === false ? 'standalone' : 'unknown');
     return fn();
   }
-  const parent = _txStore.getStore();
-  const store = new Map(parent || []);
-  if (store.has(source)) {
-    // 同源嵌套事务：在已持有的事务连接上开保存点（内层失败只回滚本层，外层可继续）
-    return nestedSavepointScope(source, store.get(source), fn);
-  }
-  const txDescriptor = { kind: conn.kind, exec: null, tx: null };
-  store.set(source, txDescriptor);
-  return _txStore.run(store, () =>
-    conn.withTransaction(async (execOnTx, tx) => {
-      txDescriptor.exec = execOnTx;
-      txDescriptor.tx = tx;
-      return fn();
-    }),
-  );
+  const tx = await executors.mongo.openTransaction(conn);
+  const view = { kind: 'mongo', conn, session: tx.session, tx };
+  const store = new Map(parent);
+  store.set(source, view);
+  return _txStore.run(store, async () => {
+    try {
+      const out = await fn();
+      await tx.commit();
+      return out;
+    } catch (e) {
+      await tx.rollback();
+      throw e;
+    } finally {
+      await tx.release();
+    }
+  });
 }
 
 /**
@@ -462,7 +491,8 @@ async function executeRaw(source, sql, params = [], isWrite = false) {
  * 显式会话（工作单元）
  *
  *   - 惰性开事务：命令真正落到某 SQL 源时才 checkout 并 BEGIN（空会话不占连接）；
- *   - Mongo 源 / 缺 openTransaction 的执行器 → 直通 + 告警一次（绝不静默）；
+ *   - Mongo 源按探测结果事务化；不可事务（standalone/unknown）→ 直通 +
+ *     `mongo_transaction_unsupported` 声明（绝不静默）；
  *   - 跨源写 fail-closed：≥2 个源发生写命令 → 退出时全部 rollback 并抛
  *     NonAtomicWriteError；
  *   - 嵌套会话 / 会话内 transaction：作为嵌套作用域在已有事务上开保存点
@@ -473,7 +503,7 @@ async function executeRaw(source, sql, params = [], isWrite = false) {
  */
 class Session {
   constructor() {
-    this._views = new Map();     // source -> { kind, exec, tx } | null（null = 直通）
+    this._views = new Map();     // source -> { kind, exec, tx } | Mongo 视图 | null（null = 直通）
     this._txs = new Map();       // source -> 显式事务句柄
     this._opened = [];           // 开启顺序
     this._wrote = new Set();     // 发生过写命令的 source
@@ -558,21 +588,34 @@ class Session {
     return view;
   }
 
-  /** 解析并缓存该源的事务视图；返回 { kind, exec, tx } 或 null（直通） */
+  /** 解析并缓存该源的事务视图；返回 { kind, exec, tx } /
+   * { kind:'mongo', conn, session, tx } / null（直通） */
   async _openView(source) {
     const override = _txStore.getStore();
-    if (override && override.has(source) && override.get(source).exec) {
-      // 外层事务（runInTransaction / 外层会话）已绑定该源 → 复用，不新开事务、不告警
-      return override.get(source);
+    if (override && override.has(source)) {
+      const ov = override.get(source);
+      if (ov.tx) return ov; // 外层事务已绑定该源 → 复用，不新开事务、不告警
     }
     const connection = getConnection(source);
-    if (isSqlConnection(connection) && typeof connection.openTransaction === 'function') {
-      const tx = await connection.openTransaction();
+    if (isSqlConnection(connection)) {
+      if (typeof connection.openTransaction === 'function') {
+        const tx = await connection.openTransaction();
+        this._txs.set(source, tx);
+        this._opened.push(source);
+        return { kind: connection.kind, exec: tx.exec, tx };
+      }
+      this._warnNotAtomic(source, connection.kind);
+      return null;
+    }
+    // Mongo 源（裸驱动实例）
+    const cap = await mongoTransactable(connection);
+    if (cap === true) {
+      const tx = await executors.mongo.openTransaction(connection);
       this._txs.set(source, tx);
       this._opened.push(source);
-      return { kind: connection.kind, exec: tx.exec, tx };
+      return { kind: 'mongo', conn: connection, session: tx.session, tx };
     }
-    if (isSqlConnection(connection)) this._warnNotAtomic(source, connection.kind);
+    this._warnMongo(source, cap);
     return null;
   }
 
@@ -657,6 +700,13 @@ class Session {
       source,
       kind,
     });
+  }
+
+  /** Mongo 部署不支持事务 → 降级声明（同源只声明一次）；cap=false→standalone，null→unknown */
+  _warnMongo(source, cap) {
+    if (this._warned.has(source)) return;
+    this._warned.add(source);
+    warnMongoUnsupported(source, cap === false ? 'standalone' : 'unknown');
   }
 
   _warnFinalizeFailure(source, commit, exc) {
