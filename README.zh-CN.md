@@ -549,13 +549,16 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
 | 单命令 API（`insert` / `insertMany` / `updateMany` / `upsert` / `remove` / `count` / `exists`） | 单 SQL 源内天然原子（单条 SQL）；Mongo 单文档原子 |
 | `store.transaction(source, fn)` | 单 SQL 源内原子：作用域内所有命令同连接、同事务 |
 | `store.session(...)` | 会话内单 SQL 源**跨多次调用**原子；跨源写被显式拦截（`NonAtomicWriteError`） |
-| 无会话的跨源多写 | 非原子（无 2PC / Saga 支持），按数据源顺序执行 |
+| 无会话的跨源多写 | 非原子（无 2PC / Saga 支持），按数据源顺序执行，并经反馈通道声明 `nonAtomic`（事件 `non_atomic_write`，含涉及源） |
 | Mongo 多步写 | 非原子（Mongo 事务见后续版本） |
 
 - **Mongo 源 / 未实现 `openTransaction` 的执行器**：会话内按原样执行，并发出
   `session_not_atomic` 反馈（允许降级，绝不静默假装已事务化）；
 - **归档幂等**：`remove` 的归档采用按 `_id` upsert 的语义，因此部分失败后的重试不会再因 `_id` 重复而失败。
 - 读一致性：只有在显式会话内的多条读才共享同一事务连接；会话外读不额外开启事务。
+- **跨源写（非会话）**：一次写调用涉及 ≥2 个数据源时**无法原子**，按顺序执行，并发出一条
+  `non_atomic_write` 反馈（`code: nonAtomic`，含涉及源列表）——允许降级、禁止静默。
+  把写收敛到单源，或放入 `store.session()` 内（后者对跨源写直接 fail-closed）。
 
 ## 常见问题
 

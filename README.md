@@ -551,12 +551,13 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
 | Single-command API (`insert` / `insertMany` / `updateMany` / `upsert` / `remove` / `count` / `exists`) | Naturally atomic within one SQL source (a single statement); single documents are atomic on Mongo |
 | `store.transaction(source, fn)` | Atomic within one SQL source: every command in the scope shares one connection and one transaction |
 | `store.session(...)` | Atomic **across multiple calls** on one SQL source inside the session; cross-source writes are rejected explicitly (`NonAtomicWriteError`) |
-| Cross-source multi-write without a session | Not atomic (no 2PC / Saga), executed datasource by datasource |
+| Cross-source multi-write without a session | Not atomic (no 2PC / Saga), executed datasource by datasource, and declares `nonAtomic` via the feedback channel (event `non_atomic_write`, with the sources) |
 | Multi-step writes on Mongo | Not atomic (Mongo transactions are planned for a later version) |
 
 - **Mongo sources / executors without `openTransaction`**: commands run as-is inside a session and emit a `session_not_atomic` feedback event (degradation is allowed, silent pretence is not).
 - **Archive idempotency**: `remove` archives with upsert-by-`_id` semantics, so a retry after partial failure no longer fails on duplicate `_id`.
 - Read consistency: only multiple reads inside an explicit session share one transaction connection; reads outside a session do not open an extra transaction.
+- **Cross-source writes (no session)**: a single write call touching ≥2 datasources **cannot be atomic**; it runs sequentially and emits one `non_atomic_write` feedback event (`code: nonAtomic`, with the source list) — degradation is allowed, silence is not. Converge writes onto a single source, or wrap them in `store.session()` (which fails closed on cross-source writes).
 
 ## FAQ
 

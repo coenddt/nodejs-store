@@ -11,6 +11,8 @@
   `{ exec, commit, rollback, release }`（三者幂等）；`withTransaction` 改为基于其实现。
 - **会话内跨源写 fail-closed**：同一会话写 ≥2 个数据源时先全部回滚、再抛 `NonAtomicWriteError`，
   绝不提交半截。
+- **跨源写 `nonAtomic` 程序化声明**：无会话的一次写调用涉及 ≥2 个数据源时，按顺序执行并发出一条
+  `non_atomic_write` 反馈（`code: nonAtomic`，含涉及源）——非原子边界显式声明，绝不静默。
 
 ### Changed
 
