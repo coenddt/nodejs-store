@@ -42,32 +42,55 @@ function create(driver, _options = {}) {
     return { docs, rows, affectedRows };
   }
 
+  /**
+   * 显式事务句柄：池 checkout 专用连接（失败直接上抛，无静默兜底）
+   * + beginTransaction + 幂等 commit/rollback；release 归还连接（单连接为 no-op）。
+   */
+  async function openTransaction() {
+    const { openAcquire } = require('./index'); // 延迟导入：避免与 index 的循环依赖
+    const { conn, release } = await openAcquire(driver);
+    await conn.beginTransaction();
+    let closed = false;
+    return {
+      exec: (plan) => runStmts(conn, plan),
+      async commit() {
+        if (closed) return;
+        closed = true;
+        await conn.commit();
+      },
+      async rollback() {
+        if (closed) return;
+        closed = true;
+        await conn.rollback();
+      },
+      release,
+    };
+  }
+
+  /** 事务执行：基于 openTransaction（无第二套事务路径），任一失败整体回滚 */
+  async function withTransaction(body) {
+    const tx = await openTransaction();
+    try {
+      const out = await body(tx.exec);
+      await tx.commit();
+      return out;
+    } catch (e) {
+      try {
+        await tx.rollback();
+      } catch (_) {
+        /* rollback 失败不掩盖原始错误 */
+      }
+      throw e;
+    } finally {
+      await tx.release();
+    }
+  }
+
   return {
     kind: 'mysql',
     exec: (plan) => runStmts(driver, plan),
-    /**
-     * 事务执行：body(executeOnTx) 的所有 plan 落在同一连接同一事务内，
-     * 成功 commit / 失败 rollback。池自动取专用连接（结束归还）。
-     */
-    async withTransaction(body) {
-      const conn =
-        typeof driver.getConnection === 'function' ? await driver.getConnection() : driver;
-      try {
-        await conn.beginTransaction();
-        const out = await body((plan) => runStmts(conn, plan));
-        await conn.commit();
-        return out;
-      } catch (e) {
-        try {
-          await conn.rollback();
-        } catch (_) {
-          /* rollback 失败不掩盖原始错误 */
-        }
-        throw e;
-      } finally {
-        if (conn !== driver && typeof conn.release === 'function') conn.release();
-      }
-    },
+    withTransaction,
+    openTransaction,
   };
 }
 

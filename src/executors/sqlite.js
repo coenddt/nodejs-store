@@ -49,26 +49,46 @@ function create(db, _options = {}) {
     return { docs, rows, affectedRows };
   }
 
-  return {
-    kind: 'sqlite',
-    exec: runStmts,
-    /** 事务执行：显式 BEGIN/COMMIT/ROLLBACK（better-sqlite3 默认 autocommit，显式开事务安全） */
-    async withTransaction(body) {
-      db.exec('BEGIN');
-      try {
-        const out = await body(runStmts);
+  /** 显式事务句柄：BEGIN + 幂等 commit/rollback；release 为 no-op（单连接不归还） */
+  async function openTransaction() {
+    db.exec('BEGIN');
+    let closed = false;
+    return {
+      exec: runStmts,
+      async commit() {
+        if (closed) return;
+        closed = true;
         db.exec('COMMIT');
-        return out;
-      } catch (e) {
-        try {
-          db.exec('ROLLBACK');
-        } catch (_) {
-          /* rollback 失败不掩盖原始错误 */
-        }
-        throw e;
+      },
+      async rollback() {
+        if (closed) return;
+        closed = true;
+        db.exec('ROLLBACK');
+      },
+      async release() {},
+    };
+  }
+
+  /** 事务执行：基于 openTransaction（无第二套事务路径），任一失败整体回滚 */
+  async function withTransaction(body) {
+    const tx = await openTransaction();
+    try {
+      const out = await body(tx.exec);
+      await tx.commit();
+      return out;
+    } catch (e) {
+      try {
+        await tx.rollback();
+      } catch (_) {
+        /* rollback 失败不掩盖原始错误 */
       }
-    },
-  };
+      throw e;
+    } finally {
+      await tx.release();
+    }
+  }
+
+  return { kind: 'sqlite', exec: runStmts, withTransaction, openTransaction };
 }
 
 module.exports = { create };

@@ -32,44 +32,55 @@ function create(driver, _options = {}) {
     return { docs, rows, affectedRows };
   }
 
+  /**
+   * 显式事务句柄：池 checkout 专用 client（失败直接上抛，无静默兜底）
+   * + BEGIN + 幂等 commit/rollback；release 归还连接（单连接为 no-op）。
+   */
+  async function openTransaction() {
+    const { openAcquire } = require('./index'); // 延迟导入：避免与 index 的循环依赖
+    const { conn, release } = await openAcquire(driver);
+    await conn.query('BEGIN');
+    let closed = false;
+    return {
+      exec: (plan) => runStmts(conn, plan),
+      async commit() {
+        if (closed) return;
+        closed = true;
+        await conn.query('COMMIT');
+      },
+      async rollback() {
+        if (closed) return;
+        closed = true;
+        await conn.query('ROLLBACK');
+      },
+      release,
+    };
+  }
+
+  /** 事务执行：基于 openTransaction（无第二套事务路径），任一失败整体回滚 */
+  async function withTransaction(body) {
+    const tx = await openTransaction();
+    try {
+      const out = await body(tx.exec);
+      await tx.commit();
+      return out;
+    } catch (e) {
+      try {
+        await tx.rollback();
+      } catch (_) {
+        /* rollback 失败不掩盖原始错误 */
+      }
+      throw e;
+    } finally {
+      await tx.release();
+    }
+  }
+
   return {
     kind: 'postgres',
     exec: (plan) => runStmts(driver, plan),
-    /**
-     * 事务执行：显式 BEGIN/COMMIT/ROLLBACK 包住 body 的全部 plan。
-     * Pool 自动 checkout 专用 client（`release()` 归还）；Client 直连直接用。
-     */
-    async withTransaction(body) {
-      let conn = driver;
-      let release = null;
-      if (typeof driver.connect === 'function') {
-        try {
-          const c = await driver.connect();
-          // Pool.connect() → 专用 Client（带 release）；Client.connect() → 自身
-          if (c && typeof c.query === 'function') {
-            conn = c;
-            if (c !== driver && typeof c.release === 'function') release = () => c.release();
-          }
-        } catch (_) {
-          /* checkout 失败退回 driver 本体，事务语义由 BEGIN/COMMIT 保证 */
-        }
-      }
-      try {
-        await conn.query('BEGIN');
-        const out = await body((plan) => runStmts(conn, plan));
-        await conn.query('COMMIT');
-        return out;
-      } catch (e) {
-        try {
-          await conn.query('ROLLBACK');
-        } catch (_) {
-          /* rollback 失败不掩盖原始错误 */
-        }
-        throw e;
-      } finally {
-        if (release) release();
-      }
-    },
+    withTransaction,
+    openTransaction,
   };
 }
 

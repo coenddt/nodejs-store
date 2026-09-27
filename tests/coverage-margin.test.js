@@ -265,14 +265,36 @@ test('executors/postgres: 入参守卫 + 事务 commit/rollback', async () => {
     '事务体失败须 ROLLBACK 后上抛');
 });
 
-test('executors/postgres: 池 checkout 失败退回 driver 本体（事务语义仍由 BEGIN/COMMIT 保证）', async () => {
+test('executors/postgres: 池 checkout 失败显式上抛（不退回 driver 本体）', async () => {
   const client = pgClient();
   const pool = {
     query: client.query.bind(client),
     async connect () { throw new Error('模拟 checkout 失败'); },
   };
-  await pgExec.create(pool).withTransaction((execOnTx) => execOnTx(WRITE_PLAN));
+  await assert.rejects(
+    () => pgExec.create(pool).withTransaction((execOnTx) => execOnTx(WRITE_PLAN)),
+    /模拟 checkout 失败/,
+    '禁静默兜底：checkout 失败须显式上抛',
+  );
+  assert.deepEqual(client.queries, [], 'checkout 失败不得落到池本体上开事务');
+});
+
+test('executors/postgres: 显式事务句柄 openTransaction（幂等 commit/rollback/release）', async () => {
+  const client = pgClient();
+  const desc = pgExec.create(client);
+  const tx = await desc.openTransaction();
+  await tx.exec(WRITE_PLAN);
+  await tx.commit();
+  await tx.commit();   // 幂等
+  await tx.release();
+  await tx.release();
   assert.deepEqual(client.queries, ['BEGIN', 'UPDATE t SET v = ?', 'COMMIT']);
+
+  const tx2 = await desc.openTransaction();
+  await tx2.rollback();
+  await tx2.rollback(); // 幂等
+  await tx2.release();
+  assert.deepEqual(client.queries.slice(3), ['BEGIN', 'ROLLBACK']);
 });
 
 test('executors/postgres: ROLLBACK 失败不掩盖原始错误', async () => {
