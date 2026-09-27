@@ -6,19 +6,26 @@
 
 - **显式会话（Session / Unit of Work）**：`store.session(async (s) => { ... })`（回调式），会话内同一
   SQL 源的全部命令落到同一事务连接，退出统一提交 / 异常统一回滚；**惰性开事务**，空会话不占连接；
-  会话可嵌套（内层并入外层，不做保存点）。
+  会话可嵌套（内层作用域在已有事务上开 `SAVEPOINT sp_<n>`，内层失败只回滚本层）。
 - **执行器显式事务原语** `openTransaction`（sqlite / postgres / mysql）：返回
   `{ exec, commit, rollback, release }`（三者幂等）；`withTransaction` 改为基于其实现。
 - **会话内跨源写 fail-closed**：同一会话写 ≥2 个数据源时先全部回滚、再抛 `NonAtomicWriteError`，
   绝不提交半截。
 - **跨源写 `nonAtomic` 程序化声明**：无会话的一次写调用涉及 ≥2 个数据源时，按顺序执行并发出一条
   `non_atomic_write` 反馈（`code: nonAtomic`，含涉及源）——非原子边界显式声明，绝不静默。
+- **执行器保存点原语** `savepoint` / `releaseSavepoint` / `rollbackToSavepoint`
+  （sqlite / postgres / mysql）：事务句柄新增三原语；`withTransaction` 的 body 追加第二参数
+  （事务句柄）；JS 忽略多余实参，旧「单参 body」写法仍兼容。
+- **嵌套作用域保存点**：嵌套 `transaction`、嵌套 `session` 与会话内 `transaction` 在已有事务上开
+  `SAVEPOINT sp_<n>`，退出按成败 `RELEASE` / `ROLLBACK TO` + `RELEASE`——内层失败只回滚内层、
+  外层可继续；句柄无原语时降级并入外层并发 `nested_savepoint_unsupported`（允许降级、禁止静默）。
 
 ### Changed
 
 - `update` 的「权限探针 + 写」整体纳入同一事务作用域（`runAtomic`），消除探针与写之间的并发窗口；
   调用级 `now` 仅取一次（两次规划共用）。
 - node postgres 执行器移除「连接 checkout 失败静默退回 driver 本体」的兜底，改为显式上抛。
+- 嵌套事务 / 嵌套会话不再「整体并入外层」：改为保存点隔离（内层失败只回滚本层）。
 - 事务边界文档改为三档口径（单命令 / `transaction` / `session`）。
 
 ## 2.3.0 (2026-09-27)
