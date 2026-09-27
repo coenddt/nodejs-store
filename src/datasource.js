@@ -170,6 +170,11 @@ async function resolveConnection(source, isWrite = false) {
   return connectionFor(source);
 }
 
+/** 在会话上下文内执行 fn（供 store.session 使用） */
+function runWithSession(session, fn) {
+  return _sessionStore.run(session, fn);
+}
+
 /**
  * 事务作用域：在单个 SQL 源上以「同连接 + 同事务」执行 fn 内的全部命令
  *
@@ -456,62 +461,62 @@ class Session {
   // ---------- 会话 API（与 Store 同名同形，委托 crud） ----------
 
   async query(...a) {
-    const crud = require('../crud');
+    const crud = require('./crud');
     return crud.query(...a);
   }
 
   async queryOne(...a) {
-    const crud = require('../crud');
+    const crud = require('./crud');
     return crud.queryOne(...a);
   }
 
   async queryWithCount(...a) {
-    const crud = require('../crud');
+    const crud = require('./crud');
     return crud.queryWithCount(...a);
   }
 
   async insert(...a) {
-    const crud = require('../crud');
+    const crud = require('./crud');
     return crud.insert(...a);
   }
 
   async insertMany(...a) {
-    const crud = require('../crud');
+    const crud = require('./crud');
     return crud.insertMany(...a);
   }
 
   async update(...a) {
-    const crud = require('../crud');
+    const crud = require('./crud');
     return crud.update(...a);
   }
 
   async updateMany(...a) {
-    const crud = require('../crud');
+    const crud = require('./crud');
     return crud.updateMany(...a);
   }
 
   async upsert(...a) {
-    const crud = require('../crud');
+    const crud = require('./crud');
     return crud.upsert(...a);
   }
 
   async remove(...a) {
-    const crud = require('../crud');
+    const crud = require('./crud');
     return crud.remove(...a);
   }
 
   async exists(...a) {
-    const crud = require('../crud');
+    const crud = require('./crud');
     return crud.exists(...a);
   }
 
   async count(...a) {
-    const crud = require('../crud');
+    const crud = require('./crud');
     return crud.count(...a);
   }
 
   async mutation(...a) {
-    const crud = require('../crud');
+    const crud = require('./crud');
     return crud.mutation(...a);
   }
 
@@ -539,6 +544,7 @@ module.exports = {
   executeRaw,
   isWriteCommand,
   currentSession,
+  runWithSession,
   Session,
   NonAtomicWriteError,
   PushdownUnsupportedError,

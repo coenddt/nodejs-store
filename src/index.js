@@ -25,6 +25,7 @@ const { AsyncLocalStorage } = require('node:async_hooks');
 
 const crud = require('./crud');
 const datasource = require('./datasource');
+const { Session, NonAtomicWriteError } = require('./datasource');
 const ddl = require('./ddl');
 const executors = require('./executors');
 const feedback = require('./feedback');
@@ -149,6 +150,40 @@ class Store {
    */
   async transaction(source, fn) {
     return datasource.runInTransaction(source, fn);
+  }
+
+  /**
+   * 会话（工作单元）：回调式，退出统一提交 / 异常统一回滚
+   *
+   * 用法:
+   *   await store.session(async (s) => {
+   *     await s.insert('Order', { ... });
+   *     await s.update('Account', cond, { ... });
+   *   });
+   *
+   * 约束：同一会话内写命令只允许落在**单一数据源**；跨源写退出时抛
+   * NonAtomicWriteError（先全部回滚，绝不提交半截）。
+   */
+  async session(fn) {
+    if (typeof fn !== 'function') {
+      throw new TypeError('store.session(fn) 需要回调函数：await store.session(async (s) => { ... })');
+    }
+    const s = new Session();
+    const parent = datasource.currentSession();
+    if (parent !== null) {
+      s.bindOuter(parent);                  // 嵌套：生命周期交外层
+      return fn(s);
+    }
+    return datasource.runWithSession(s, async () => {
+      try {
+        const out = await fn(s);
+        await s.exit(null);
+        return out;
+      } catch (err) {
+        await s.exit(err);
+        throw err;
+      }
+    });
   }
 
   /**
@@ -331,6 +366,8 @@ module.exports = {
   store,
   Store,
   text2query,
+  Session,
+  NonAtomicWriteError,
   PermissionError: permission.PermissionError,
   ProfileViolation: crud.ProfileViolation,
   PushdownUnsupportedError: datasource.PushdownUnsupportedError,
