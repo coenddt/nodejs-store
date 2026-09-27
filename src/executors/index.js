@@ -38,6 +38,43 @@ function _scalar(rows) {
   return typeof v === 'string' ? Number(v) : v;
 }
 
+/**
+ * 显式 checkout：返回 `{ conn, release }`；`release` 为 async 幂等函数。
+ *
+ * 池形态（pg Pool → `connect()` / mysql2 Pool → `getConnection()`）失败**直接上抛**，
+ * 禁「静默退回 driver 本体」——退回本体可能落到池上另一连接，使事务语义错乱；
+ * 单连接形态直用 driver，release 为 no-op。
+ * pg / mysql 执行器的显式事务句柄均以此为基础（禁第二套 checkout 路径）。
+ */
+async function openAcquire(driver) {
+  if (driver && typeof driver.connect === 'function') {
+    const conn = await driver.connect(); // pg Pool：失败直接上抛
+    let released = false;
+    return {
+      conn,
+      release: async () => {
+        if (released) return;
+        released = true;
+        // pg Client（connect() 返回自身）无 release()，属单连接形态
+        if (typeof conn.release === 'function') conn.release();
+      },
+    };
+  }
+  if (driver && typeof driver.getConnection === 'function') {
+    const conn = await driver.getConnection(); // mysql2 Pool：失败直接上抛
+    let released = false;
+    return {
+      conn,
+      release: async () => {
+        if (released) return;
+        released = true;
+        conn.release();
+      },
+    };
+  }
+  return { conn: driver, release: async () => {} }; // 单连接形态
+}
+
 /** 中立包络 → Mongo 驱动等价返回值 */
 function shapeResult(cmd, out) {
   switch (cmd.kind) {
@@ -62,4 +99,4 @@ function shapeResult(cmd, out) {
   }
 }
 
-module.exports = { createConnection, shapeResult, mongo, mysql, postgres, sqlite };
+module.exports = { createConnection, openAcquire, shapeResult, mongo, mysql, postgres, sqlite };
