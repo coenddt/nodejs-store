@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.3.0 (未发布)
+## 2.3.0 (2026-09-27)
 
 ### New Features
 
@@ -25,6 +25,13 @@
 - **超深关系嵌套不再静默降级**：深度 / 分页深度超限由「静默返回残缺数据」改为**显式抛错**（两档一致）。
 - **根级 `$pipeline` 按档分流**：`standard` 档放行（Mongo 源可用；SQL 源逐阶段翻译、无法映射即
   `PushdownUnsupportedError`），`text2query` 档 `ProfileViolation`；`$out` / `$merge` 写副作用阶段两档均拒。
+
+### Tooling
+
+- 新增 `tests/host-paths.test.js`：两阶段读路径（取 ID → 回表 → 还原排序）、联邦降级告警、
+  `init` 入参校验等 Host 执行路径补测。
+- 新增 `tests/coverage-margin.test.js`：原生核心加载守卫（生产禁从相邻仓库兜底）、执行器事务
+  提交回滚、DDL 边界与 introspection 后端分发等此前未覆盖分支。双文件对标 `py-store` 同名用例。
 
 ## 2.0.0 (2026-09-14)
 
