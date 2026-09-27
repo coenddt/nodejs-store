@@ -147,6 +147,9 @@ class Store {
    * fn 内 executeRaw / CRUD 均落到该源的事务连接（commit/rollback 一体）；
    * Mongo 源或执行器未实现 withTransaction 时按原样执行（跨源无法原子），
    * 绝不静默假装已事务化。单源场景 source 传 'default'。
+   *
+   * 同源嵌套 transaction 会开保存点（内层失败只回滚本层）；句柄无保存点原语时
+   * 降级并入外层并发 nested_savepoint_unsupported。
    */
   async transaction(source, fn) {
     return datasource.runInTransaction(source, fn);
@@ -163,6 +166,9 @@ class Store {
    *
    * 约束：同一会话内写命令只允许落在**单一数据源**；跨源写退出时抛
    * NonAtomicWriteError（先全部回滚，绝不提交半截）。
+   *
+   * 嵌套：内层会话作为嵌套作用域在已有事务上开保存点，内层失败只回滚本层
+   * （生命周期仍交外层）。
    */
   async session(fn) {
     if (typeof fn !== 'function') {
@@ -171,8 +177,17 @@ class Store {
     const s = new Session();
     const parent = datasource.currentSession();
     if (parent !== null) {
-      s.bindOuter(parent);                  // 嵌套：生命周期交外层
-      return fn(s);
+      // 嵌套：生命周期交外层；本层作为嵌套作用域（保存点隔离，失败只回滚本层）
+      s.bindOuter(parent);
+      const scope = parent.pushScope();
+      try {
+        const out = await fn(s);
+        await parent.popScope(scope, false);
+        return out;
+      } catch (err) {
+        await parent.popScope(scope, true);
+        throw err;
+      }
     }
     return datasource.runWithSession(s, async () => {
       try {
