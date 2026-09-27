@@ -53,6 +53,17 @@ function create(driver, _options = {}) {
     let closed = false;
     return {
       exec: (plan) => runStmts(conn, plan),
+      async savepoint(name) {
+        /* 保存点（嵌套事务用）；name 由 Host 生成（sp_<n>），非用户输入。
+           MySQL 预备语句协议不支持 SAVEPOINT → 必须走 conn.query */
+        await conn.query(`SAVEPOINT ${name}`);
+      },
+      async releaseSavepoint(name) {
+        await conn.query(`RELEASE SAVEPOINT ${name}`);
+      },
+      async rollbackToSavepoint(name) {
+        await conn.query(`ROLLBACK TO SAVEPOINT ${name}`);
+      },
       async commit() {
         if (closed) return;
         closed = true;
@@ -67,11 +78,12 @@ function create(driver, _options = {}) {
     };
   }
 
-  /** 事务执行：基于 openTransaction（无第二套事务路径），任一失败整体回滚 */
+  /** 事务执行：基于 openTransaction（无第二套事务路径），任一失败整体回滚；
+   *  body(exec, tx) 第二参数为事务句柄（供上层读保存点原语），可选——旧单参写法继续可用 */
   async function withTransaction(body) {
     const tx = await openTransaction();
     try {
-      const out = await body(tx.exec);
+      const out = await body(tx.exec, tx);
       await tx.commit();
       return out;
     } catch (e) {
