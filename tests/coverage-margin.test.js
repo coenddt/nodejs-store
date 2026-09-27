@@ -17,6 +17,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
+const os = require('node:os');
+const path = require('node:path');
+const fs = require('node:fs');
 
 const { ddl, schema: _sc, datasource, introspect } = require('../src');
 const { _newIdPool } = require('../src/crud/id');
@@ -179,10 +182,15 @@ function mysqlConn ({ fail = false, failOn = null } = {}) {
     rolled: 0,
     released: 0,
     began: 0,
+    queries: [],
     async execute (_sql, _params) {
       calls += 1;
       if (fail && (failOn === null || calls > failOn)) throw new Error('模拟语句失败');
       return [{ affectedRows: 2 }, []];
+    },
+    async query (sql, _params) {
+      this.queries.push(sql);
+      return [{ affectedRows: 0 }, []];
     },
     async beginTransaction () { this.began += 1; },
     async commit () { this.committed += 1; },
@@ -348,6 +356,71 @@ test('executors/sqlite: ROLLBACK 失败不掩盖原始错误', async () => {
     () => sqliteExec.create(db).withTransaction(async () => { throw new Error('模拟事务体失败'); }),
     /模拟事务体失败/,
   );
+});
+
+// ─── 保存点原语：SAVEPOINT / RELEASE / ROLLBACK TO ────────────
+
+test('executors/sqlite: 保存点原语发 SAVEPOINT / RELEASE / ROLLBACK TO', async () => {
+  const execs = [];
+  const db = {
+    prepare: () => ({ all: () => [], run: () => ({ changes: 0 }) }),
+    exec: (sql) => execs.push(sql),
+  };
+  const tx = await sqliteExec.create(db).openTransaction();
+  await tx.savepoint('sp_1');
+  await tx.releaseSavepoint('sp_1');
+  await tx.rollbackToSavepoint('sp_1');
+  await tx.commit();
+  assert.deepEqual(execs, [
+    'BEGIN', 'SAVEPOINT sp_1', 'RELEASE SAVEPOINT sp_1', 'ROLLBACK TO SAVEPOINT sp_1', 'COMMIT',
+  ]);
+});
+
+test('executors/sqlite: 真实库回滚到保存点后，保存点之后的写入保留', async () => {
+  const file = path.join(os.tmpdir(), `sp-${process.pid}-${Date.now()}.db`);
+  const db = new Database(file);
+  const db2 = new Database(file);
+  try {
+    db.exec('CREATE TABLE sp_t (_id TEXT PRIMARY KEY)');
+    const ins = (v) => ({ stmts: [{ text: 'INSERT INTO sp_t (_id) VALUES (?)', params: [v], isWrite: true }] });
+    const tx = await sqliteExec.create(db).openTransaction();
+    await tx.exec(ins('a'));
+    await tx.savepoint('sp_1');
+    await tx.exec(ins('b'));
+    await tx.rollbackToSavepoint('sp_1');
+    await tx.releaseSavepoint('sp_1');
+    await tx.exec(ins('c'));
+    await tx.commit();
+    const rows = db2.prepare('SELECT _id FROM sp_t ORDER BY _id').all().map((r) => r._id);
+    assert.deepEqual(rows, ['a', 'c'], '回滚到保存点后 b 不可见，保存点之后的 c 保留');
+  } finally {
+    db.close();
+    db2.close();
+    try { fs.unlinkSync(file); } catch (_) { /* 清理失败不掩盖用例结论 */ }
+  }
+});
+
+test('executors/mysql: 保存点原语走 query（预备协议不支持 SAVEPOINT）', async () => {
+  const conn = mysqlConn();
+  const tx = await mysqlExec.create(conn).openTransaction();
+  await tx.savepoint('sp_1');
+  await tx.releaseSavepoint('sp_1');
+  await tx.rollbackToSavepoint('sp_1');
+  assert.deepEqual(conn.queries, [
+    'SAVEPOINT sp_1', 'RELEASE SAVEPOINT sp_1', 'ROLLBACK TO SAVEPOINT sp_1',
+  ]);
+});
+
+test('executors/postgres: 保存点原语发 SAVEPOINT / RELEASE / ROLLBACK TO', async () => {
+  const client = pgClient();
+  const tx = await pgExec.create(client).openTransaction();
+  await tx.savepoint('sp_1');
+  await tx.releaseSavepoint('sp_1');
+  await tx.rollbackToSavepoint('sp_1');
+  await tx.rollback();
+  assert.deepEqual(client.queries, [
+    'BEGIN', 'SAVEPOINT sp_1', 'RELEASE SAVEPOINT sp_1', 'ROLLBACK TO SAVEPOINT sp_1', 'ROLLBACK',
+  ]);
 });
 
 // ─── ID 供给：one 关系子节点 ─────────────────────────────────
