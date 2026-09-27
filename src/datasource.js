@@ -255,8 +255,10 @@ async function nestedSavepointScope(source, outer, fn) {
  *   - 事务体抛错统一 rollback 后原样上抛。
  */
 async function runInTransaction(source, fn) {
-  if (currentSession() !== null) {
-    return fn(); // 会话内：事务边界由会话统一管理
+  const session = currentSession();
+  if (session !== null) {
+    // 会话内：事务边界由会话统一管理；本层作为嵌套作用域开保存点（失败只回滚本层）
+    return session.nestedScope(fn);
   }
   const conn = getConnection(source);
   if (!isSqlConnection(conn) || typeof conn.withTransaction !== 'function') {
@@ -403,19 +405,23 @@ async function executeRaw(source, sql, params = [], isWrite = false) {
  *   - Mongo 源 / 缺 openTransaction 的执行器 → 直通 + 告警一次（绝不静默）；
  *   - 跨源写 fail-closed：≥2 个源发生写命令 → 退出时全部 rollback 并抛
  *     NonAtomicWriteError；
- *   - 嵌套会话：内层并入外层（不做保存点；SAVEPOINT 属 Phase 2）。
+ *   - 嵌套会话 / 会话内 transaction：作为嵌套作用域在已有事务上开保存点
+ *     （内层失败只回滚本层；名字形如 sp_<n>）。
  *
  * 会话上下文由 `store.session` 用 `_sessionStore.run(session, fn)` 整体包裹
  * （见 index.js#session）；`Session` 自身不设置上下文，`bindOuter` 只记录父子关系。
  */
 class Session {
   constructor() {
-    this._views = new Map();     // source -> { kind, exec } | null（null = 直通）
+    this._views = new Map();     // source -> { kind, exec, tx } | null（null = 直通）
     this._txs = new Map();       // source -> 显式事务句柄
     this._opened = [];           // 开启顺序
     this._wrote = new Set();     // 发生过写命令的 source
     this._warned = new Set();
     this._outer = null;
+    this._spWarned = new Set();  // 无保存点原语的告警去重
+    this._scopes = [];           // 嵌套作用域栈（仅最外层会话持有）
+    this._spSeq = 0;             // 保存点命名序号（sp_<n>）
   }
 
   /** 绑定外层会话（嵌套时生命周期交外层）；由 store.session 调用，不设置上下文 */
@@ -480,10 +486,20 @@ class Session {
     if (errors.length > 0) throw errors[0][1];
   }
 
-  /** 命令落到该源时解析连接：事务视图 / null（直通，用原始连接） */
+  /** 命令落到该源时解析连接：事务视图 / null（直通，用原始连接）
+   *
+   * 嵌套作用域内首次**写**某源时，在该事务连接上开保存点（惰性，只读不开）。
+   */
   async connFor(source, isWrite = false) {
     if (isWrite) this._wrote.add(source);
-    if (this._views.has(source)) return this._views.get(source);
+    if (!this._views.has(source)) this._views.set(source, await this._openView(source));
+    const view = this._views.get(source);
+    if (isWrite && this._scopes.length > 0) await this._scopeSavepoints(source, view);
+    return view;
+  }
+
+  /** 解析并缓存该源的事务视图；返回 { kind, exec, tx } 或 null（直通） */
+  async _openView(source) {
     const override = _txStore.getStore();
     if (override && override.has(source) && override.get(source).exec) {
       // 外层事务（runInTransaction / 外层会话）已绑定该源 → 复用，不新开事务、不告警
@@ -492,15 +508,79 @@ class Session {
     const connection = getConnection(source);
     if (isSqlConnection(connection) && typeof connection.openTransaction === 'function') {
       const tx = await connection.openTransaction();
-      const view = { kind: connection.kind, exec: tx.exec };
-      this._views.set(source, view);
       this._txs.set(source, tx);
       this._opened.push(source);
-      return view;
+      return { kind: connection.kind, exec: tx.exec, tx };
     }
-    this._views.set(source, null);
     if (isSqlConnection(connection)) this._warnNotAtomic(source, connection.kind);
     return null;
+  }
+
+  // ---------- 嵌套作用域（嵌套会话 / 会话内 transaction） ----------
+
+  /** 进入嵌套作用域（内层 session / 会话内 transaction） */
+  pushScope() {
+    const scope = { savepoints: new Map(), txs: new Map() };
+    this._scopes.push(scope);
+    return scope;
+  }
+
+  /** 退出嵌套作用域：按成败回滚到保存点或释放（失败发反馈，不掩盖原异常） */
+  async popScope(scope, rollback) {
+    try {
+      for (const source of [...scope.savepoints.keys()].reverse()) {
+        const name = scope.savepoints.get(source);
+        if (name === null) continue;
+        const tx = scope.txs.get(source);
+        try {
+          if (rollback) await tx.rollbackToSavepoint(name);
+          await tx.releaseSavepoint(name);
+        } catch (e) {
+          warnSavepointFailed(source, name, e);
+        }
+      }
+    } finally {
+      const i = this._scopes.indexOf(scope);
+      if (i >= 0) this._scopes.splice(i, 1);
+    }
+  }
+
+  /** 会话内以嵌套作用域执行 fn（保存点隔离；失败只回滚本层） */
+  async nestedScope(fn) {
+    const scope = this.pushScope();
+    let out;
+    try {
+      out = await fn();
+    } catch (e) {
+      await this.popScope(scope, true);
+      throw e;
+    }
+    await this.popScope(scope, false);
+    return out;
+  }
+
+  /** 嵌套作用域首次写到某源时开保存点（惰性；句柄无原语 → 降级 + 告警一次） */
+  async _scopeSavepoints(source, view) {
+    const tx = view && view.tx ? view.tx : null;
+    for (const scope of this._scopes) {
+      if (scope.savepoints.has(source)) continue;
+      if (!tx || typeof tx.savepoint !== 'function') {
+        this._warnScopeNoSavepoint(source);
+        scope.savepoints.set(source, null);
+        continue;
+      }
+      this._spSeq += 1;
+      const name = `sp_${this._spSeq}`;
+      await tx.savepoint(name); // 创建失败直接上抛（可见错误）
+      scope.savepoints.set(source, name);
+      scope.txs.set(source, tx);
+    }
+  }
+
+  _warnScopeNoSavepoint(source) {
+    if (this._spWarned.has(source)) return;
+    this._spWarned.add(source);
+    warnSavepointUnavailable(source);
   }
 
   // ---------- 告警（自动反馈：允许降级、禁止静默） ----------
