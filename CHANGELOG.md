@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **显式会话（Session / Unit of Work）**：`store.session(async (s) => { ... })`（回调式），会话内同一
+  SQL 源的全部命令落到同一事务连接，退出统一提交 / 异常统一回滚；**惰性开事务**，空会话不占连接；
+  会话可嵌套（内层并入外层，不做保存点）。
+- **执行器显式事务原语** `openTransaction`（sqlite / postgres / mysql）：返回
+  `{ exec, commit, rollback, release }`（三者幂等）；`withTransaction` 改为基于其实现。
+- **会话内跨源写 fail-closed**：同一会话写 ≥2 个数据源时先全部回滚、再抛 `NonAtomicWriteError`，
+  绝不提交半截。
+
+### Changed
+
+- `update` 的「权限探针 + 写」整体纳入同一事务作用域（`runAtomic`），消除探针与写之间的并发窗口；
+  调用级 `now` 仅取一次（两次规划共用）。
+- node postgres 执行器移除「连接 checkout 失败静默退回 driver 本体」的兜底，改为显式上抛。
+- 事务边界文档改为三档口径（单命令 / `transaction` / `session`）。
+
 ## 2.3.0 (2026-09-27)
 
 ### New Features

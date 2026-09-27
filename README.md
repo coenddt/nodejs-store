@@ -320,6 +320,22 @@ await store.transaction('default', transfer);
 - `store.executeRaw(source, sql, params, isWrite)` runs raw SQL, bypassing GQL parsing and dialect translation. Placeholders follow each backend's native style: `?` for MySQL / SQLite, `$1..$n` for PostgreSQL. SQL sources only — a Mongo source throws `RawSqlError` (`store.RawSqlError`).
 - `isWrite=false` (default) returns `{ rows, affectedRows }` with the result-set rows; `isWrite=true` returns the affected-row count.
 
+### Session (Unit of Work)
+
+```js
+await store.session(async (s) => {
+  await s.insert('Order', { ... });
+  await s.update('Account', cond, { ... });
+  await s.executeRaw('pg_main', 'SELECT ... FOR UPDATE', [1]);
+});
+```
+
+- Inside a session, **every command on the same SQL source lands on one transaction connection**: the session commits once on exit, and rolls back as one unit on any exception.
+- **Lazy transaction start**: a session with no commands never checks out a connection.
+- **Cross-source writes fail closed**: if a session writes to ≥2 datasources, it rolls everything back and throws `NonAtomicWriteError` on exit (no distributed transaction — it never commits a half-done unit of work).
+- Mongo sources run as-is inside a session (non-atomic) and emit one `session_not_atomic` feedback event.
+- Sessions nest: an inner session joins the outer one, with no savepoints (SAVEPOINT is planned for a later version).
+
 ### DDL generation
 
 ```js
@@ -530,11 +546,17 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
 
 ## Transaction boundary
 
-- **Single SQL source**: `mutation` parent-child step sequences and `remove` (archive + delete) run inside one driver transaction on one checked-out connection — any step failure rolls back the whole sequence.
-- **Each SQL write command** is itself atomic: multi-statement plans (e.g. MySQL write + readback) are transaction-wrapped in the executor.
-- **Mongo sources**: single-document writes are atomic; multi-step `mutation` and `remove` execute sequentially and are **not** atomic across steps (Mongo transactions require a replica set). If your consistency requirement spans steps on Mongo, either use an SQL source for those models or add application-level compensation.
+| Scenario | Atomicity |
+|---|---|
+| Single-command API (`insert` / `insertMany` / `updateMany` / `upsert` / `remove` / `count` / `exists`) | Naturally atomic within one SQL source (a single statement); single documents are atomic on Mongo |
+| `store.transaction(source, fn)` | Atomic within one SQL source: every command in the scope shares one connection and one transaction |
+| `store.session(...)` | Atomic **across multiple calls** on one SQL source inside the session; cross-source writes are rejected explicitly (`NonAtomicWriteError`) |
+| Cross-source multi-write without a session | Not atomic (no 2PC / Saga), executed datasource by datasource |
+| Multi-step writes on Mongo | Not atomic (Mongo transactions are planned for a later version) |
+
+- **Mongo sources / executors without `openTransaction`**: commands run as-is inside a session and emit a `session_not_atomic` feedback event (degradation is allowed, silent pretence is not).
 - **Archive idempotency**: `remove` archives with upsert-by-`_id` semantics, so a retry after partial failure no longer fails on duplicate `_id`.
-- **Cross-source steps** (parent and child bound to different datasources) cannot be atomic — they run sequentially by design.
+- Read consistency: only multiple reads inside an explicit session share one transaction connection; reads outside a session do not open an extra transaction.
 
 ## FAQ
 

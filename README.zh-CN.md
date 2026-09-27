@@ -319,6 +319,23 @@ await store.transaction('default', transfer);
 - `store.executeRaw(source, sql, params, isWrite)` 执行原生 SQL，绕开 GQL 解析与方言翻译。占位符沿用各后端原生风格：MySQL / SQLite 用 `?`，PostgreSQL 用 `$1..$n`。仅限 SQL 源 —— Mongo 源会抛出 `RawSqlError`（`store.RawSqlError`）。
 - `isWrite=false`（默认）返回 `{ rows, affectedRows }` 含结果集行；`isWrite=true` 返回影响行数。
 
+### 会话（Session / 工作单元）
+
+```js
+await store.session(async (s) => {
+  await s.insert('Order', { ... });
+  await s.update('Account', cond, { ... });
+  await s.executeRaw('pg_main', 'SELECT ... FOR UPDATE', [1]);
+});
+```
+
+- 会话内同一 SQL 源的**全部命令落到同一事务连接**：退出统一提交，异常统一回滚；
+- **惰性开事务**：会话内没有任何命令时不占用连接；
+- **跨源写 fail-closed**：同一会话内写入了 ≥2 个数据源时，退出先全部回滚再抛
+  `NonAtomicWriteError`（跨源无分布式事务，绝不提交半截）；
+- Mongo 源在会话内按原样执行（非原子），并发出一条 `session_not_atomic` 反馈；
+- 会话可嵌套：内层并入外层，不做保存点（SAVEPOINT 见后续版本）。
+
 ### DDL 生成
 
 ```js
@@ -527,11 +544,18 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
 
 ## 事务边界
 
-- **单一 SQL 源**：`mutation` 的父子步骤序列与 `remove`（归档 + 删除）在一个已检出的连接上的单个驱动事务内执行 —— 任一步失败会回滚整个序列。
-- **每条 SQL 写入命令**本身即原子：多语句计划（例如 MySQL 的写入 + 回读）在执行器内被事务包裹。
-- **Mongo 源**：单文档写入是原子的；多步 `mutation` 与 `remove` 顺序执行，跨步骤**不**原子（Mongo 事务需要副本集）。若你的跨步骤一致性要求发生在 Mongo 上，请为这些模型改用 SQL 源，或补充应用层补偿。
+| 场景 | 原子性 |
+|---|---|
+| 单命令 API（`insert` / `insertMany` / `updateMany` / `upsert` / `remove` / `count` / `exists`） | 单 SQL 源内天然原子（单条 SQL）；Mongo 单文档原子 |
+| `store.transaction(source, fn)` | 单 SQL 源内原子：作用域内所有命令同连接、同事务 |
+| `store.session(...)` | 会话内单 SQL 源**跨多次调用**原子；跨源写被显式拦截（`NonAtomicWriteError`） |
+| 无会话的跨源多写 | 非原子（无 2PC / Saga 支持），按数据源顺序执行 |
+| Mongo 多步写 | 非原子（Mongo 事务见后续版本） |
+
+- **Mongo 源 / 未实现 `openTransaction` 的执行器**：会话内按原样执行，并发出
+  `session_not_atomic` 反馈（允许降级，绝不静默假装已事务化）；
 - **归档幂等**：`remove` 的归档采用按 `_id` upsert 的语义，因此部分失败后的重试不会再因 `_id` 重复而失败。
-- **跨源步骤**（父与子绑定到不同数据源）无法原子 —— 按设计顺序执行。
+- 读一致性：只有在显式会话内的多条读才共享同一事务连接；会话外读不额外开启事务。
 
 ## 常见问题
 
