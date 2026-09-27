@@ -128,6 +128,43 @@ async function _exec(cmd) {
   return _execOn(cmd.source || datasource.DEFAULT_SOURCE, cmd);
 }
 
+/** 从规划结果中提取数据源集合（探针 / 写 / 查 / 删 / mutation 步骤命令）
+ *
+ * `sources` 必须由规划结果提取，不得写死 `default`（多租户路由场景下的
+ * 源由 core 规划决定）。
+ */
+function sourcesOf(plan) {
+  const out = new Set();
+  for (const key of ['needsProbe', 'command', 'findCommand', 'deleteCommand']) {
+    const cmd = (plan || {})[key] || {};
+    if (cmd && Object.keys(cmd).length > 0) out.add(cmd.source || datasource.DEFAULT_SOURCE);
+  }
+  for (const step of (plan || {}).steps || []) {
+    const cmd = (step || {}).command || {};
+    if (cmd && Object.keys(cmd).length > 0) out.add(cmd.source || datasource.DEFAULT_SOURCE);
+  }
+  return out.size > 0 ? out : new Set([datasource.DEFAULT_SOURCE]);
+}
+
+/**
+ * 顶层 API 调用的原子包络：无会话 + 单一 SQL 源 → 包事务；否则原样执行
+ *
+ *   - 会话内：事务边界由会话统一管理，直接执行（不嵌套）；
+ *   - 多源 / Mongo 源 / 未配置源：按原样执行（跨源无法原子，绝不静默假装）；
+ *   - sources 由调用方从「规划结果」中提取（`sourcesOf`），命令源与事务源一致。
+ */
+async function runAtomic(sources, fn) {
+  if (datasource.currentSession() !== null) return fn();
+  const uniq = new Set(Array.from(sources, (s) => s || datasource.DEFAULT_SOURCE));
+  if (uniq.size === 1) {
+    const [source] = uniq;
+    if (datasource.hasConnection(source) && datasource.isSql(source)) {
+      return datasource.runInTransaction(source, fn);
+    }
+  }
+  return fn();
+}
+
 /** 深度替换命令中的占位符（命中 resolver 返回非字符串时替换） */
 function _substitute(value, resolver) {
   if (typeof value === 'string') return resolver(value);
@@ -172,6 +209,8 @@ module.exports = {
   _PROFILE_HINT,
   _exec,
   _execOn,
+  runAtomic,
+  sourcesOf,
   _substitute,
   resolvePlaceholders,
 };
