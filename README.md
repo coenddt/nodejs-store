@@ -316,7 +316,7 @@ async function transfer() {
 await store.transaction('default', transfer);
 ```
 
-- `store.transaction(source, fn)` opens a transaction scope on one SQL source: every `executeRaw` / CRUD call inside `fn` lands on that source's transaction connection, with `commit` / `rollback` as one unit (reuses the internal `runInTransaction`). Mongo sources or executors without transactions run `fn` as-is — it never pretends to be atomic. A nested same-source transaction opens a savepoint (an inner failure rolls back only that scope); without savepoint primitives it degrades by joining the outer transaction and emits `nested_savepoint_unsupported`.
+- `store.transaction(source, fn)` opens a transaction scope on one source: every `executeRaw` / CRUD call inside `fn` lands on that source's transaction connection, with `commit` / `rollback` as one unit (reuses the internal `runInTransaction`). Mongo sources are probed at runtime (replica set / sharded) and wrapped in a session transaction; on standalone or probe failure `fn` runs as-is and emits `mongo_transaction_unsupported` (`deployment: standalone|unknown`) — it never pretends to be atomic. Executors without `openTransaction` also run `fn` as-is. A nested same-source transaction opens a savepoint (an inner failure rolls back only that scope); without savepoint primitives it degrades by joining the outer transaction and emits `nested_savepoint_unsupported`.
 - `store.executeRaw(source, sql, params, isWrite)` runs raw SQL, bypassing GQL parsing and dialect translation. Placeholders follow each backend's native style: `?` for MySQL / SQLite, `$1..$n` for PostgreSQL. SQL sources only — a Mongo source throws `RawSqlError` (`store.RawSqlError`).
 - `isWrite=false` (default) returns `{ rows, affectedRows }` with the result-set rows; `isWrite=true` returns the affected-row count.
 
@@ -333,7 +333,7 @@ await store.session(async (s) => {
 - Inside a session, **every command on the same SQL source lands on one transaction connection**: the session commits once on exit, and rolls back as one unit on any exception.
 - **Lazy transaction start**: a session with no commands never checks out a connection.
 - **Cross-source writes fail closed**: if a session writes to ≥2 datasources, it rolls everything back and throws `NonAtomicWriteError` on exit (no distributed transaction — it never commits a half-done unit of work).
-- Mongo sources run as-is inside a session (non-atomic) and emit one `session_not_atomic` feedback event.
+- Mongo sources are probed at runtime (replica set / sharded) and made transactional; on standalone or probe failure they run as-is (non-atomic) and emit one `mongo_transaction_unsupported` (`deployment: standalone|unknown`) feedback event.
 - Sessions nest: an inner scope opens a savepoint (`SAVEPOINT sp_<n>`) on the outer transaction and, on exit, `RELEASE`s it (success) or `ROLLBACK TO`s and releases it (failure) — **an inner failure rolls back only the inner scope while the outer one continues**. When the transaction handle has no savepoint primitives, the nested scope degrades by joining the outer one and emits one `nested_savepoint_unsupported` feedback event.
 
 ### DDL generation
@@ -552,9 +552,10 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
 | `store.transaction(source, fn)` | Atomic within one SQL source: every command in the scope shares one connection and one transaction; nested same-source scopes use a savepoint (an inner failure rolls back only that scope) |
 | `store.session(...)` | Atomic **across multiple calls** on one SQL source inside the session; cross-source writes are rejected explicitly (`NonAtomicWriteError`) |
 | Cross-source multi-write without a session | Not atomic (no 2PC / Saga), executed datasource by datasource, and declares `nonAtomic` via the feedback channel (event `non_atomic_write`, with the sources) |
-| Multi-step writes on Mongo | Not atomic (Mongo transactions are planned for a later version) |
+| Multi-step writes on Mongo | replica set / sharded: atomic on a single Mongo source (session transaction); standalone: non-atomic and explicitly declares `mongo_transaction_unsupported` |
 
-- **Mongo sources / executors without `openTransaction`**: commands run as-is inside a session and emit a `session_not_atomic` feedback event (degradation is allowed, silent pretence is not).
+- **Mongo sources**: made transactional inside a session according to the runtime probe; non-transactable ones (standalone / probe failure) run as-is and emit a `mongo_transaction_unsupported` feedback event (`deployment: standalone|unknown`) (degradation is allowed, silent pretence is not).
+- **SQL executors without `openTransaction`**: commands run as-is inside a session and emit a `session_not_atomic` feedback event (degradation is allowed, silent pretence is not).
 - **Archive idempotency**: `remove` archives with upsert-by-`_id` semantics, so a retry after partial failure no longer fails on duplicate `_id`.
 - Read consistency: only multiple reads inside an explicit session share one transaction connection; reads outside a session do not open an extra transaction.
 - **Cross-source writes (no session)**: a single write call touching ≥2 datasources **cannot be atomic**; it runs sequentially and emits one `non_atomic_write` feedback event (`code: nonAtomic`, with the source list) — degradation is allowed, silence is not. Converge writes onto a single source, or wrap them in `store.session()` (which fails closed on cross-source writes).

@@ -315,7 +315,7 @@ async function transfer() {
 await store.transaction('default', transfer);
 ```
 
-- `store.transaction(source, fn)` 在单个 SQL 源上开启事务作用域：`fn` 内的每个 `executeRaw` / CRUD 调用都落到该源的事务连接，`commit` / `rollback` 作为一个整体（复用内部的 `runInTransaction`）。Mongo 源或不支持事务的执行器会按原样执行 `fn` —— 绝不假装已原子。同源嵌套 transaction 会开保存点（内层失败只回滚本层）；句柄无保存点原语时降级并入外层并发 `nested_savepoint_unsupported`。
+- `store.transaction(source, fn)` 在单个 SQL 源上开启事务作用域：`fn` 内的每个 `executeRaw` / CRUD 调用都落到该源的事务连接，`commit` / `rollback` 作为一个整体（复用内部的 `runInTransaction`）。Mongo 源按**运行时能力探测**（replica set / sharded）以 session 事务执行；standalone 或探测失败则按原样执行 `fn` 并发 `mongo_transaction_unsupported`（`deployment: standalone|unknown`）—— 绝不假装已原子。不支持事务（未实现 `openTransaction`）的执行器亦按原样执行。同源嵌套 transaction 会开保存点（内层失败只回滚本层）；句柄无保存点原语时降级并入外层并发 `nested_savepoint_unsupported`。
 - `store.executeRaw(source, sql, params, isWrite)` 执行原生 SQL，绕开 GQL 解析与方言翻译。占位符沿用各后端原生风格：MySQL / SQLite 用 `?`，PostgreSQL 用 `$1..$n`。仅限 SQL 源 —— Mongo 源会抛出 `RawSqlError`（`store.RawSqlError`）。
 - `isWrite=false`（默认）返回 `{ rows, affectedRows }` 含结果集行；`isWrite=true` 返回影响行数。
 
@@ -333,7 +333,7 @@ await store.session(async (s) => {
 - **惰性开事务**：会话内没有任何命令时不占用连接；
 - **跨源写 fail-closed**：同一会话内写入了 ≥2 个数据源时，退出先全部回滚再抛
   `NonAtomicWriteError`（跨源无分布式事务，绝不提交半截）；
-- Mongo 源在会话内按原样执行（非原子），并发出一条 `session_not_atomic` 反馈；
+- Mongo 源按**运行时能力探测**（replica set / sharded）事务化；standalone 或探测失败则按原样执行（非原子），并发出一条 `mongo_transaction_unsupported`（`deployment: standalone|unknown`）反馈；
 - 会话可嵌套：内层作用域在已有事务上开保存点（`SAVEPOINT sp_<n>`），退出按成败
   `RELEASE`（成功）/ `ROLLBACK TO` + `RELEASE`（失败）——**内层失败只回滚内层，外层可继续**；
   事务句柄未提供保存点原语时降级并入外层，并发出一条 `nested_savepoint_unsupported` 反馈。
@@ -552,9 +552,11 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
 | `store.transaction(source, fn)` | 单 SQL 源内原子：作用域内所有命令同连接、同事务；同源嵌套开保存点（内层失败只回滚本层） |
 | `store.session(...)` | 会话内单 SQL 源**跨多次调用**原子；跨源写被显式拦截（`NonAtomicWriteError`） |
 | 无会话的跨源多写 | 非原子（无 2PC / Saga 支持），按数据源顺序执行，并经反馈通道声明 `nonAtomic`（事件 `non_atomic_write`，含涉及源） |
-| Mongo 多步写 | 非原子（Mongo 事务见后续版本） |
+| Mongo 多步写 | replica set / sharded：单 Mongo 源原子（session 事务）；standalone：非原子并显式声明 `mongo_transaction_unsupported` |
 
-- **Mongo 源 / 未实现 `openTransaction` 的执行器**：会话内按原样执行，并发出
+- **Mongo 源**：会话内按运行时能力探测结果事务化；不可事务（standalone / 探测失败）按原样执行，
+  并发出 `mongo_transaction_unsupported` 反馈（`deployment: standalone|unknown`）（允许降级，绝不静默假装已事务化）；
+- **未实现 `openTransaction` 的 SQL 执行器**：会话内按原样执行，并发出
   `session_not_atomic` 反馈（允许降级，绝不静默假装已事务化）；
 - **归档幂等**：`remove` 的归档采用按 `_id` upsert 的语义，因此部分失败后的重试不会再因 `_id` 重复而失败。
 - 读一致性：只有在显式会话内的多条读才共享同一事务连接；会话外读不额外开启事务。

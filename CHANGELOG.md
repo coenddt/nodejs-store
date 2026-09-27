@@ -19,6 +19,13 @@
 - **嵌套作用域保存点**：嵌套 `transaction`、嵌套 `session` 与会话内 `transaction` 在已有事务上开
   `SAVEPOINT sp_<n>`，退出按成败 `RELEASE` / `ROLLBACK TO` + `RELEASE`——内层失败只回滚内层、
   外层可继续；句柄无原语时降级并入外层并发 `nested_savepoint_unsupported`（允许降级、禁止静默）。
+- **Mongo session 事务**：单 Mongo 源在 replica set / sharded 部署下由 `store.session` / 顶层写调用
+  包事务（`startSession` + `startTransaction`）；执行器新增 `openTransaction` 与原语，
+  `execMongo(db, cmd, session)` 全 9 种 kind 透传 session；**运行时能力探测**（`hello` 的
+  `setName` / `msg=isdbgrid`，按 client 缓存）四态判定，standalone / 探测失败降级按原样执行并声明
+  `mongo_transaction_unsupported`（`deployment: standalone|unknown`）。
+- **Mongo 无保存点原语的嵌套语义**：同源嵌套作用域走既有 `nested_savepoint_unsupported` 降级声明
+  （Mongo 不支持 `SAVEPOINT`，不伪造）。
 
 ### Changed
 
@@ -27,6 +34,9 @@
 - node postgres 执行器移除「连接 checkout 失败静默退回 driver 本体」的兜底，改为显式上抛。
 - 嵌套事务 / 嵌套会话不再「整体并入外层」：改为保存点隔离（内层失败只回滚本层）。
 - 事务边界文档改为三档口径（单命令 / `transaction` / `session`）。
+- **Mongo 会话/事务边界口径**：由「Mongo 一律非原子（`session_not_atomic`）」改为「按运行时部署能力
+  事务化（replica set / sharded），不可事务则显式声明 `mongo_transaction_unsupported`」；
+  `isSqlConnection` 判定收紧为 `kind ∈ {'mysql','postgres','sqlite'}`。
 
 ## 2.3.0 (2026-09-27)
 
