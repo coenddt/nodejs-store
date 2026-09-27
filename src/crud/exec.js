@@ -113,9 +113,9 @@ function _call(fn) {
 // ─── 命令执行（唯一 IO 边界） ────────────────────────────────
 
 /** 在指定数据源上执行命令（Mongo 走原生驱动，SQL 走 translate → exec；
- * 事务作用域内经 datasource.connectionFor 落到事务专用连接） */
+ * 事务 / 会话作用域内经 datasource.resolveConnection 落到事务专用连接） */
 async function _execOn(source, cmd) {
-  const connection = datasource.connectionFor(source);
+  const connection = await datasource.resolveConnection(source, datasource.isWriteCommand(cmd));
   const db = datasource.mongoDb(connection, source, cmd.namespace ?? null);
   if (db) {
     return execMongo(db, cmd);
