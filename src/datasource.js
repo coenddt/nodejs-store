@@ -42,6 +42,12 @@ const WRITE_KINDS = new Set([
   'deleteMany',
 ]);
 
+/** SQL 后端 kind 白名单（Mongo 驱动实例 / Mongo 事务视图一律非 SQL） */
+const SQL_KINDS = new Set(['mysql', 'postgres', 'sqlite']);
+
+/** Mongo 事务能力缓存：client -> true/false（探测失败不写缓存，下次重探） */
+const _mongoTxCap = new WeakMap();
+
 /** 命令是否为写命令（跨源写 fail-closed 判定用） */
 function isWriteCommand(cmd) {
   return !!cmd && WRITE_KINDS.has(cmd.kind);
@@ -132,11 +138,11 @@ function hasConnection(source) {
   return _connections[source] !== undefined;
 }
 
-/** 连接是否为 SQL 执行器描述符（`{ kind, exec }`；Mongo 为驱动实例） */
+/** 连接是否为 SQL 执行器描述符（`kind ∈ SQL_KINDS` 且 `exec` 为函数；Mongo 一律非 SQL） */
 function isSqlConnection(connection) {
   return (
     !!connection &&
-    typeof connection.kind === 'string' &&
+    SQL_KINDS.has(connection.kind) &&
     typeof connection.exec === 'function'
   );
 }
@@ -307,6 +313,60 @@ function mongoDb(connection, source, namespace) {
     return connection.db(namespace);
   }
   return null;
+}
+
+/** MongoClient 形态判别（db 实例有 collection 函数，MongoClient 只有 db） */
+function isMongoClientHandle(x) {
+  return !!x && typeof x.db === 'function' && typeof x.collection !== 'function';
+}
+
+/** Mongo 连接的 client：db 实例取 `.client`；MongoClient 返回自身；其余 null */
+function mongoClientOf(connection) {
+  if (isMongoClientHandle(connection)) return connection;
+  return (connection && connection.client) || null;
+}
+
+/**
+ * 探测 Mongo 部署是否支持多文档事务（四态，绝不猜；结果按 client 缓存）
+ *   - true : 支持（replica set 的 setName，或 sharded 的 msg === 'isdbgrid'）
+ *   - false: 不支持（standalone）
+ *   - null : 探测失败 / 无法探测（unknown；不写缓存，下次重探）
+ * 经 admin 库的 hello 命令探测（只读、幂等、驱动无关）。
+ */
+async function mongoTransactable(connection) {
+  const client = mongoClientOf(connection);
+  if (!client) return null;
+  if (_mongoTxCap.has(client)) return _mongoTxCap.get(client);
+  let hello;
+  try {
+    hello = await client.db('admin').command({ hello: 1 });
+  } catch (_) {
+    return null;
+  }
+  const cap = Boolean(hello.setName) || hello.msg === 'isdbgrid';
+  _mongoTxCap.set(client, cap);
+  return cap;
+}
+
+/** 数据源名是否绑定 Mongo 源（非 SQL 描述符即 Mongo 驱动实例 / Mongo 事务视图） */
+function isMongoSource(source) {
+  return !isSqlConnection(getConnection(source));
+}
+
+/** Mongo 部署不支持事务 → 降级按原样执行（允许降级，禁止静默）
+ *
+ * deployment: 'standalone'（探测为不支持）| 'unknown'（探测失败/无法探测）。
+ */
+function warnMongoUnsupported(source, deployment) {
+  _emitFeedback({
+    type: 'mongo_transaction_unsupported',
+    code: 'mongoTransactionUnsupported',
+    layer: 'datasource',
+    deployment,
+    message: `数据源 ${source} 的 Mongo 部署不支持多文档事务（${deployment}）：本次调用按原样执行（非原子）`,
+    hint: '将 MongoDB 部署为 replica set 或 sharded cluster 以启用 session 事务；standalone 无此能力',
+    source,
+  });
 }
 
 /** schema 声明的数据源名（缺省 `default`） */
@@ -691,6 +751,11 @@ module.exports = {
   warnSavepointUnavailable,
   warnSavepointFailed,
   mongoDb,
+  isMongoClientHandle,
+  mongoClientOf,
+  mongoTransactable,
+  isMongoSource,
+  warnMongoUnsupported,
   sourceOfSchema,
   connectionOfSchema,
   dbOfSchema,
