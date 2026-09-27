@@ -19,6 +19,7 @@ const Database = require('better-sqlite3');
 
 const { init, store, executors, permission, feedback, datasource, NonAtomicWriteError, schema: _sc } = require('../src');
 const { core: _core } = require('../src/schema');
+const { runAtomic } = require('../src/crud/exec');
 
 // ─── 假 SQL 执行器工厂（doc 4.1） ─────────────────────────────
 
@@ -395,4 +396,41 @@ test('#11 真实 SQLite：提交可见、异常回滚不可见（A1/A2）', asyn
     db2.close();
     try { fs.unlinkSync(file); } catch (_) { /* 清理失败不掩盖用例结论 */ }
   }
+});
+
+// ─── #12 非会话多源写：程序化声明 nonAtomic（B1） ────────────
+
+test('#12 非会话多源写：恰声明一次 nonAtomic（B1）', async () => {
+  const events = [];
+  feedback.setSink((e) => events.push(e));
+  let ran = false;
+
+  const out = await runAtomic(new Set(['sess_a', 'sess_b']), async () => {
+    ran = true;
+    return 'ok';
+  });
+
+  assert.equal(out, 'ok');
+  assert.equal(ran, true, '多源仍按顺序原样执行（不阻断）');
+  const na = events.filter((e) => e.code === 'nonAtomic');
+  assert.equal(na.length, 1, '多源写恰声明一次');
+  assert.equal(na[0].type, 'non_atomic_write');
+  assert.equal(na[0].layer, 'crud');
+  assert.deepEqual(na[0].sources, ['sess_a', 'sess_b']);
+});
+
+// ─── #13 非会话单源写：包事务且不声明 nonAtomic（零回归） ─────
+
+test('#13 非会话单源写：包事务且不声明 nonAtomic', async () => {
+  const { descriptor, state } = makeFakeSqlExecutor();
+  datasource.setConnections({ sess_a: descriptor });
+  const events = [];
+  feedback.setSink((e) => events.push(e));
+
+  const out = await runAtomic(new Set(['sess_a']), async () => 42);
+
+  assert.equal(out, 42);
+  assert.equal(state.opened, 1);
+  assert.equal(state.committed, 1);
+  assert.deepEqual(events.filter((e) => e.code === 'nonAtomic'), []);
 });
