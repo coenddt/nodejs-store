@@ -5,8 +5,7 @@
  */
 
 const { core: _core, get: _getSchema } = require('../schema');
-const datasource = require('../datasource');
-const { _call, _ctx, _exec, _nowFor } = require('./exec');
+const { _call, _ctx, _exec, _nowFor, runAtomic, sourcesOf } = require('./exec');
 const { _generateId } = require('./id');
 
 /** creator 写权限探针：先规划，若 needsProbe 则执行探针命令后重入 */
@@ -52,13 +51,31 @@ async function insertMany(schemaName, docs, routeOverride = null) {
  *
  * data 的 key 以 '$' 开头 → 原生 MongoDB 操作符（$set/$inc/$unset 等）直接透传。
  * 否则自动包装为 $set 模式。`routeOverride` 可选（多租户路由）。
+ *
+ * 「权限探针 + 写」整体纳入同一原子作用域（`runAtomic`）：单一 SQL 源时探针与写
+ * 同连接同事务，消除二者之间的并发窗口；`now` 只取一次，两次规划共用（调用级确定性）。
  */
 async function update(schemaName, condition, data, options = null, routeOverride = null) {
-  const out = await _planWithProbe((found, doc) => _call(() =>
-    _core.planUpdate(schemaName, condition ?? null, data ?? null, options ?? null, _nowFor(schemaName), _ctx(),
-      found, doc, routeOverride)));
-  const result = await _exec(out.command);
-  return result ? _call(() => _core.applyWriteDefaults(schemaName, result)) : null;
+  const now = _nowFor(schemaName);
+  const ctx = _ctx();
+  const first = _call(() =>
+    _core.planUpdate(schemaName, condition ?? null, data ?? null, options ?? null, now, ctx,
+      null, null, routeOverride));
+  const sources = sourcesOf(first);
+
+  const doRun = async () => {
+    let out = first;
+    if (out.needsProbe) {
+      const probeDoc = await _exec(out.needsProbe);
+      out = _call(() =>
+        _core.planUpdate(schemaName, condition ?? null, data ?? null, options ?? null, now, ctx,
+          probeDoc !== null && probeDoc !== undefined, probeDoc ?? null, routeOverride));
+    }
+    const result = await _exec(out.command);
+    return result ? _call(() => _core.applyWriteDefaults(schemaName, result)) : null;
+  };
+
+  return runAtomic(sources, doRun);
 }
 
 /** 批量更新（支持原生操作符） */
@@ -91,13 +108,8 @@ async function remove(schemaName, condition, routeOverride = null) {
     return { deletedCount: result.deletedCount, archivedCount };
   };
 
-  const sources = new Set([out.deleteCommand.source || datasource.DEFAULT_SOURCE]);
-  if (out.findCommand) sources.add(out.findCommand.source || datasource.DEFAULT_SOURCE);
-  const arr = [...sources];
-  if (arr.length === 1 && datasource.isSql(arr[0])) {
-    return datasource.runInTransaction(arr[0], doRemove);
-  }
-  return doRemove();
+  const sources = sourcesOf(out);
+  return runAtomic(sources, doRemove);
 }
 
 /** 判断是否存在 */

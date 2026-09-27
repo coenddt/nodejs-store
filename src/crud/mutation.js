@@ -5,9 +5,8 @@
  */
 
 const { core: _core, get: _getSchema } = require('../schema');
-const datasource = require('../datasource');
 const { emit: _emitFeedback } = require('../feedback');
-const { _call, _ctx, _exec, _nowFor, resolvePlaceholders } = require('./exec');
+const { _call, _ctx, _exec, _nowFor, resolvePlaceholders, runAtomic, sourcesOf } = require('./exec');
 const { _generateId, _newIdPool } = require('./id');
 
 /** mutation 单条：规划步骤序列 → 依序执行 + 父子 _id 占位符回填 */
@@ -36,11 +35,8 @@ async function _mutationOne(schemaName, data, now, routeOverride = null) {
 
   // 单一 SQL 源 → 步骤序列整体事务化（同连接同事务，任一步失败整体回滚）；
   // Mongo 源 / 跨源步骤按原样顺序执行（非原子边界见 README「事务边界」）
-  const sources = [...new Set(plan.steps.map((s) => s.command.source || datasource.DEFAULT_SOURCE))];
-  if (sources.length === 1 && datasource.isSql(sources[0])) {
-    return datasource.runInTransaction(sources[0], runSteps);
-  }
-  return runSteps();
+  const sources = sourcesOf(plan);
+  return runAtomic(sources, runSteps);
 }
 
 /**
