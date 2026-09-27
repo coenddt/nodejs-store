@@ -11,6 +11,10 @@
  * 同时命中「值为 null」与「字段缺失」两类文档，而本 store 的三态契约（F-07/H-09）
  * 要求 `null` 只命中显式 null、`$exists:false` 才命中缺失 —— 这与 SQL 侧
  * `col IS NULL`（显式 null）语义对齐。运算对象（`$ne:null`/`$exists`/`$gt`…）不改写。
+ *
+ * Mongo session 事务：本模块只提供原语 `openTransaction`（`startSession` +
+ * `startTransaction`）与 `execMongo(..., session)` 透传；事务的编排（提交/回滚/
+ * 降级声明）由 datasource 层负责。Mongo **无** `SAVEPOINT` 原语，故不提供保存点系列。
  */
 
 /** 递归改写 filter：`field: null`（标量等值）→ `field: {$eq: null, $exists: true}`。 */
@@ -51,52 +55,95 @@ function _normPipeline(cmd) {
   }
 }
 
-/** Command JSON → MongoDB 原生驱动调用 */
-async function execMongo(db, cmd) {
+/** Mongo 连接的 client：db 实例取 .client；MongoClient 返回自身 */
+function _clientOf(connection) {
+  if (connection && typeof connection.db === 'function' && typeof connection.collection !== 'function') {
+    return connection; // MongoClient
+  }
+  return (connection && connection.client) || null; // Db.client
+}
+
+/** 合并 session 到 options（session 为空时返回原 options 语义，零回归） */
+function _opts(session, base) {
+  const o = base ? { ...base } : {};
+  if (session) o.session = session;
+  return o;
+}
+
+/**
+ * Mongo 事务句柄：startSession + startTransaction
+ *   - commit/rollback 幂等；release 结束 session；
+ *   - 无保存点原语（Mongo 不支持 SAVEPOINT），嵌套由 datasource 层降级声明。
+ */
+async function openTransaction(connection) {
+  const client = _clientOf(connection);
+  const session = client.startSession();
+  session.startTransaction();
+  let closed = false;
+  return {
+    session,
+    async commit() {
+      if (closed) return;
+      closed = true;
+      await session.commitTransaction();
+    },
+    async rollback() {
+      if (closed) return;
+      closed = true;
+      await session.abortTransaction();
+    },
+    async release() {
+      await session.endSession();
+    },
+  };
+}
+
+/** Command JSON → MongoDB 原生驱动调用（session 非空时全部操作携带该 session） */
+async function execMongo(db, cmd, session) {
   const coll = db.collection(cmd.collection);
   switch (cmd.kind) {
     case 'find': {
       _normFilter(cmd);
-      const opts = cmd.projection ? { projection: cmd.projection } : undefined;
+      const opts = _opts(session, cmd.projection ? { projection: cmd.projection } : undefined);
       return coll.find(cmd.filter, opts).toArray();
     }
     case 'aggregate':
       _normPipeline(cmd);
-      return coll.aggregate(cmd.pipeline).toArray();
+      return coll.aggregate(cmd.pipeline, _opts(session)).toArray();
     case 'countDocuments':
       _normFilter(cmd);
-      return coll.countDocuments(cmd.filter);
+      return coll.countDocuments(cmd.filter, _opts(session));
     case 'findOne': {
       _normFilter(cmd);
-      const opts = cmd.projection ? { projection: cmd.projection } : undefined;
+      const opts = _opts(session, cmd.projection ? { projection: cmd.projection } : undefined);
       return coll.findOne(cmd.filter, opts);
     }
     case 'insertOne':
-      await coll.insertOne(cmd.doc);
+      await coll.insertOne(cmd.doc, _opts(session));
       return cmd.doc;
     case 'insertMany':
       if (cmd.upsertById) {
         // 归档幂等（core planArchiveDocs）：按 _id 逐条覆盖 —— 「归档成功但删除失败」
         // 的重试不再因 _id 冲突整批失败。SQL 侧由 dialect 的 ON CONFLICT/REPLACE 承接。
         for (const doc of cmd.docs) {
-          await coll.replaceOne({ _id: doc._id }, doc, { upsert: true });
+          await coll.replaceOne({ _id: doc._id }, doc, _opts(session, { upsert: true }));
         }
         return { insertedCount: cmd.docs.length };
       }
-      await coll.insertMany(cmd.docs);
+      await coll.insertMany(cmd.docs, _opts(session));
       return { insertedCount: cmd.docs.length };
     case 'findOneAndUpdate':
       _normFilter(cmd);
-      return coll.findOneAndUpdate(cmd.filter, cmd.update, cmd.options);
+      return coll.findOneAndUpdate(cmd.filter, cmd.update, _opts(session, cmd.options));
     case 'updateMany':
       _normFilter(cmd);
-      return coll.updateMany(cmd.filter, cmd.update);
+      return coll.updateMany(cmd.filter, cmd.update, _opts(session));
     case 'deleteMany':
       _normFilter(cmd);
-      return coll.deleteMany(cmd.filter);
+      return coll.deleteMany(cmd.filter, _opts(session));
     default:
       throw new Error(`未支持的命令: ${cmd.kind}`);
   }
 }
 
-module.exports = { execMongo };
+module.exports = { execMongo, openTransaction };
