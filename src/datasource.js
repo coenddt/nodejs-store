@@ -30,6 +30,40 @@ let _connections = Object.create(null);
 /** 事务作用域的连接覆盖：source → 事务描述符（见 runInTransaction） */
 const _txStore = new AsyncLocalStorage();
 
+/** 当前会话：优先于 _txStore（会话内部自持事务连接） */
+const _sessionStore = new AsyncLocalStorage();
+
+/** 写命令 kind（与 crud 侧 Command.kind 一致） */
+const WRITE_KINDS = new Set([
+  'insertOne',
+  'insertMany',
+  'updateMany',
+  'findOneAndUpdate',
+  'deleteMany',
+]);
+
+/** 命令是否为写命令（跨源写 fail-closed 判定用） */
+function isWriteCommand(cmd) {
+  return !!cmd && WRITE_KINDS.has(cmd.kind);
+}
+
+/** 会话内写入了多个数据源：跨源写无法原子（fail-closed，绝不静默提交半截） */
+class NonAtomicWriteError extends Error {
+  constructor(sources) {
+    const list = Array.from(sources).sort();
+    super(
+      `会话内写入了多个数据源（${list.join(', ')}）：跨源写无法原子（Phase 1 未提供分布式事务）；请拆分为多个会话，或改用单一数据源`,
+    );
+    this.name = 'NonAtomicWriteError';
+    this.sources = list;
+  }
+}
+
+/** 当前生效会话（无则 null） */
+function currentSession() {
+  return _sessionStore.getStore() || null;
+}
+
 /**
  * SQL 下推遇到无法安全翻译的组合（core 标记 unsupported）
  *
@@ -122,6 +156,20 @@ function connectionFor(source) {
   return getConnection(source);
 }
 
+/** 会话感知的连接解析：会话内返回事务覆盖，否则返回全局连接
+ *
+ * `crud.exec._execOn` 与 `executeRaw` 共用此入口，保证会话内命令
+ * （含跨多次调用的 CRUD 与原生 SQL）落到同一事务连接。
+ */
+async function resolveConnection(source, isWrite = false) {
+  const session = currentSession();
+  if (session !== null) {
+    const override = await session.connFor(source, isWrite);
+    if (override !== null && override !== undefined) return override;
+  }
+  return connectionFor(source);
+}
+
 /**
  * 事务作用域：在单个 SQL 源上以「同连接 + 同事务」执行 fn 内的全部命令
  *
@@ -131,6 +179,9 @@ function connectionFor(source) {
  *   - 事务体抛错统一 rollback 后原样上抛。
  */
 async function runInTransaction(source, fn) {
+  if (currentSession() !== null) {
+    return fn(); // 会话内：事务边界由会话统一管理
+  }
   const conn = getConnection(source);
   if (!isSqlConnection(conn) || typeof conn.withTransaction !== 'function') {
     return fn();
@@ -246,7 +297,7 @@ class RawSqlError extends Error {
 /**
  * 在指定 SQL 源上执行原生 SQL（Host 层逃生口，绕开 core 的 dialectTranslate）
  *
- *   - 事务作用域内经 `connectionFor` 落到事务专用连接 → 支持 SELECT ... FOR UPDATE；
+ *   - 事务 / 会话作用域内经 `resolveConnection` 落到事务专用连接 → 支持 SELECT ... FOR UPDATE；
  *   - 占位符沿用各后端原生风格（mysql/sqlite 用 `?`，postgres 用 `$1..$n`）；
  *   - 仅支持 SQL 源；Mongo 源显式报错（绝不静默）；
  *   - `isWrite=false` 视为读（取行）；`true` 视为写（取影响行数）；
@@ -254,7 +305,7 @@ class RawSqlError extends Error {
  *   对齐 py_store/datasource.py#execute_raw。
  */
 async function executeRaw(source, sql, params = [], isWrite = false) {
-  const conn = connectionFor(source);
+  const conn = await resolveConnection(source, isWrite);
   if (!conn || typeof conn.kind !== 'string') {
     throw new RawSqlError(
       `数据源 ${source} 不是 SQL 源（原生 SQL 入口仅支持 mysql/postgres/sqlite）`,
@@ -268,6 +319,207 @@ async function executeRaw(source, sql, params = [], isWrite = false) {
   return { rows: out.rows ?? null, affectedRows: Number(out.affectedRows || 0) };
 }
 
+/**
+ * 显式会话（工作单元）
+ *
+ *   - 惰性开事务：命令真正落到某 SQL 源时才 checkout 并 BEGIN（空会话不占连接）；
+ *   - Mongo 源 / 缺 openTransaction 的执行器 → 直通 + 告警一次（绝不静默）；
+ *   - 跨源写 fail-closed：≥2 个源发生写命令 → 退出时全部 rollback 并抛
+ *     NonAtomicWriteError；
+ *   - 嵌套会话：内层并入外层（不做保存点；SAVEPOINT 属 Phase 2）。
+ *
+ * 会话上下文由 `store.session` 用 `_sessionStore.run(session, fn)` 整体包裹
+ * （见 index.js#session）；`Session` 自身不设置上下文，`bindOuter` 只记录父子关系。
+ */
+class Session {
+  constructor() {
+    this._views = new Map();     // source -> { kind, exec } | null（null = 直通）
+    this._txs = new Map();       // source -> 显式事务句柄
+    this._opened = [];           // 开启顺序
+    this._wrote = new Set();     // 发生过写命令的 source
+    this._warned = new Set();
+    this._outer = null;
+  }
+
+  /** 绑定外层会话（嵌套时生命周期交外层）；由 store.session 调用，不设置上下文 */
+  bindOuter(parent) {
+    this._outer = parent;
+    return this;
+  }
+
+  /** 退出会话：err 非空 → 全部回滚并原样上抛；否则跨源写判定后统一提交 */
+  async exit(err) {
+    if (this._outer !== null) return;
+    if (err !== null && err !== undefined) {
+      await this._finalize(false);
+      throw err;
+    }
+    if (this._wrote.size > 1) {
+      await this._finalize(false);
+      throw new NonAtomicWriteError(this._wrote);
+    }
+    await this._finalize(true);
+  }
+
+  async _finalize(commit) {
+    const errors = [];
+    if (commit) {
+      for (const source of this._opened) {
+        try {
+          await this._txs.get(source).commit();
+        } catch (exc) {                     // 提交失败：其余全部回滚
+          errors.push([source, exc]);
+          for (const other of this._opened) {
+            if (other === source) continue;
+            try {
+              await this._txs.get(other).rollback();
+            } catch (exc2) {
+              errors.push([other, exc2]);
+            }
+          }
+          break;
+        }
+      }
+    } else {
+      for (const source of [...this._opened].reverse()) {
+        try {
+          await this._txs.get(source).rollback();
+        } catch (exc) {
+          errors.push([source, exc]);
+        }
+      }
+    }
+    for (const source of this._opened) {
+      try {
+        await this._txs.get(source).release();
+      } catch (exc) {
+        errors.push([source, exc]);
+      }
+    }
+    this._views.clear();
+    this._txs.clear();
+    this._opened = [];
+    for (const [source, exc] of errors) this._warnFinalizeFailure(source, commit, exc);
+    if (errors.length > 0) throw errors[0][1];
+  }
+
+  /** 命令落到该源时解析连接：事务视图 / null（直通，用原始连接） */
+  async connFor(source, isWrite = false) {
+    if (isWrite) this._wrote.add(source);
+    if (this._views.has(source)) return this._views.get(source);
+    const override = _txStore.getStore();
+    if (override && override.has(source) && override.get(source).exec) {
+      // 外层事务（runInTransaction / 外层会话）已绑定该源 → 复用，不新开事务、不告警
+      return override.get(source);
+    }
+    const connection = getConnection(source);
+    if (isSqlConnection(connection) && typeof connection.openTransaction === 'function') {
+      const tx = await connection.openTransaction();
+      const view = { kind: connection.kind, exec: tx.exec };
+      this._views.set(source, view);
+      this._txs.set(source, tx);
+      this._opened.push(source);
+      return view;
+    }
+    this._views.set(source, null);
+    if (isSqlConnection(connection)) this._warnNotAtomic(source, connection.kind);
+    return null;
+  }
+
+  // ---------- 告警（自动反馈：允许降级、禁止静默） ----------
+
+  _warnNotAtomic(source, kind) {
+    if (this._warned.has(source)) return;
+    this._warned.add(source);
+    _emitFeedback({
+      type: 'session_not_atomic',
+      code: 'sessionNotAtomic',
+      layer: 'datasource',
+      message: `数据源 ${source}(${kind}) 未实现 openTransaction：会话内该源命令按原样执行（非原子）`,
+      hint: '为该执行器实现 openTransaction，或将该源的写命令移出会话',
+      source,
+      kind,
+    });
+  }
+
+  _warnFinalizeFailure(source, commit, exc) {
+    _emitFeedback({
+      type: 'session_finalize_failed',
+      code: 'sessionFinalizeFailed',
+      layer: 'datasource',
+      message: `会话收尾失败（${commit ? 'commit' : 'rollback'}，数据源 ${source}）：${exc}`,
+      hint: '检查该数据源连接状态；rollback 失败可能意味着连接已失效',
+      source,
+    });
+  }
+
+  // ---------- 会话 API（与 Store 同名同形，委托 crud） ----------
+
+  async query(...a) {
+    const crud = require('../crud');
+    return crud.query(...a);
+  }
+
+  async queryOne(...a) {
+    const crud = require('../crud');
+    return crud.queryOne(...a);
+  }
+
+  async queryWithCount(...a) {
+    const crud = require('../crud');
+    return crud.queryWithCount(...a);
+  }
+
+  async insert(...a) {
+    const crud = require('../crud');
+    return crud.insert(...a);
+  }
+
+  async insertMany(...a) {
+    const crud = require('../crud');
+    return crud.insertMany(...a);
+  }
+
+  async update(...a) {
+    const crud = require('../crud');
+    return crud.update(...a);
+  }
+
+  async updateMany(...a) {
+    const crud = require('../crud');
+    return crud.updateMany(...a);
+  }
+
+  async upsert(...a) {
+    const crud = require('../crud');
+    return crud.upsert(...a);
+  }
+
+  async remove(...a) {
+    const crud = require('../crud');
+    return crud.remove(...a);
+  }
+
+  async exists(...a) {
+    const crud = require('../crud');
+    return crud.exists(...a);
+  }
+
+  async count(...a) {
+    const crud = require('../crud');
+    return crud.count(...a);
+  }
+
+  async mutation(...a) {
+    const crud = require('../crud');
+    return crud.mutation(...a);
+  }
+
+  async executeRaw(...a) {
+    return executeRaw(...a);
+  }
+}
+
 module.exports = {
   DEFAULT_SOURCE,
   setConnections,
@@ -276,6 +528,7 @@ module.exports = {
   isSqlConnection,
   isSql,
   connectionFor,
+  resolveConnection,
   runInTransaction,
   mongoDb,
   sourceOfSchema,
@@ -284,6 +537,10 @@ module.exports = {
   route,
   execSql,
   executeRaw,
+  isWriteCommand,
+  currentSession,
+  Session,
+  NonAtomicWriteError,
   PushdownUnsupportedError,
   RawSqlError,
 };
