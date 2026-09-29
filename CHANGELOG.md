@@ -26,6 +26,9 @@
   `mongo_transaction_unsupported`（`deployment: standalone|unknown`）。
 - **Mongo 无保存点原语的嵌套语义**：同源嵌套作用域走既有 `nested_savepoint_unsupported` 降级声明
   （Mongo 不支持 `SAVEPOINT`，不伪造）。
+- **事务作用域降级声明 `transaction_not_atomic`**：`store.transaction` / 顶层原子包络落到未实现
+  `withTransaction` 的 SQL 执行器时按原样执行，并发出一条 `transaction_not_atomic` 反馈
+  （`code: transactionNotAtomic`）——与 `session_not_atomic` 对称，消除该路径此前的静默降级。
 
 ### Changed
 

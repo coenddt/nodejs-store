@@ -315,7 +315,7 @@ async function transfer() {
 await store.transaction('default', transfer);
 ```
 
-- `store.transaction(source, fn)` 在单个 SQL 源上开启事务作用域：`fn` 内的每个 `executeRaw` / CRUD 调用都落到该源的事务连接，`commit` / `rollback` 作为一个整体（复用内部的 `runInTransaction`）。Mongo 源按**运行时能力探测**（replica set / sharded）以 session 事务执行；standalone 或探测失败则按原样执行 `fn` 并发 `mongo_transaction_unsupported`（`deployment: standalone|unknown`）—— 绝不假装已原子。不支持事务（未实现 `openTransaction`）的执行器亦按原样执行。同源嵌套 transaction 会开保存点（内层失败只回滚本层）；句柄无保存点原语时降级并入外层并发 `nested_savepoint_unsupported`。
+- `store.transaction(source, fn)` 在单个 SQL 源上开启事务作用域：`fn` 内的每个 `executeRaw` / CRUD 调用都落到该源的事务连接，`commit` / `rollback` 作为一个整体（复用内部的 `runInTransaction`）。Mongo 源按**运行时能力探测**（replica set / sharded）以 session 事务执行；standalone 或探测失败则按原样执行 `fn` 并发 `mongo_transaction_unsupported`（`deployment: standalone|unknown`）—— 绝不假装已原子。不支持事务（未实现 `withTransaction`）的执行器亦按原样执行，并发出一条 `transaction_not_atomic` 反馈（允许降级，绝不静默假装已事务化）。同源嵌套 transaction 会开保存点（内层失败只回滚本层）；句柄无保存点原语时降级并入外层并发 `nested_savepoint_unsupported`。
 - `store.executeRaw(source, sql, params, isWrite)` 执行原生 SQL，绕开 GQL 解析与方言翻译。占位符沿用各后端原生风格：MySQL / SQLite 用 `?`，PostgreSQL 用 `$1..$n`。仅限 SQL 源 —— Mongo 源会抛出 `RawSqlError`（`store.RawSqlError`）。
 - `isWrite=false`（默认）返回 `{ rows, affectedRows }` 含结果集行；`isWrite=true` 返回影响行数。
 
@@ -558,6 +558,8 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
   并发出 `mongo_transaction_unsupported` 反馈（`deployment: standalone|unknown`）（允许降级，绝不静默假装已事务化）；
 - **未实现 `openTransaction` 的 SQL 执行器**：会话内按原样执行，并发出
   `session_not_atomic` 反馈（允许降级，绝不静默假装已事务化）；
+- **未实现 `withTransaction` 的 SQL 执行器**：`store.transaction` / 顶层原子包络内按原样执行，
+  并发出 `transaction_not_atomic` 反馈（与 `session_not_atomic` 对称，允许降级，绝不静默假装已事务化）；
 - **归档幂等**：`remove` 的归档采用按 `_id` upsert 的语义，因此部分失败后的重试不会再因 `_id` 重复而失败。
 - 读一致性：只有在显式会话内的多条读才共享同一事务连接；会话外读不额外开启事务。
 - **跨源写（非会话）**：一次写调用涉及 ≥2 个数据源时**无法原子**，按顺序执行，并发出一条

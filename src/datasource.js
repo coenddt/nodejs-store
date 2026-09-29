@@ -255,6 +255,8 @@ async function nestedSavepointScope(source, outer, fn) {
  *
  *   - 会话内调用：并入会话（事务边界由会话统一管理），不另开事务；
  *   - SQL 源且执行器实现 withTransaction：包事务；同源嵌套开 SAVEPOINT sp_<n>；
+ *   - SQL 源且执行器**未**实现 withTransaction：按原样执行并发 `transaction_not_atomic`
+ *     （降级不静默，与 `store.session` 的 `session_not_atomic` 对称）；
  *   - Mongo 源：探测可事务（replica set / sharded）→ 包 session 事务；standalone / unknown
  *     → 发 `mongo_transaction_unsupported` 并按原样执行（绝不静默假装已事务化）；
  *   - Mongo 无保存点原语：同源嵌套走既有 `nested_savepoint_unsupported` 降级声明；
@@ -270,8 +272,12 @@ async function runInTransaction(source, fn) {
   const parent = _txStore.getStore() || new Map();
 
   if (isSqlConnection(conn)) {
-    // ── SQL 分支（既有语义，保持不变）──
-    if (typeof conn.withTransaction !== 'function') return fn();
+    // ── SQL 分支（事务作用域）──
+    if (typeof conn.withTransaction !== 'function') {
+      // 降级不静默：与 store.session 的 session_not_atomic 对称，显式声明本事务作用域未生效
+      warnTransactionNotAtomic(source, conn.kind);
+      return fn();
+    }
     if (parent.has(source)) {
       // 同源嵌套事务：在已持有的事务连接上开保存点（内层失败只回滚本层，外层可继续）
       return nestedSavepointScope(source, parent.get(source), fn);
@@ -395,6 +401,23 @@ function warnMongoUnsupported(source, deployment) {
     message: `数据源 ${source} 的 Mongo 部署不支持多文档事务（${deployment}）：本次调用按原样执行（非原子）`,
     hint: '将 MongoDB 部署为 replica set 或 sharded cluster 以启用 session 事务；standalone 无此能力',
     source,
+  });
+}
+
+/** SQL 执行器未实现 withTransaction → 事务作用域按原样执行（允许降级，禁止静默）
+ *
+ * 与 `session_not_atomic`（会话路径）对称：同一类降级在两条入口（`store.transaction`
+ * 与 `store.session`）都必须显式声明，不留静默口子。
+ */
+function warnTransactionNotAtomic(source, kind) {
+  _emitFeedback({
+    type: 'transaction_not_atomic',
+    code: 'transactionNotAtomic',
+    layer: 'datasource',
+    message: `数据源 ${source}(${kind}) 未实现 withTransaction：事务作用域内命令按原样执行（非原子）`,
+    hint: '为该执行器实现 withTransaction，或将写命令收敛到已支持事务的数据源',
+    source,
+    kind,
   });
 }
 
@@ -800,6 +823,7 @@ module.exports = {
   nestedSavepointScope,
   warnSavepointUnavailable,
   warnSavepointFailed,
+  warnTransactionNotAtomic,
   mongoDb,
   isMongoClientHandle,
   mongoClientOf,

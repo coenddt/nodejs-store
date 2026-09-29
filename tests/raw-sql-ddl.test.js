@@ -97,11 +97,19 @@ test('transaction 落到事务连接并回滚', async () => {
   assert.equal(state.committed, 0);
 });
 
-test('transaction 无 withTransaction 时按原样执行', async () => {
+test('transaction 无 withTransaction 时按原样执行并声明 transaction_not_atomic', async () => {
   datasource.setConnections({
     db: { kind: 'sqlite', exec: async () => ({ rows: [], affectedRows: 0 }) },
   });
+  const events = [];
+  feedback.setSink((e) => events.push(e));
+
   assert.equal(await store.transaction('db', async () => 'ok'), 'ok');
+  const warned = events.filter((e) => e.type === 'transaction_not_atomic');
+  assert.equal(warned.length, 1, '缺 withTransaction 的事务作用域必须显式声明，不静默');
+  assert.equal(warned[0].code, 'transactionNotAtomic');
+  assert.equal(warned[0].source, 'db');
+  assert.equal(warned[0].kind, 'sqlite');
 });
 
 // ─── ② ddl.generate ─────────────────────────────────────────
