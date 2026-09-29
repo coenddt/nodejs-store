@@ -68,6 +68,82 @@ test('executeRaw 执行器未接入显式报错', async () => {
   );
 });
 
+// ─── ①′ executeRaw 命名档与写推断（core rawStmtCompile 编译链，对拍 py ①′）───
+
+function captureExec(captured) {
+  return async (plan) => { captured.plan = plan; return { rows: [], affectedRows: 0 }; };
+}
+
+test('executeRaw 命名档 mysql 编译为问号占位符', async () => {
+  const captured = {};
+  datasource.setConnections({ db: { kind: 'mysql', exec: captureExec(captured) } });
+  await store.executeRaw('db', 'SELECT * FROM t WHERE a = :x', { x: 7 });
+  assert.deepEqual(captured.plan.stmts[0], { text: 'SELECT * FROM t WHERE a = ?', params: [7], isWrite: false });
+});
+
+test('executeRaw 命名档 postgres 顺序重排', async () => {
+  const captured = {};
+  datasource.setConnections({ db: { kind: 'postgres', exec: captureExec(captured) } });
+  await store.executeRaw('db', 'SELECT :b, :a', { a: 1, b: 2 });
+  assert.equal(captured.plan.stmts[0].text, 'SELECT $1, $2');
+  assert.deepEqual(captured.plan.stmts[0].params, [2, 1]);
+});
+
+test('executeRaw 命名档同名复用且 :: cast 不误判', async () => {
+  const captured = {};
+  datasource.setConnections({ db: { kind: 'postgres', exec: captureExec(captured) } });
+  await store.executeRaw('db', 'SELECT :x::text OR b = :x', { x: 'v' });
+  assert.equal(captured.plan.stmts[0].text, 'SELECT $1::text OR b = $2');
+  assert.deepEqual(captured.plan.stmts[0].params, ['v', 'v']);
+});
+
+test('executeRaw 引号与注释内冒号保持原样', async () => {
+  const captured = {};
+  datasource.setConnections({ db: { kind: 'mysql', exec: captureExec(captured) } });
+  const sql = "SELECT ':' -- :hint\nFROM t WHERE a = :x";
+  await store.executeRaw('db', sql, { x: 1 });
+  assert.equal(captured.plan.stmts[0].text, "SELECT ':' -- :hint\nFROM t WHERE a = ?");
+  assert.deepEqual(captured.plan.stmts[0].params, [1]);
+});
+
+test('executeRaw INSERT 缺省 isWrite 推断为写', async () => {
+  const captured = {};
+  datasource.setConnections({ db: { kind: 'mysql', exec: captureExec(captured) } });
+  await store.executeRaw('db', 'INSERT INTO t VALUES (1)');
+  assert.equal(captured.plan.stmts[0].isWrite, true);
+});
+
+test('executeRaw 未知首词按写（R7 安全方向，非 Err）', async () => {
+  const captured = {};
+  datasource.setConnections({ db: { kind: 'postgres', exec: captureExec(captured) } });
+  await store.executeRaw('db', 'VACUUM ANALYZE t');
+  assert.equal(captured.plan.stmts[0].isWrite, true);
+});
+
+test('executeRaw 命名档缺名显式报错', async () => {
+  datasource.setConnections({ db: { kind: 'mysql', exec: captureExec({}) } });
+  await assert.rejects(
+    () => store.executeRaw('db', 'SELECT * FROM t WHERE a = :x', {}),
+    (e) => e instanceof store.RawSqlError && /未在 params 中提供/.test(e.message),
+  );
+});
+
+test('executeRaw 命名档多余名显式报错', async () => {
+  datasource.setConnections({ db: { kind: 'mysql', exec: captureExec({}) } });
+  await assert.rejects(
+    () => store.executeRaw('db', 'SELECT * FROM t WHERE a = :x', { x: 1, y: 2 }),
+    (e) => e instanceof store.RawSqlError && /未使用的命名参数/.test(e.message),
+  );
+});
+
+test('executeRaw params 标量显式报错', async () => {
+  datasource.setConnections({ db: { kind: 'mysql', exec: captureExec({}) } });
+  await assert.rejects(
+    () => store.executeRaw('db', 'SELECT 1', 7),
+    (e) => e instanceof store.RawSqlError && /仅支持数组（位置档）或对象（命名档）/.test(e.message),
+  );
+});
+
 test('transaction 落到事务连接并回滚', async () => {
   const state = { committed: 0, rolledBack: 0 };
   const runStmts = async () => ({ rows: [{ id: 1 }], affectedRows: 0 });

@@ -486,26 +486,42 @@ class RawSqlError extends Error {
 }
 
 /**
- * 在指定 SQL 源上执行原生 SQL（Host 层逃生口，绕开 core 的 dialectTranslate）
+ * 在指定 SQL 源上执行原生 SQL（Host 层逃生口，编译由 core 的 rawStmtCompile 完成）
+ *
+ * 两档参数风格（core 编译器按 params 类型自动分档）：
+ *   - 位置档：params 为数组（或 null）→ SQL 原样透传，占位符为各后端原生风格
+ *     （mysql/sqlite 用 `?`，postgres 用 `$1..$n`）；
+ *   - 命名档：params 为对象 → SQL 文本中的 `:name` 编译为方言占位符（同名复用、
+ *     跳过 `::` cast / 引号 / 注释边界；缺名 / 多余名显式报错）。
  *
  *   - 事务 / 会话作用域内经 `resolveConnection` 落到事务专用连接 → 支持 SELECT ... FOR UPDATE；
- *   - 占位符沿用各后端原生风格（mysql/sqlite 用 `?`，postgres 用 `$1..$n`）；
+ *   - `isWrite` 缺省时由 SQL 首词推断（SELECT/WITH/EXPLAIN/SHOW/PRAGMA/TABLE 视为读，
+ *     其余按写——默认写是安全方向）；显式传入则覆盖推断；
  *   - 仅支持 SQL 源；Mongo 源显式报错（绝不静默）；
- *   - `isWrite=false` 视为读（取行）；`true` 视为写（取影响行数）；
  *   - 返回 `{ rows, affectedRows }`。
  *   对齐 py_store/datasource.py#execute_raw。
  */
-async function executeRaw(source, sql, params = [], isWrite = false) {
-  const conn = await resolveConnection(source, isWrite);
-  if (!conn || typeof conn.kind !== 'string') {
+async function executeRaw(source, sql, params = null, isWrite = null) {
+  if (params != null && !Array.isArray(params) && typeof params !== 'object') {
+    throw new RawSqlError(`原生 SQL params 仅支持数组（位置档）或对象（命名档），收到 ${typeof params}`);
+  }
+  const conn0 = connectionFor(source);
+  if (!conn0 || !SQL_KINDS.has(conn0.kind)) {
     throw new RawSqlError(
       `数据源 ${source} 不是 SQL 源（原生 SQL 入口仅支持 mysql/postgres/sqlite）`,
     );
   }
-  if (typeof conn.exec !== 'function') {
-    throw new RawSqlError(`SQL 数据源 ${source}(${conn.kind}) 的执行器未接入`);
+  let compiled;
+  try {
+    compiled = _core.rawStmtCompile(conn0.kind, sql, params ?? null, isWrite ?? null);
+  } catch (e) {
+    throw new RawSqlError((e && e.message) || String(e));
   }
-  const stmt = { text: sql, params: Array.from(params || []), isWrite: Boolean(isWrite) };
+  const conn = await resolveConnection(source, compiled.isWrite);
+  if (!conn || typeof conn.exec !== 'function') {
+    throw new RawSqlError(`SQL 数据源 ${source}(${conn && conn.kind}) 的执行器未接入`);
+  }
+  const stmt = { text: compiled.sql, params: compiled.params, isWrite: compiled.isWrite };
   const out = await conn.exec({ stmts: [stmt] });
   return { rows: out.rows ?? null, affectedRows: Number(out.affectedRows || 0) };
 }

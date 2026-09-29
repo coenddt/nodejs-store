@@ -202,12 +202,16 @@ class Store {
   }
 
   /**
-   * 在指定 SQL 源执行原生 SQL（事务内可用；占位符按各后端原生风格）
+   * 在指定 SQL 源执行原生 SQL（事务内可用；编译由 core rawStmtCompile 完成）
    *
-   * mysql/sqlite 用 `?`，postgres 用 `$1..$n`；仅支持 SQL 源（Mongo 源抛 RawSqlError）。
-   * isWrite=false 取行（rows），true 取影响行数（affectedRows）。对齐 py-store store.execute_raw。
+   * 两档参数风格：位置档（params 为数组/null）→ SQL 原样透传，占位符为各后端
+   * 原生风格（mysql/sqlite 用 `?`，postgres 用 `$1..$n`）；命名档（params 为对象）
+   * → SQL 文本中的 `:name` 编译为方言占位符（同名复用、跳过 `::` cast / 引号 /
+   * 注释边界；缺名 / 多余名显式报错）。isWrite 缺省时按 SQL 首词推断（读白名单外
+   * 一律按写——安全方向）。仅支持 SQL 源（Mongo 源抛 RawSqlError）。
+   * 对齐 py-store store.execute_raw。
    */
-  async executeRaw(source, sql, params, isWrite) {
+  async executeRaw(source, sql, params = null, isWrite = null) {
     return datasource.executeRaw(source, sql, params, isWrite);
   }
 
