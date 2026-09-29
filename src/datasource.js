@@ -526,6 +526,53 @@ async function executeRaw(source, sql, params = null, isWrite = null) {
   return { rows: out.rows ?? null, affectedRows: Number(out.affectedRows || 0) };
 }
 
+/** 原生 Mongo 命令入口的显式错误（非 Mongo 源 / 非 Mongo 形态） */
+class NativeCommandError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'NativeCommandError';
+  }
+}
+
+/**
+ * 在指定 Mongo 源上执行原生聚合管道（Host 层逃生口，对标 SQL 侧 executeRaw）
+ *
+ *   - 复用 GQL 路径唯一的 Mongo IO 边界（executors/mongo.js#execMongo 的 aggregate
+ *     分支），options 为驱动原生透传项（allowDiskUse/batchSize/hint/maxTimeMS…，
+ *     宿主不做白名单）；
+ *   - 事务 / 会话作用域内自动透传 session（session 由事务强制接管，
+ *     options.session 不可覆盖）；统一按读路径解析（isWrite=false），
+ *     $merge/$out 写管道请自行开事务；
+ *   - 仅支持 Mongo 源：SQL 源显式报错并指引 executeRaw（绝不静默）；
+ *     MongoClient 形态须经 schema 声明 namespace（mongoDb 既有校验，缺名即报错）；
+ *   - 返回 `{ rows }`。
+ *   对齐 py_store/datasource.py#execute_native。
+ */
+async function executeNative(source, collection, pipeline = [], options = null) {
+  const conn = await resolveConnection(source, false);
+  if (isSqlConnection(conn)) {
+    throw new NativeCommandError(
+      `数据源 ${source} 是 SQL 源（原生 Mongo 命令入口仅支持 mongo；SQL 源请用 executeRaw）`,
+    );
+  }
+  const isTxView = !!conn && conn.kind === 'mongo';
+  const db = mongoDb(isTxView ? conn.conn : conn, source, null);
+  if (!db) {
+    throw new NativeCommandError(
+      `数据源 ${source} 不是 Mongo 源（原生 Mongo 命令入口仅支持 mongo）`,
+    );
+  }
+  const cmd = {
+    kind: 'aggregate',
+    collection,
+    pipeline: Array.from(pipeline || []),
+    options: { ...(options || {}) },
+  };
+  // 属性路径调用（monkeypatch 可拦截）；session 由事务强制注入（_opts 内覆盖用户值）
+  const rows = await executors.mongo.execMongo(db, cmd, isTxView ? conn.session : null);
+  return { rows };
+}
+
 /**
  * 显式会话（工作单元）
  *
@@ -852,6 +899,7 @@ module.exports = {
   route,
   execSql,
   executeRaw,
+  executeNative,
   isWriteCommand,
   currentSession,
   runWithSession,
@@ -859,4 +907,5 @@ module.exports = {
   NonAtomicWriteError,
   PushdownUnsupportedError,
   RawSqlError,
+  NativeCommandError,
 };

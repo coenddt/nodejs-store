@@ -108,8 +108,9 @@ async function execMongo(db, cmd, session) {
       return coll.find(cmd.filter, opts).toArray();
     }
     case 'aggregate':
+      // cmd.options 为原生聚合透传项（executeNative 注入；GQL 路径无此键，零回归）
       _normPipeline(cmd);
-      return coll.aggregate(cmd.pipeline, _opts(session)).toArray();
+      return coll.aggregate(cmd.pipeline, _opts(session, cmd.options)).toArray();
     case 'countDocuments':
       _normFilter(cmd);
       return coll.countDocuments(cmd.filter, _opts(session));

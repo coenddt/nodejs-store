@@ -188,6 +188,167 @@ test('transaction 无 withTransaction 时按原样执行并声明 transaction_no
   assert.equal(warned[0].kind, 'sqlite');
 });
 
+// ─── ①″ executeNative（原生 Mongo 聚合逃生口，对拍 py ①″）───
+
+const mongoExecutor = require('../src/executors/mongo');
+
+function patchExecMongo(stub) {
+  const original = mongoExecutor.execMongo;
+  mongoExecutor.execMongo = stub;
+  return () => { mongoExecutor.execMongo = original; };
+}
+
+test('executeNative 构建聚合命令并返回 rows', async () => {
+  let captured;
+  const restore = patchExecMongo(async (db, cmd, session) => {
+    captured = { cmd, session };
+    return [{ n: 1 }];
+  });
+  try {
+    datasource.setConnections({ db: { collection: () => ({}) } });
+
+    const out = await store.executeNative('db', 'orders', [{ $match: { a: 1 } }], { allowDiskUse: true });
+
+    assert.deepEqual(captured.cmd, {
+      kind: 'aggregate',
+      collection: 'orders',
+      pipeline: [{ $match: { a: 1 } }],
+      options: { allowDiskUse: true },
+    });
+    assert.equal(captured.session, null);
+    assert.deepEqual(out, { rows: [{ n: 1 }] });
+  } finally {
+    restore();
+  }
+});
+
+test('executeNative pipeline 缺省为空数组', async () => {
+  let captured;
+  const restore = patchExecMongo(async (db, cmd) => { captured = cmd; return []; });
+  try {
+    datasource.setConnections({ db: { collection: () => ({}) } });
+
+    const out = await store.executeNative('db', 'orders');
+
+    assert.deepEqual(captured.pipeline, []);
+    assert.deepEqual(out, { rows: [] });
+  } finally {
+    restore();
+  }
+});
+
+// Mongo 事务视图（store.transaction 内）经 resolveConnection 返回
+// `{ kind:'mongo', conn, session, tx }`：executeNative 透传 view.session 且强制覆盖用户值。
+// fake client 经 hello 探测为 replica set（setName）→ 走真实 openTransaction 路径
+function fakeTxMongo(captured) {
+  const txSession = {
+    startTransaction() {},
+    async commitTransaction() {},
+    async abortTransaction() {},
+    async endSession() {},
+  };
+  const client = {
+    db: () => ({ command: async () => ({ setName: 'rs0' }) }),
+    startSession: () => txSession,
+  };
+  return {
+    txSession,
+    db: {
+      client,
+      collection: (name) => ({
+        aggregate: (pipeline, opts) => {
+          captured.calls.push({ name, pipeline, opts });
+          return { toArray: async () => [{ n: 1 }] };
+        },
+      }),
+    },
+  };
+}
+
+test('executeNative 事务视图自动透传 session', async () => {
+  const captured = { calls: [] };
+  const fake = fakeTxMongo(captured);
+  datasource.setConnections({ db: fake.db });
+
+  await store.transaction('db', async () => {
+    const out = await store.executeNative('db', 'orders', [{ $count: 'n' }]);
+    assert.deepEqual(out, { rows: [{ n: 1 }] });
+  });
+
+  assert.equal(captured.calls.length, 1);
+  assert.equal(captured.calls[0].opts.session, fake.txSession);
+});
+
+test('executeNative options.session 不可被用户覆盖', async () => {
+  const captured = { calls: [] };
+  const fake = fakeTxMongo(captured);
+  datasource.setConnections({ db: fake.db });
+
+  await store.transaction('db', async () => {
+    await store.executeNative('db', 'orders', [], { session: 'USER' });
+  });
+
+  assert.equal(captured.calls.length, 1);
+  assert.equal(captured.calls[0].opts.session, fake.txSession);
+});
+
+test('executeNative 对 SQL 源显式报错并指引 executeRaw', async () => {
+  datasource.setConnections({
+    db: { kind: 'sqlite', exec: async () => ({ rows: [], affectedRows: 0 }) },
+  });
+  await assert.rejects(
+    () => store.executeNative('db', 'orders'),
+    (e) => e instanceof store.NativeCommandError
+      && /是 SQL 源/.test(e.message)
+      && /executeRaw/.test(e.message),
+  );
+});
+
+test('executeNative 对非 Mongo 源显式报错', async () => {
+  datasource.setConnections({ db: new FakeMongo() });
+  await assert.rejects(
+    () => store.executeNative('db', 'orders'),
+    (e) => e instanceof store.NativeCommandError && /不是 Mongo 源/.test(e.message),
+  );
+});
+
+test('execMongo aggregate 转发原生 options', async () => {
+  const calls = [];
+  const db = {
+    collection: (name) => ({
+      aggregate: (pipeline, opts) => {
+        calls.push({ name, pipeline, opts });
+        return { toArray: async () => [{ n: 1 }] };
+      },
+    }),
+  };
+
+  const rows = await mongoExecutor.execMongo(
+    db,
+    { kind: 'aggregate', collection: 'orders', pipeline: [{ $count: 'n' }], options: { allowDiskUse: true } },
+    null,
+  );
+
+  assert.deepEqual(rows, [{ n: 1 }]);
+  assert.deepEqual(calls[0], { name: 'orders', pipeline: [{ $count: 'n' }], opts: { allowDiskUse: true } });
+});
+
+test('execMongo aggregate 无 options 时零回归', async () => {
+  const calls = [];
+  const db = {
+    collection: (name) => ({
+      aggregate: (pipeline, opts) => {
+        calls.push({ name, pipeline, opts });
+        return { toArray: async () => [] };
+      },
+    }),
+  };
+
+  await mongoExecutor.execMongo(db, { kind: 'aggregate', collection: 'orders', pipeline: [{ $match: { a: 1 } }] }, null);
+
+  assert.deepEqual(calls[0].opts, {});
+});
+
 // ─── ② ddl.generate ─────────────────────────────────────────
 
 test('ddl 标量列 + object/array JSON 列 + __present + 归档表', () => {

@@ -215,6 +215,19 @@ class Store {
     return datasource.executeRaw(source, sql, params, isWrite);
   }
 
+  /**
+   * 在指定 Mongo 源执行原生聚合管道（事务内可用；对标 SQL 侧 executeRaw）
+   *
+   * pipeline 为原生聚合管道（数组），options 为驱动原生透传项（allowDiskUse /
+   * batchSize / hint / maxTimeMS…，宿主不做白名单）。事务 / 会话作用域内自动透传
+   * session（由事务强制接管，options.session 不可覆盖）；统一按读路径解析，
+   * $merge / $out 写管道请自行开事务。仅支持 Mongo 源（SQL 源抛 NativeCommandError
+   * 并指引 executeRaw）。返回 { rows }。对齐 py-store store.execute_native。
+   */
+  async executeNative(source, collection, pipeline = [], options = null) {
+    return datasource.executeNative(source, collection, pipeline, options);
+  }
+
   /** 从已注册 schema def 生成指定后端 DDL 文本（纯函数，不连库、不回写；铁律 6） */
   generateDdl(backend, names) {
     return ddl.generate(backend, names);
@@ -294,6 +307,8 @@ Store.prototype.PermissionError = permission.PermissionError;
 Store.prototype.ProfileViolation = crud.ProfileViolation;
 /** 原生 SQL 入口错误（实例可被 store.RawSqlError 捕获） */
 Store.prototype.RawSqlError = datasource.RawSqlError;
+/** 原生 Mongo 命令入口错误（实例可被 store.NativeCommandError 捕获） */
+Store.prototype.NativeCommandError = datasource.NativeCommandError;
 
 const store = new Store();
 
@@ -391,6 +406,7 @@ module.exports = {
   ProfileViolation: crud.ProfileViolation,
   PushdownUnsupportedError: datasource.PushdownUnsupportedError,
   RawSqlError: datasource.RawSqlError,
+  NativeCommandError: datasource.NativeCommandError,
   datasource,
   ddl,
   schema,
