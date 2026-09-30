@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## 2.6.0 (2026-09-30)
+
+### Added
+
+- **mutation 关系谓词下推**：`update` / `updateMany` / `remove` 条件键命中已声明关系时归一为
+  preCommand（aggregate 取命中 `_id`）+ `_id $in`，SQL 侧下推为 `EXISTS`；新增整值条件对象
+  语法糖（`{'product': {'category': 'meat'}}` ≡ `$filter` + `$exists: true`）。修复此前
+  MongoDB 侧关系谓词静默 no-op（`modifiedCount=0` 无告警）。
+- **`$group by` one 关系路径**：`by: ['product.category']`——Mongo 侧 `$lookup`+`$unwind`
+  （preserveNullAndEmptyArrays，不扇出）、SQL 侧 `LEFT JOIN` 聚合；many 关系路径显式报错
+  （扇出破坏计数语义）。
+- **自增 int 主键**：`_id` 声明 `{'type': 'int', 'strategy': 'autoincrement'}`——SQL 三后端
+  自增赋值并回读（PG/SQLite `INSERT…RETURNING`、MySQL lastrowid）；DDL 生成对应
+  `AUTO_INCREMENT` / `SERIAL` / `INTEGER PRIMARY KEY AUTOINCREMENT`；Mongo 与 `insert_many`
+  场景显式报 `AUTOINCREMENT_NOT_SUPPORTED`（禁 ObjectId 静默顶替）；非法 strategy 值注册期报错。
+- **索引 DDL 落地**：`schema.indexes`（Mongo 形态）→ `ddl.generate` 产出
+  `CREATE [UNIQUE] INDEX idx_<表>_<字段>`，三方言逐字节一致；同名表重复注册去重并告警
+  （`ddlDuplicateTable`）。原「不建索引」铁律按用户裁决放开；「生成器只产文本不执行」边界不变。
+
+### 证据
+
+场景 e2e（`manager-transaction` 9 用例 × 4 后端）与 course-platform 回归（101 × 4）全绿，
+报告见 `doc/test-eval/2026/09/`；功能文档见 `doc/transaction-capabilities.md` /
+`doc/transaction-capabilities.zh-CN.md`。
+
+
 ## 2.5.0 (2026-09-29)
 
 ### Added
