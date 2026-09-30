@@ -1,0 +1,249 @@
+[
+  {
+    "id": "T1-01",
+    "group": "T1",
+    "title": "守护·关系级 $condition+$sort+$limit 每父 top-N（既有能力，防阶段1回归）",
+    "reset": "seed",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "query",
+        "gql": "Order($sort:@s0){ orderNo, items($condition:@c0,$sort:@s1,$limit:@l1){ quantity } }",
+        "params": {
+          "s0": {
+            "orderNo": 1
+          },
+          "c0": {
+            "quantity": {
+              "$gte": 1
+            }
+          },
+          "s1": {
+            "quantity": -1
+          },
+          "l1": 1
+        },
+        "expect": {
+          "kind": "rows",
+          "rows": [
+            {
+              "orderNo": "A001",
+              "items": [
+                {
+                  "quantity": 3
+                }
+              ]
+            },
+            {
+              "orderNo": "A002",
+              "items": [
+                {
+                  "quantity": 5
+                }
+              ]
+            }
+          ],
+          "normalize": {
+            "sortBy": [
+              "orderNo"
+            ],
+            "ignore": [
+              "_id"
+            ]
+          }
+        }
+      }
+    ],
+    "note": "text-to-query §关系子查询：关系级参数引用形态；每父独立 top-N。阶段1 落地后必须仍绿。"
+  },
+  {
+    "id": "T1-02",
+    "group": "T1",
+    "title": "红·update_many 条件引用关系谓词（按关联表字段批量调库存）",
+    "reset": "seed",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "update_many",
+        "schema": "Inventory",
+        "condition": {
+          "product": {
+            "category": "meat"
+          }
+        },
+        "data": {
+          "$inc": {
+            "stock": 10
+          }
+        },
+        "expect": {
+          "kind": "updated",
+          "modifiedCount": 1
+        }
+      },
+      {
+        "op": "query",
+        "gql": "Inventory($condition:@c0){ _id, stock }",
+        "params": {
+          "c0": {
+            "_id": "inv2"
+          }
+        },
+        "expect": {
+          "kind": "rows",
+          "rows": [
+            {
+              "_id": "inv2",
+              "stock": 30
+            }
+          ]
+        }
+      }
+    ],
+    "note": "阶段1 任务：mutation 过滤条件的关系谓词下推。2026-09-30 实测 SQLite 显式拒绝（『不支持的过滤条件操作符: status…拒绝静默丢弃』）——拒绝方式符合 no-error-masking，但能力缺失判红。"
+  },
+  {
+    "id": "T1-03",
+    "group": "T1",
+    "title": "红·$group by 关系路径（订单项按商品类目统计件数）",
+    "reset": "none",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "query",
+        "gql": "OrderItem($group:@g0){ product.category, n, qty }",
+        "params": {
+          "g0": {
+            "by": [
+              "product.category"
+            ],
+            "agg": {
+              "n": {
+                "$count": "*"
+              },
+              "qty": {
+                "$sum": "quantity"
+              }
+            }
+          }
+        },
+        "expect": {
+          "kind": "rows",
+          "rows": [
+            {
+              "product": {
+                "category": "fruit"
+              },
+              "n": 3,
+              "qty": 6
+            },
+            {
+              "product": {
+                "category": "meat"
+              },
+              "n": 1,
+              "qty": 5
+            }
+          ],
+          "normalize": {
+            "sortBy": [
+              "product.category"
+            ]
+          }
+        }
+      }
+    ],
+    "note": "阶段1 任务：$group by 键的关系路径下推（JOIN 聚合）。J-08 已确立『by 键为关系名 → 显式 Err』；本用例要求 by 键支持『关系.字段』路径。"
+  },
+  {
+    "id": "T1-04",
+    "group": "T1",
+    "title": "红·remove 条件引用关系谓词（删除已取消订单的明细行）",
+    "reset": "seed",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "remove",
+        "schema": "OrderItem",
+        "condition": {
+          "order": {
+            "status": "cancelled"
+          }
+        },
+        "expect": {
+          "kind": "removed",
+          "deletedCount": 2,
+          "archivedCount": 2
+        }
+      }
+    ],
+    "note": "阶段1 任务：remove 过滤条件的关系谓词下推（与 T1-02 同根，覆盖第二个 mutation 入口 + 归档路径）。"
+  },
+  {
+    "id": "T1-05",
+    "group": "T1",
+    "title": "守护·关系聚合谓词 semi-join（既有 §9.6 能力，防阶段1回归）",
+    "reset": "seed",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "query",
+        "gql": "Order($condition:@c0){ orderNo }",
+        "params": {
+          "c0": {
+            "items": {
+              "$sum": {
+                "$of": "quantity",
+                "$gt": 4
+              }
+            }
+          }
+        },
+        "expect": {
+          "kind": "rows",
+          "rows": [
+            {
+              "orderNo": "A002"
+            }
+          ],
+          "normalize": {
+            "ignore": [
+              "_id"
+            ]
+          }
+        }
+      }
+    ],
+    "note": "J-10 同款形态（reset=seed：T1-04 会删行，不能依赖残留）：items 总件数 > 4 → 仅 A002（3+1=4 不命中、2+5=7 命中）。阶段1 落地后必须仍绿。"
+  }
+]

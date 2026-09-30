@@ -1,0 +1,38 @@
+[
+  {
+    "id": "T2-01",
+    "group": "T2",
+    "title": "红·autoincrement schema 在 SQL 后端自增主键连续递增",
+    "reset": "seed",
+    "ctx": { "userId": "u1", "roles": ["admin"] },
+    "sqlPolicy": "parity",
+    "backends": ["postgres", "mysql", "sqlite"],
+    "steps": [
+      { "op": "raw", "fn": "register_auto_schema" },
+      { "op": "insert", "schema": "AutoOrder", "data": { "orderNo": "B001", "amount": 9.9 } },
+      { "op": "raw", "fn": "check_autoincrement_started" },
+      { "op": "insert", "schema": "AutoOrder", "data": { "orderNo": "B002", "amount": 19.9 } },
+      { "op": "raw", "fn": "check_autoincrement_increments" }
+    ],
+    "note": "阶段2 任务：per-schema 声明 id.strategy=autoincrement → 宿主不生成 _id，数据库自增列赋值，宿主回读为 int 且严格递增。当前引擎对 strategy 键静默接受（无 idPrefix → 不生成 _id），实际行为见运行报告。"
+  },
+  {
+    "id": "T2-02",
+    "group": "T2",
+    "title": "红·autoincrement schema 在 Mongo 后端显式报错（禁伪自增）",
+    "reset": "none",
+    "ctx": { "userId": "u1", "roles": ["admin"] },
+    "sqlPolicy": "parity",
+    "backends": ["mongodb"],
+    "steps": [
+      { "op": "raw", "fn": "register_auto_schema" },
+      {
+        "op": "insert",
+        "schema": "AutoOrder",
+        "data": { "orderNo": "B001", "amount": 9.9 },
+        "expect": { "kind": "error", "code": "AUTOINCREMENT_NOT_SUPPORTED" }
+      }
+    ],
+    "note": "阶段2 任务（no-error-masking）：Mongo 无自增语义，autoincrement schema 必须显式 Err 且文案含 AUTOINCREMENT_NOT_SUPPORTED，禁止计数器集合伪自增 / ObjectId 静默顶替。"
+  }
+]

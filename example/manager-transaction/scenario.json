@@ -1,0 +1,9 @@
+{
+  "name": "manager-transaction",
+  "title": "manager 型事务场景（订单/库存/明细）",
+  "backends": ["mongodb", "postgres", "mysql", "sqlite"],
+  "baseline": "mongodb",
+  "roles": ["admin", "seller", "buyer"],
+  "pseudoRoles": ["creator"],
+  "note": "阶段0 红用例场景：用例编号↔增补阶段任务映射见 common-store/事务型能力增补执行文档.md 附录 A。T1=阶段1 查询/mutation 下推，T2=阶段2 autoincrement，T3=阶段3 索引落地。"
+}

@@ -1,0 +1,217 @@
+[
+  {
+    "name": "User",
+    "collection": "users",
+    "idPrefix": "u",
+    "timestamps": false,
+    "read": [
+      "admin",
+      "seller",
+      "buyer"
+    ],
+    "write": [
+      "admin"
+    ],
+    "fields": {
+      "_id": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "createdBy": {
+        "type": "string"
+      }
+    },
+    "relations": {},
+    "computes": {}
+  },
+  {
+    "name": "Product",
+    "collection": "products",
+    "idPrefix": "p",
+    "timestamps": false,
+    "read": [
+      "admin",
+      "seller",
+      "buyer"
+    ],
+    "write": [
+      "admin",
+      "seller"
+    ],
+    "fields": {
+      "_id": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "category": {
+        "type": "string"
+      },
+      "price": {
+        "type": "float"
+      },
+      "createdBy": {
+        "type": "string"
+      }
+    },
+    "relations": {},
+    "computes": {}
+  },
+  {
+    "name": "Inventory",
+    "collection": "inventories",
+    "idPrefix": "inv",
+    "timestamps": false,
+    "read": [
+      "admin",
+      "seller",
+      "buyer"
+    ],
+    "write": [
+      "admin",
+      "seller"
+    ],
+    "fields": {
+      "_id": {
+        "type": "string"
+      },
+      "productId": {
+        "type": "string"
+      },
+      "warehouse": {
+        "type": "string"
+      },
+      "stock": {
+        "type": "int"
+      },
+      "warnLine": {
+        "type": "int"
+      },
+      "createdBy": {
+        "type": "string"
+      }
+    },
+    "relations": {
+      "product": {
+        "model": "Product",
+        "type": "one",
+        "localField": "productId",
+        "foreignField": "_id"
+      }
+    },
+    "computes": {}
+  },
+  {
+    "name": "Order",
+    "collection": "orders",
+    "idPrefix": "o",
+    "timestamps": false,
+    "read": [
+      "admin",
+      "seller",
+      "buyer"
+    ],
+    "write": [
+      "admin",
+      "seller"
+    ],
+    "fields": {
+      "_id": {
+        "type": "string"
+      },
+      "orderNo": {
+        "type": "string"
+      },
+      "buyerId": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      },
+      "createdBy": {
+        "type": "string"
+      }
+    },
+    "relations": {
+      "buyer": {
+        "model": "User",
+        "type": "one",
+        "localField": "buyerId",
+        "foreignField": "_id"
+      },
+      "items": {
+        "model": "OrderItem",
+        "type": "many",
+        "localField": "_id",
+        "foreignField": "orderId"
+      }
+    },
+    "computes": {},
+    "indexes": [
+      {
+        "keys": {
+          "orderNo": 1
+        },
+        "unique": true
+      },
+      {
+        "keys": {
+          "buyerId": 1
+        }
+      }
+    ]
+  },
+  {
+    "name": "OrderItem",
+    "collection": "order_items",
+    "idPrefix": "oi",
+    "timestamps": false,
+    "read": [
+      "admin",
+      "seller",
+      "buyer"
+    ],
+    "write": [
+      "admin",
+      "seller"
+    ],
+    "fields": {
+      "_id": {
+        "type": "string"
+      },
+      "orderId": {
+        "type": "string"
+      },
+      "productId": {
+        "type": "string"
+      },
+      "quantity": {
+        "type": "int"
+      },
+      "unitPrice": {
+        "type": "float"
+      },
+      "createdBy": {
+        "type": "string"
+      }
+    },
+    "relations": {
+      "order": {
+        "model": "Order",
+        "type": "one",
+        "localField": "orderId",
+        "foreignField": "_id"
+      },
+      "product": {
+        "model": "Product",
+        "type": "one",
+        "localField": "productId",
+        "foreignField": "_id"
+      }
+    },
+    "computes": {}
+  }
+]

@@ -1,0 +1,25 @@
+[
+  { "schema": "User", "ctx": null, "rows": [
+    { "_id": "u1", "name": "张三", "createdBy": "u1" },
+    { "_id": "u2", "name": "李四", "createdBy": "u2" }
+  ]},
+  { "schema": "Product", "ctx": null, "rows": [
+    { "_id": "p1", "name": "苹果", "category": "fruit", "price": 10.0, "createdBy": "u1" },
+    { "_id": "p2", "name": "香蕉", "category": "fruit", "price": 5.0, "createdBy": "u1" },
+    { "_id": "p3", "name": "牛肉", "category": "meat", "price": 60.0, "createdBy": "u2" }
+  ]},
+  { "schema": "Inventory", "ctx": null, "rows": [
+    { "_id": "inv1", "productId": "p1", "warehouse": "w1", "stock": 100, "warnLine": 10, "createdBy": "u1" },
+    { "_id": "inv2", "productId": "p3", "warehouse": "w1", "stock": 20, "warnLine": 5, "createdBy": "u1" }
+  ]},
+  { "schema": "Order", "ctx": null, "rows": [
+    { "_id": "o1", "orderNo": "A001", "buyerId": "u1", "status": "paid", "createdBy": "u1" },
+    { "_id": "o2", "orderNo": "A002", "buyerId": "u2", "status": "cancelled", "createdBy": "u2" }
+  ]},
+  { "schema": "OrderItem", "ctx": null, "rows": [
+    { "_id": "oi1", "orderId": "o1", "productId": "p1", "quantity": 3, "unitPrice": 10.0, "createdBy": "u1" },
+    { "_id": "oi2", "orderId": "o1", "productId": "p2", "quantity": 1, "unitPrice": 5.0, "createdBy": "u1" },
+    { "_id": "oi3", "orderId": "o2", "productId": "p2", "quantity": 2, "unitPrice": 5.0, "createdBy": "u2" },
+    { "_id": "oi4", "orderId": "o2", "productId": "p3", "quantity": 5, "unitPrice": 60.0, "createdBy": "u2" }
+  ]}
+]

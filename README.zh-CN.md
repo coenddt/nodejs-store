@@ -34,6 +34,7 @@
 - [Schema 参考](#schema-参考)
 - [高级 API](#高级-api)
 - [事务边界](#事务边界)
+- [事务型能力](#事务型能力)
 - [常见问题](#常见问题)
 - [相关项目](#相关项目)
 
@@ -209,6 +210,9 @@ GQL 树查询会编译为每个后端一条原生查询 —— 再也不必手�
 - **权限上下文** —— 基于 `AsyncLocalStorage` 的角色（`super_admin`/`admin`/`guest`/`creator`...）、schema/字段级读写白名单、自动属主条件注入。
 - **多数据源 & 多租户** —— 通过 `(source, namespace, collection)` 定位 schema；按请求用路由覆盖重新定向。
 - **异步优先，Rust 核心** —— 基于 `mongodb` Node.js 驱动与共享的 Rust 核心（含 SQL 方言）。
+- **mutation 关系谓词** —— `update` / `remove` 按关联表字段过滤，下推到全部四个后端（此前 MongoDB 侧是静默 no-op）。
+- **自增主键** —— `_id` 声明 `{ type: 'int', strategy: 'autoincrement' }` 即用数据库自增整数 ID；做不到自增的场景显式报错。
+- **索引 DDL** —— `schema.indexes` 编译为真实 `CREATE [UNIQUE] INDEX` 语句（按后端、逐字节一致）；生成器仍只产文本。
 
 ## GQL 语法
 
@@ -565,6 +569,17 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
 - **跨源写（非会话）**：一次写调用涉及 ≥2 个数据源时**无法原子**，按顺序执行，并发出一条
   `non_atomic_write` 反馈（`code: nonAtomic`，含涉及源列表）——允许降级、禁止静默。
   把写收敛到单源，或放入 `store.session()` 内（后者对跨源写直接 fail-closed）。
+
+## 事务型能力
+
+面向事务型业务场景（订单、库存——写竞争 + 复杂读）的能力增补。完整语义、用法与显式报错清单：
+**[doc/transaction-capabilities.zh-CN.md](doc/transaction-capabilities.zh-CN.md)** ·
+[English](doc/transaction-capabilities.md).
+
+- **mutation 关系谓词** —— `updateMany('Inventory', { product: { category: 'meat' } }, { $inc: { stock: 10 } })`：条件键命中已声明关系即 semi/anti-join，归一为 preCommand（aggregate 取 `_id`）+ `_id $in`。
+- **`$group by` one 关系路径** —— `by: ['product.category']` 编译为 `$lookup`+`$unwind`（Mongo）/ `LEFT JOIN`（SQL）；many 路径显式报错（扇出破坏计数语义）。
+- **自增主键** —— `_id: { type: 'int', strategy: 'autoincrement' }`；PG/SQLite 经 `INSERT…RETURNING` 回读、MySQL 经 insertId；MongoDB 与 `insertMany` 显式报 `AUTOINCREMENT_NOT_SUPPORTED`（禁 ObjectId 静默顶替）。
+- **索引 DDL** —— `schema.indexes`（Mongo 形态）→ `ddl.generate` 产出 `CREATE [UNIQUE] INDEX idx_<表>_<字段>`，MySQL/PostgreSQL/SQLite 三方言逐字节一致。
 
 ## 常见问题
 

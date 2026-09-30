@@ -24,8 +24,14 @@ async function insert(schemaName, data, routeOverride = null) {
   const plan = _call(() =>
     _core.planInsert(schemaName, data ?? null, _nowFor(schemaName), s.idPrefix ? _generateId(s) : '', _ctx(),
       routeOverride));
-  await _exec(plan.command);
-  return plan.returns;
+  const result = await _exec(plan.command);
+  let returns = plan.returns;
+  // 阶段2：autoincrement 主键 —— 执行器已回读自增值，returns 补 `_id`
+  if (returns && typeof returns === 'object' && !returns._id
+      && result && typeof result === 'object' && result._id !== undefined && result._id !== null) {
+    returns = { ...returns, _id: result._id };
+  }
+  return returns;
 }
 
 /** 批量插入（带权限检查，自动生成 _id 和时间戳；空数组直接返回空） */
@@ -33,6 +39,14 @@ async function insertMany(schemaName, docs, routeOverride = null) {
   if (!Array.isArray(docs) || !docs.length) return [];
 
   const s = _getSchema(schemaName);
+  // 阶段2（no-error-masking）：autoincrement 的批量自增值回读不可靠（MySQL 批量
+  // insertId 仅首行、且并发插入会留间隙）→ 显式报错，不静默产出错误 _id
+  const idFdef = (s.fields || {})._id || {};
+  if (idFdef.strategy === 'autoincrement' && docs.some((d) => !(d && d._id))) {
+    throw new Error(
+      'AUTOINCREMENT_NOT_SUPPORTED: insertMany 不支持 autoincrement schema'
+      + '（批量自增值回读不可靠）；请逐条 insert 或显式提供 _id');
+  }
   const plan = _call(() => _core.planInsertMany(
     schemaName,
     docs,
@@ -78,11 +92,46 @@ async function update(schemaName, condition, data, options = null, routeOverride
   return runAtomic(sources, doRun);
 }
 
+/** 执行带 `preCommand` 的命令（阶段1：mutation 关系谓词归一）。
+ * preCommand（aggregate 取命中 `_id`）先行执行，把 `_id` 列表回填进主命令 filter 的
+ * `$in` 占位（core 注入 `"__REL_PRED_IDS__"`）；空集 → `$in: []`（各后端均不命中任何行）。 */
+async function execWithPre(command) {
+  const pre = command && command.preCommand;
+  if (!pre) return _exec(command);
+  const preRows = await _exec(pre);
+  const ids = (preRows || []).filter((d) => d && '_id' in d).map((d) => d._id);
+  return fillPreIds(command, ids);
+}
+
+/** 把 preCommand 取得的 `_id` 列表回填进命令 filter 的 `$in` 占位（递归查找后执行）。
+ * core 注入的占位可能位于 `$and` 数组内（改写条件已有其他键时），故递归遍历。 */
+function fillPreIds(command, ids) {
+  const main = { ...command };
+  delete main.preCommand;
+  const walk = (node) => {
+    if (Array.isArray(node)) {
+      for (const it of node) walk(it);
+      return;
+    }
+    if (node && typeof node === 'object') {
+      for (const [k, v] of Object.entries(node)) {
+        if (v && typeof v === 'object' && v.$in === '__REL_PRED_IDS__') {
+          node[k] = { $in: [...ids] };
+        } else {
+          walk(v);
+        }
+      }
+    }
+  };
+  if (main.filter) walk(main.filter);
+  return _exec(main);
+}
+
 /** 批量更新（支持原生操作符） */
 async function updateMany(schemaName, condition, data, routeOverride = null) {
   const out = _call(() =>
     _core.planUpdateMany(schemaName, condition ?? null, data ?? null, _nowFor(schemaName), _ctx(), routeOverride));
-  const result = await _exec(out.command);
+  const result = await execWithPre(out.command);
   return { modifiedCount: result.modifiedCount };
 }
 
@@ -95,8 +144,15 @@ async function remove(schemaName, condition, routeOverride = null) {
 
   const doRemove = async () => {
     let archivedCount = 0;
+    // 关系谓词：先执行 deleteCommand.preCommand 取命中 _id（归档 find 与删除共用同一列表）
+    const pre = out.deleteCommand && out.deleteCommand.preCommand;
+    let ids = null;
+    if (pre) {
+      const preRows = await _exec(pre);
+      ids = (preRows || []).filter((d) => d && '_id' in d).map((d) => d._id);
+    }
     if (out.findCommand) {
-      const docs = await _exec(out.findCommand);
+      const docs = await (ids !== null ? fillPreIds(out.findCommand, ids) : _exec(out.findCommand));
       if (docs.length) {
         const arch = _call(() => _core.planArchiveDocs(schemaName, docs, _nowFor(schemaName), routeOverride));
         await _exec(arch.command);
@@ -104,7 +160,7 @@ async function remove(schemaName, condition, routeOverride = null) {
       }
     }
 
-    const result = await _exec(out.deleteCommand);
+    const result = await (ids !== null ? fillPreIds(out.deleteCommand, ids) : _exec(out.deleteCommand));
     return { deletedCount: result.deletedCount, archivedCount };
   };
 

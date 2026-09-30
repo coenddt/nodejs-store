@@ -10,7 +10,9 @@
  *   - 每表必建 __present 哨兵列（形态 ,f1,f2,；同 core write/insert.rs::present_value）；
  *   - timestamps !== false → 追加 createdAt / updatedAt（同 core schema/registry.rs::add_timestamp_fields）；
  *   - 归档表 <collection>_deleted 由 registry 自动派生，本模块按已注册 def 逐表生成（不特判）；
- *   - 不生成 CREATE INDEX（SQL 后端不建索引，schema.indexes 仅元数据，铁律 6）。
+ *   - schema.indexes（Mongo 形态 {keys: {f: 1|-1}, options/inline}）→ CREATE [UNIQUE] INDEX
+ *     （阶段 3 索引落地；原「仅元数据不建索引」铁律 6 子项按用户裁决放开，见
+ *     common-store/事务型能力增补执行文档.md 附录 D）。与 py_store/ddl.py 逐字节对齐。
  *
  * 生成器只产出文本、不执行 —— 不违反铁律 6（绝不写 DDL 回库）。
  * 对齐 py_store/ddl.py（两端输出逐字节一致）。
@@ -38,6 +40,10 @@ const NON_COLUMN = ['object', 'array'];
 // object/array 字段的列类型（JSON 文本列；同 core Backend::json_type_name）
 const JSON_TYPE = ['JSON', 'jsonb', 'TEXT'];
 const ID_TYPE = ['VARCHAR(64)', 'TEXT', 'TEXT'];
+// 阶段2：`_id` 声明 strategy=autoincrement 时的自增列类型（MySQL AUTO_INCREMENT 列
+// 须被索引 —— 表级 PRIMARY KEY 满足；SQLite 语法要求 PRIMARY KEY AUTOINCREMENT 相邻，
+// 由 createTable 的 pk+auto 分支拼接；PG 用 SERIAL）。与 py_store/ddl.py 逐字节对齐。
+const ID_AUTO_TYPE = ['INT AUTO_INCREMENT', 'SERIAL', 'INTEGER'];
 const PRESENT_TYPE = ['VARCHAR(255)', 'TEXT', 'TEXT'];
 const TIMESTAMP_FIELDS = ['createdAt', 'updatedAt'];
 const MYSQL_PRESENT_MAX = 255;
@@ -56,7 +62,7 @@ function declaredType(fieldDef) {
   return fieldDef && typeof fieldDef === 'object' ? fieldDef.type : fieldDef;
 }
 
-/** 返回 [[name, sqlType, pk]]，顺序：声明的字段（标量 / object·array JSON 列）→ timestamps → __present */
+/** 返回 [[name, sqlType, pk, auto]]，顺序：声明的字段（标量 / object·array JSON 列）→ timestamps → __present */
 function columns(defn, backend) {
   const i = idx(backend);
   const cols = [];
@@ -64,12 +70,14 @@ function columns(defn, backend) {
   for (const [name, fdef] of Object.entries(fields)) {
     const ftype = declaredType(fdef);
     if (name === '_id') {
-      cols.push([name, ID_TYPE[i], true]);
+      const strategy = fdef && typeof fdef === 'object' ? fdef.strategy : undefined;
+      cols.push([name, strategy === 'autoincrement' ? ID_AUTO_TYPE[i] : ID_TYPE[i], true,
+        strategy === 'autoincrement']);
       continue;
     }
     if (NON_COLUMN.includes(ftype)) {
       // object/array → 单列 JSON 文本（同 core field_column_ref::Json）
-      cols.push([name, JSON_TYPE[i], false]);
+      cols.push([name, JSON_TYPE[i], false, false]);
       continue;
     }
     if (!Object.prototype.hasOwnProperty.call(TYPES, ftype)) {
@@ -77,17 +85,17 @@ function columns(defn, backend) {
         `DDL 生成：字段 "${defn.name}.${name}" 类型 ${JSON.stringify(ftype)} 未知，支持 ${Object.keys(TYPES).sort()}`,
       );
     }
-    cols.push([name, TYPES[ftype][i], false]);
+    cols.push([name, TYPES[ftype][i], false, false]);
   }
   if (!cols.some((c) => c[2])) {
     throw new Error(`DDL 生成：schema "${defn.name}" 缺少 _id 字段`);
   }
   if (defn.timestamps !== false) {
     for (const ts of TIMESTAMP_FIELDS) {
-      if (!cols.some((c) => c[0] === ts)) cols.push([ts, TYPES.number[i], false]);
+      if (!cols.some((c) => c[0] === ts)) cols.push([ts, TYPES.number[i], false, false]);
     }
   }
-  cols.push(['__present', PRESENT_TYPE[i], false]);
+  cols.push(['__present', PRESENT_TYPE[i], false, false]);
   return cols;
 }
 
@@ -106,13 +114,35 @@ function warnPresentOverflow(defn, cols) {
   }
 }
 
+/** schema.indexes → CREATE [UNIQUE] INDEX 语句列表（阶段 3 索引落地）。
+ * 索引名 `idx_<collection>_<f1>_<f2>`（对齐 SQL 常规命名）；keys 值 1/-1 → ASC/DESC。 */
+function indexStmts(defn, backend) {
+  const out = [];
+  const table = defn.collection || defn.name;
+  for (const idx of defn.indexes || []) {
+    if (!idx || typeof idx !== 'object') continue;
+    const keys = idx.keys;
+    if (!keys || typeof keys !== 'object' || !Object.keys(keys).length) continue;
+    const unique = Boolean(idx.unique || (idx.options && idx.options.unique));
+    const cols = Object.entries(keys)
+      .map(([k, v]) => `${q(backend, k)} ${v === -1 ? 'DESC' : 'ASC'}`)
+      .join(', ');
+    const name = 'idx_' + table + '_' + Object.keys(keys).join('_');
+    out.push(`CREATE ${unique ? 'UNIQUE ' : ''}INDEX ${q(backend, name)} ON ${q(backend, table)} (${cols})`);
+  }
+  return out;
+}
+
 function createTable(defn, backend) {
   const table = defn.collection || defn.name;
   const cols = columns(defn, backend);
   if (backend === 'mysql') warnPresentOverflow(defn, cols);
   const lines = [];
-  for (const [name, ctype, pk] of cols) {
-    if (pk && backend === 'mysql') lines.push(`  ${q(backend, name)} ${ctype} NOT NULL`);
+  for (const [name, ctype, pk, auto] of cols) {
+    if (pk && auto && backend === 'sqlite') {
+      // SQLite 语法要求 AUTOINCREMENT 紧跟 PRIMARY KEY
+      lines.push(`  ${q(backend, name)} ${ctype} PRIMARY KEY AUTOINCREMENT`);
+    } else if (pk && backend === 'mysql') lines.push(`  ${q(backend, name)} ${ctype} NOT NULL`);
     else if (pk) lines.push(`  ${q(backend, name)} ${ctype} PRIMARY KEY`);
     else lines.push(`  ${q(backend, name)} ${ctype}`);
   }
@@ -120,13 +150,40 @@ function createTable(defn, backend) {
   return `CREATE TABLE ${q(backend, table)} (\n` + lines.join(',\n') + '\n);';
 }
 
-/** 生成 DDL 文本（多表以空行分隔）；backend ∈ mysql/postgres/sqlite */
+/** 生成 DDL 文本（多表以空行分隔，每表 CREATE TABLE 后跟其 CREATE INDEX）；backend ∈ mysql/postgres/sqlite
+ *
+ * 按表名去重：同名表只出一次 CREATE TABLE + 索引（防御 core 注册表出现重复名 ——
+ * 上游失守即告警，禁静默；对齐 py_store/ddl.py 的 seen_tables 防御）。 */
 function generate(backend, names) {
   if (!BACKENDS.includes(backend)) {
     throw new Error(`DDL 生成：不支持的后端 ${JSON.stringify(backend)}（支持 ${BACKENDS.join('/')}）`);
   }
   const targets = names && names.length ? Array.from(names) : schema.list();
-  return targets.map((n) => createTable(schema.get(n), backend)).join('\n\n');
+  const blocks = [];
+  const seenTables = new Set();
+  const dup = [];
+  for (const n of targets) {
+    const defn = schema.get(n);
+    const table = defn.collection || n;
+    if (seenTables.has(table)) {
+      dup.push(table);
+      continue;
+    }
+    seenTables.add(table);
+    blocks.push(createTable(defn, backend));
+    blocks.push(...indexStmts(defn, backend));
+  }
+  if (dup.length) {
+    _emitFeedback({
+      type: 'ddl_duplicate_table',
+      code: 'ddlDuplicateTable',
+      layer: 'host',
+      message: `DDL 生成：表 ${[...new Set(dup)].sort()} 重复注册，已去重`,
+      hint: 'schema 注册表出现重复名（见 schemaDuplicateName 告警）；修复注册侧根因',
+      backend,
+    });
+  }
+  return blocks.join('\n\n');
 }
 
 module.exports = { generate };

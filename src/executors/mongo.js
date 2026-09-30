@@ -119,9 +119,19 @@ async function execMongo(db, cmd, session) {
       const opts = _opts(session, cmd.projection ? { projection: cmd.projection } : undefined);
       return coll.findOne(cmd.filter, opts);
     }
-    case 'insertOne':
-      await coll.insertOne(cmd.doc, _opts(session));
-      return cmd.doc;
+    case 'insertOne': {
+      const doc = cmd.doc || {};
+      // 阶段2（no-error-masking）：Mongo 无自增语义 —— `_id` 缺失的文档只可能来自
+      // 声明 strategy=autoincrement 的 schema（常规 schema 该形态已被 core 拦截）。
+      // 禁止 ObjectId 静默顶替自增契约，显式报错。
+      if (!doc._id) {
+        throw new Error(
+          'AUTOINCREMENT_NOT_SUPPORTED: schema 声明了 strategy="autoincrement"，'
+          + 'MongoDB 后端无自增语义（禁 ObjectId 顶替）；请使用 SQL 数据源');
+      }
+      await coll.insertOne(doc, _opts(session));
+      return doc;
+    }
     case 'insertMany':
       if (cmd.upsertById) {
         // 归档幂等（core planArchiveDocs）：按 _id 逐条覆盖 —— 「归档成功但删除失败」
@@ -130,6 +140,11 @@ async function execMongo(db, cmd, session) {
           await coll.replaceOne({ _id: doc._id }, doc, _opts(session, { upsert: true }));
         }
         return { insertedCount: cmd.docs.length };
+      }
+      if (cmd.docs.some((d) => !(d && d._id))) {
+        throw new Error(
+          'AUTOINCREMENT_NOT_SUPPORTED: schema 声明了 strategy="autoincrement"，'
+          + 'MongoDB 后端无自增语义（禁 ObjectId 顶替）；请使用 SQL 数据源');
       }
       await coll.insertMany(cmd.docs, _opts(session));
       return { insertedCount: cmd.docs.length };

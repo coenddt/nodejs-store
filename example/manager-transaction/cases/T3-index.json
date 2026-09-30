@@ -1,0 +1,31 @@
+[
+  {
+    "id": "T3-01",
+    "group": "T3",
+    "title": "红·schema.indexes 落地为 CREATE INDEX（放开铁律6）",
+    "reset": "none",
+    "ctx": { "userId": "u1", "roles": ["admin"] },
+    "sqlPolicy": "parity",
+    "steps": [
+      { "op": "raw", "fn": "check_ddl_create_index" }
+    ],
+    "note": "阶段3 任务：ddl.generate 对带 indexes 声明的 schema（本场景 Order：orderNo unique + buyerId 普通索引）产出 CREATE [UNIQUE] INDEX。2026-09-30 实测 generate 全量 1908 条语句零 CREATE INDEX（py-store/src/py_store/ddl.py 第 11 行铁律6 明文不生成）。"
+  },
+  {
+    "id": "T3-02",
+    "group": "T3",
+    "title": "红·unique 索引落库生效（重复 orderNo 显式报错）",
+    "reset": "seed",
+    "ctx": { "userId": "u1", "roles": ["admin"] },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "insert",
+        "schema": "Order",
+        "data": { "_id": "o9", "orderNo": "A001", "buyerId": "u1", "status": "paid" },
+        "expect": { "kind": "error" }
+      }
+    ],
+    "note": "阶段3 任务的行为闭环：orderNo 唯一索引物理落地后，重复 orderNo 必须显式报错（各后端方言文案不同，故不锚定 code）。当前四后端无唯一索引，重复插入静默成功 → 判红。"
+  }
+]

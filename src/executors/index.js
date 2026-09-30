@@ -86,8 +86,21 @@ function shapeResult(cmd, out) {
       return (out.docs && out.docs[0]) || null;
     case 'countDocuments':
       return _scalar(out.rows);
-    case 'insertOne':
-      return cmd.doc;
+    case 'insertOne': {
+      const doc = cmd.doc;
+      // 阶段2：autoincrement 主键 —— doc 无 `_id`（core 不注入）→ 从执行包络回读
+      // 自增值（PG/SQLite RETURNING 走 rows；MySQL/SQLite lastInsertRowid 走 insertId）
+      if (doc && !doc._id) {
+        let rid = null;
+        if (out.rows && out.rows[0] && Object.prototype.hasOwnProperty.call(out.rows[0], '_id')) {
+          rid = out.rows[0]._id;
+        } else if (out.insertId !== null && out.insertId !== undefined) {
+          rid = out.insertId;
+        }
+        if (rid !== null && rid !== undefined) return { ...doc, _id: rid };
+      }
+      return doc;
+    }
     case 'insertMany':
       return { insertedCount: (cmd.docs || []).length };
     case 'updateMany':

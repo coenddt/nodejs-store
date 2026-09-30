@@ -36,6 +36,7 @@ function create(db, _options = {}) {
     let docs = null;
     let rows = null;
     let affectedRows = 0;
+    let insertId = null;
     for (const stmt of plan.stmts) {
       const params = _bind(stmt.params);
       // 带 RETURNING 的写语句同样返回行 → 必须用 all() 取回；其余写语句用 run() 取影响行数
@@ -43,10 +44,14 @@ function create(db, _options = {}) {
         rows = db.prepare(stmt.text).all(...params);
         if (stmt.rowShape) docs = _core.restoreRows(stmt.rowShape, rows);
       } else {
-        affectedRows = Number(db.prepare(stmt.text).run(...params).changes || 0);
+        const info = db.prepare(stmt.text).run(...params);
+        affectedRows = Number(info.changes || 0);
+        // 阶段2：autoincrement 主键写后自增值回读（非 RETURNING 的 INSERT 走
+        // lastInsertRowid；带 RETURNING 的写语句走上方 rows 分支）
+        insertId = Number(info.lastInsertRowid);
       }
     }
-    return { docs, rows, affectedRows };
+    return { docs, rows, affectedRows, insertId };
   }
 
   /** 显式事务句柄：BEGIN + 幂等 commit/rollback；release 为 no-op（单连接不归还） */

@@ -30,6 +30,7 @@ function create(driver, _options = {}) {
     let docs = null;
     let rows = null;
     let affectedRows = 0;
+    let insertId = null;
     for (const stmt of plan.stmts) {
       const [raw, fields] = await conn.execute(stmt.text, stmt.params || []);
       if (Array.isArray(raw)) {
@@ -37,9 +38,12 @@ function create(driver, _options = {}) {
         if (stmt.rowShape) docs = _core.restoreRows(stmt.rowShape, rows);
       } else {
         affectedRows = Number(raw.affectedRows || 0);
+        // 阶段2：autoincrement 主键写后自增值回读（MySQL 无 RETURNING，insertId =
+        // 本连接最近一次 INSERT 生成的自增值）
+        insertId = Number(raw.insertId);
       }
     }
-    return { docs, rows, affectedRows };
+    return { docs, rows, affectedRows, insertId };
   }
 
   /**

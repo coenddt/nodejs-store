@@ -1,0 +1,25 @@
+-- manager-transaction · PostgreSQL 物理表（mixed-case 列一律双引号；_id/__present 全小写不加引号）
+DROP TABLE IF EXISTS users;
+CREATE TABLE users (_id TEXT PRIMARY KEY, name TEXT, "createdBy" TEXT, __present TEXT);
+DROP TABLE IF EXISTS products;
+CREATE TABLE products (_id TEXT PRIMARY KEY, name TEXT, "category" TEXT, price DOUBLE PRECISION, "createdBy" TEXT, __present TEXT);
+DROP TABLE IF EXISTS inventories;
+CREATE TABLE inventories (_id TEXT PRIMARY KEY, "productId" TEXT, warehouse TEXT, stock INTEGER, "warnLine" INTEGER, "createdBy" TEXT, __present TEXT);
+DROP TABLE IF EXISTS orders;
+CREATE TABLE orders (_id TEXT PRIMARY KEY, "orderNo" TEXT, "buyerId" TEXT, status TEXT, "createdBy" TEXT, __present TEXT);
+DROP TABLE IF EXISTS order_items;
+CREATE TABLE order_items (_id TEXT PRIMARY KEY, "orderId" TEXT, "productId" TEXT, quantity INTEGER, "unitPrice" DOUBLE PRECISION, "createdBy" TEXT, __present TEXT);
+DROP TABLE IF EXISTS auto_orders;
+CREATE TABLE auto_orders (_id SERIAL PRIMARY KEY, "orderNo" TEXT, amount DOUBLE PRECISION, __present TEXT);
+DROP TABLE IF EXISTS users_deleted;
+CREATE TABLE users_deleted (_id TEXT PRIMARY KEY, name TEXT, "createdBy" TEXT, __present TEXT, "deletedAt" BIGINT);
+DROP TABLE IF EXISTS products_deleted;
+CREATE TABLE products_deleted (_id TEXT PRIMARY KEY, name TEXT, "category" TEXT, price DOUBLE PRECISION, "createdBy" TEXT, __present TEXT, "deletedAt" BIGINT);
+DROP TABLE IF EXISTS inventories_deleted;
+CREATE TABLE inventories_deleted (_id TEXT PRIMARY KEY, "productId" TEXT, warehouse TEXT, stock INTEGER, "warnLine" INTEGER, "createdBy" TEXT, __present TEXT, "deletedAt" BIGINT);
+DROP TABLE IF EXISTS orders_deleted;
+CREATE TABLE orders_deleted (_id TEXT PRIMARY KEY, "orderNo" TEXT, "buyerId" TEXT, status TEXT, "createdBy" TEXT, __present TEXT, "deletedAt" BIGINT);
+DROP TABLE IF EXISTS order_items_deleted;
+CREATE TABLE order_items_deleted (_id TEXT PRIMARY KEY, "orderId" TEXT, "productId" TEXT, quantity INTEGER, "unitPrice" DOUBLE PRECISION, "createdBy" TEXT, __present TEXT, "deletedAt" BIGINT);
+DROP TABLE IF EXISTS auto_orders_deleted;
+CREATE TABLE auto_orders_deleted (_id INTEGER, "orderNo" TEXT, amount DOUBLE PRECISION, __present TEXT, "deletedAt" BIGINT);

@@ -1,0 +1,25 @@
+-- manager-transaction · MySQL 物理表
+DROP TABLE IF EXISTS users;
+CREATE TABLE users (_id VARCHAR(64) PRIMARY KEY, name VARCHAR(255), createdBy VARCHAR(255), __present VARCHAR(255));
+DROP TABLE IF EXISTS products;
+CREATE TABLE products (_id VARCHAR(64) PRIMARY KEY, name VARCHAR(255), category VARCHAR(255), price DOUBLE, createdBy VARCHAR(255), __present VARCHAR(255));
+DROP TABLE IF EXISTS inventories;
+CREATE TABLE inventories (_id VARCHAR(64) PRIMARY KEY, productId VARCHAR(255), warehouse VARCHAR(255), stock INT, warnLine INT, createdBy VARCHAR(255), __present VARCHAR(255));
+DROP TABLE IF EXISTS orders;
+CREATE TABLE orders (_id VARCHAR(64) PRIMARY KEY, orderNo VARCHAR(255), buyerId VARCHAR(255), status VARCHAR(255), createdBy VARCHAR(255), __present VARCHAR(255));
+DROP TABLE IF EXISTS order_items;
+CREATE TABLE order_items (_id VARCHAR(64) PRIMARY KEY, orderId VARCHAR(255), productId VARCHAR(255), quantity INT, unitPrice DOUBLE, createdBy VARCHAR(255), __present VARCHAR(255));
+DROP TABLE IF EXISTS auto_orders;
+CREATE TABLE auto_orders (_id INT AUTO_INCREMENT PRIMARY KEY, orderNo VARCHAR(255), amount DOUBLE, __present VARCHAR(255));
+DROP TABLE IF EXISTS users_deleted;
+CREATE TABLE users_deleted (_id VARCHAR(64) PRIMARY KEY, name VARCHAR(255), createdBy VARCHAR(255), __present VARCHAR(255), deletedAt BIGINT);
+DROP TABLE IF EXISTS products_deleted;
+CREATE TABLE products_deleted (_id VARCHAR(64) PRIMARY KEY, name VARCHAR(255), category VARCHAR(255), price DOUBLE, createdBy VARCHAR(255), __present VARCHAR(255), deletedAt BIGINT);
+DROP TABLE IF EXISTS inventories_deleted;
+CREATE TABLE inventories_deleted (_id VARCHAR(64) PRIMARY KEY, productId VARCHAR(255), warehouse VARCHAR(255), stock INT, warnLine INT, createdBy VARCHAR(255), __present VARCHAR(255), deletedAt BIGINT);
+DROP TABLE IF EXISTS orders_deleted;
+CREATE TABLE orders_deleted (_id VARCHAR(64) PRIMARY KEY, orderNo VARCHAR(255), buyerId VARCHAR(255), status VARCHAR(255), createdBy VARCHAR(255), __present VARCHAR(255), deletedAt BIGINT);
+DROP TABLE IF EXISTS order_items_deleted;
+CREATE TABLE order_items_deleted (_id VARCHAR(64) PRIMARY KEY, orderId VARCHAR(255), productId VARCHAR(255), quantity INT, unitPrice DOUBLE, createdBy VARCHAR(255), __present VARCHAR(255), deletedAt BIGINT);
+DROP TABLE IF EXISTS auto_orders_deleted;
+CREATE TABLE auto_orders_deleted (_id INT, orderNo VARCHAR(255), amount DOUBLE, __present VARCHAR(255), deletedAt BIGINT);

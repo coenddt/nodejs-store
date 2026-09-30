@@ -35,6 +35,7 @@
 - [Schema reference](#schema-reference)
 - [Advanced API](#advanced-api)
 - [Transactions](#transaction-boundary)
+- [Transactional capabilities](#transactional-capabilities)
 - [FAQ](#faq)
 - [Related projects](#related-projects)
 
@@ -210,6 +211,9 @@ GQL tree queries compile to a single native query per backend — never hand-wri
 - **Permission context** — `AsyncLocalStorage`-based roles (`super_admin`/`admin`/`guest`/`creator`...), schema/field-level read/write whitelists, automatic owner-condition injection.
 - **Multi-datasource & multi-tenant** — locate a schema by `(source, namespace, collection)`; re-target per request with a route override.
 - **Async-first, Rust core** — built on the `mongodb` Node.js driver and a shared Rust core with SQL dialects.
+- **Relation predicates in mutations** — filter `update` / `remove` by related-table fields, pushed down to all four backends (previously a silent no-op on MongoDB).
+- **Autoincrement primary keys** — declare `_id` as `{ type: 'int', strategy: 'autoincrement' }` for database-assigned integer IDs, with explicit errors where autoincrement is impossible.
+- **Index DDL** — `schema.indexes` compiles to real `CREATE [UNIQUE] INDEX` statements (per backend, byte-identical); the generator still only emits text.
 
 ## GQL syntax
 
@@ -561,6 +565,18 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
 - **Archive idempotency**: `remove` archives with upsert-by-`_id` semantics, so a retry after partial failure no longer fails on duplicate `_id`.
 - Read consistency: only multiple reads inside an explicit session share one transaction connection; reads outside a session do not open an extra transaction.
 - **Cross-source writes (no session)**: a single write call touching ≥2 datasources **cannot be atomic**; it runs sequentially and emits one `non_atomic_write` feedback event (`code: nonAtomic`, with the source list) — degradation is allowed, silence is not. Converge writes onto a single source, or wrap them in `store.session()` (which fails closed on cross-source writes).
+
+## Transactional capabilities
+
+Capabilities aimed at transactional workloads (orders, inventory — write contention plus
+complex reads). Full details, semantics and the explicit-error list:
+**[doc/transaction-capabilities.md](doc/transaction-capabilities.md)** ·
+[中文](doc/transaction-capabilities.zh-CN.md).
+
+- **Relation predicates in mutations** — `updateMany('Inventory', { product: { category: 'meat' } }, { $inc: { stock: 10 } })`: condition keys matching a declared relation become a semi/anti-join, normalized into a preCommand (aggregate fetching `_id`s) plus `_id $in`.
+- **`$group by` one-relation paths** — `by: ['product.category']` compiles to `$lookup`+`$unwind` (Mongo) / `LEFT JOIN` (SQL); `many` paths fail explicitly (fan-out breaks count semantics).
+- **Autoincrement PKs** — `_id: { type: 'int', strategy: 'autoincrement' }`; PG/SQLite read back via `INSERT…RETURNING`, MySQL via insertId; MongoDB and `insertMany` fail explicitly with `AUTOINCREMENT_NOT_SUPPORTED` (no silent ObjectId substitution).
+- **Index DDL** — `schema.indexes` (MongoDB shape) → `CREATE [UNIQUE] INDEX idx_<table>_<cols>` in `ddl.generate`, byte-identical across MySQL/PostgreSQL/SQLite.
 
 ## FAQ
 
