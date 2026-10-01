@@ -1,0 +1,123 @@
+[
+  {
+    "id": "T4-01",
+    "group": "T4",
+    "title": "加列迁移：存量行缺失语义 + 新插入行生效 + 归档跟随（用例内复原）",
+    "reset": "seed",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "raw",
+        "fn": "migrate_add_column"
+      }
+    ],
+    "note": "阶段4：diff_defs/generate_migration 产 ALTER ADD COLUMN（主表+归档表跟随）；无 default 列对存量行=缺失（$exists:false）；新插入行显式值生效。",
+    "backends": [
+      "postgres",
+      "mysql",
+      "sqlite"
+    ]
+  },
+  {
+    "id": "T4-02",
+    "group": "T4",
+    "title": "加唯一索引迁移：落库后重复键显式报错（用例内复原）",
+    "reset": "seed",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "raw",
+        "fn": "migrate_add_unique_index"
+      }
+    ],
+    "note": "阶段4：addIndex 迁移走阶段3 的索引语句生成；落库后重复 orderNo 显式报错。",
+    "backends": [
+      "postgres",
+      "mysql",
+      "sqlite"
+    ]
+  },
+  {
+    "id": "T4-03",
+    "group": "T4",
+    "title": "类型放宽 int→float：MySQL/PG 生效；SQLite 显式 MIGRATION_UNSUPPORTED",
+    "reset": "seed",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "raw",
+        "fn": "migrate_widen"
+      }
+    ],
+    "note": "阶段4：widenColumn 白名单（int→float）；SQLite 无 ALTER COLUMN（N1 实测）显式拒绝。",
+    "backends": [
+      "postgres",
+      "mysql",
+      "sqlite"
+    ]
+  },
+  {
+    "id": "T4-04",
+    "group": "T4",
+    "title": "破坏性变更显式拒绝（删列/收窄/改名/主键变更）",
+    "reset": "none",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "backends": [
+      "sqlite"
+    ],
+    "steps": [
+      {
+        "op": "raw",
+        "fn": "migrate_destructive"
+      }
+    ],
+    "note": "阶段4：diff 层白名单外一律记 errors（纯函数，单后端验证即可）。"
+  },
+  {
+    "id": "T4-05",
+    "group": "T4",
+    "title": "新表迁移：建表+索引+归档派生，注册后自增可读写",
+    "reset": "none",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "backends": [
+      "sqlite"
+    ],
+    "steps": [
+      {
+        "op": "raw",
+        "fn": "migrate_add_table"
+      }
+    ],
+    "note": "阶段4：old=None → addTable（含归档表派生，剔除自增策略）；sqlite 内存库天然隔离。"
+  }
+]

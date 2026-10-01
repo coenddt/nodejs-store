@@ -577,6 +577,7 @@ complex reads). Full details, semantics and the explicit-error list:
 - **`$group by` one-relation paths** — `by: ['product.category']` compiles to `$lookup`+`$unwind` (Mongo) / `LEFT JOIN` (SQL); `many` paths fail explicitly (fan-out breaks count semantics).
 - **Autoincrement PKs** — `_id: { type: 'int', strategy: 'autoincrement' }`; PG/SQLite read back via `INSERT…RETURNING`, MySQL via insertId; MongoDB and `insertMany` fail explicitly with `AUTOINCREMENT_NOT_SUPPORTED` (no silent ObjectId substitution).
 - **Index DDL** — `schema.indexes` (MongoDB shape) → `CREATE [UNIQUE] INDEX idx_<table>_<cols>` in `ddl.generate`, byte-identical across MySQL/PostgreSQL/SQLite.
+- **Declarative migration** — `ddl.diffDefs(old, new)` + `ddl.generateMigration(backend, old, new)`: whitelist-only (add table/column/index, type widening), per-dialect SQL, pure functions; destructive changes fail with `MIGRATION_UNSUPPORTED`.
 
 ## FAQ
 

@@ -87,4 +87,6 @@ const CHECKS = {
   check_ddl_create_index,
 };
 
+Object.assign(CHECKS, require("./checks-migration"));
+
 module.exports = { CHECKS };

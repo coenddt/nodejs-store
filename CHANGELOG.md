@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **声明式 schema 迁移**：`ddl.diff_defs(old, new)`（后端无关变更列表）+
+  `ddl.generate_migration(backend, old, new)`（per-dialect SQL 文本；纯函数、不连库、
+  只产文本不执行）。首批白名单：加表 / 加列（主表+归档表跟随，支持标量 default）/
+  类型放宽（int→long|float|double 等）/ 加索引；白名单外显式 `MIGRATION_UNSUPPORTED`
+  （删列/改名/收窄/主键变更）。SQLite 支持加列/加索引/加表，类型变更显式拒绝；
+  MongoDB 不做迁移（schemaless）。双宿主输出逐字节一致（parity 锚单测）。
+
+
 ## 2.6.0 (2026-09-30)
 
 ### Added

@@ -387,6 +387,7 @@ async function runBackend(kind, oracle) {
 
   const h = {
     backend: kind,
+    driver: null, // setup 后填充（阶段4 T4 迁移用例执行 DDL 用）
     store,
     eventsAll: _eventsAll,
     result: null,
@@ -400,6 +401,7 @@ async function runBackend(kind, oracle) {
     return { backend: kind, available: false, skipReason: setup.error, results: [], oracle: null };
   }
   const { driver, conn, client } = setup;
+  h.driver = driver;
 
   registerAll();
   if (kind !== 'mongodb') {

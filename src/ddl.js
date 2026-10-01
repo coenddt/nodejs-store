@@ -186,4 +186,185 @@ function generate(backend, names) {
   return blocks.join('\n\n');
 }
 
-module.exports = { generate };
+// ══════════════════════════════════════════════════════════════════
+// 声明式 schema 迁移（阶段 4；设计见 common-store/迁移设计文档-阶段4.md）
+// 与 py_store/ddl.py 的 migration 段逐字节对齐（parity 锚：tests/migration.test.js）。
+// ══════════════════════════════════════════════════════════════════
+
+/** 类型放宽映射（首批）：值域安全扩大的单向变更；跨大类不在映射内 → Err */
+const WIDEN = {
+  int: ['long', 'float', 'double'],
+  long: ['float', 'double'],
+  float: ['double'],
+};
+
+/** 字段 def → 列 SQL 类型（与 columns 同源；object/array → JSON 文本列） */
+function fieldSqlType(backend, fdef) {
+  const i = idx(backend);
+  const ftype = declaredType(fdef);
+  if (NON_COLUMN.includes(ftype)) return JSON_TYPE[i];
+  if (!Object.prototype.hasOwnProperty.call(TYPES, ftype)) {
+    throw new Error(
+      `迁移生成：字段类型 ${JSON.stringify(ftype)} 未知（支持 ${Object.keys(TYPES).sort()}）`);
+  }
+  return TYPES[ftype][i];
+}
+
+/** default 字面量 → SQL 文本（仅 JSON 标量；SQLite 禁非常量表达式 DEFAULT） */
+function sqlLiteral(v) {
+  if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
+  if (typeof v === 'number') return String(v);
+  if (typeof v === 'string') return `'${v.replace(/'/g, "''")}'`;
+  throw new Error(`迁移生成：default 仅支持 JSON 标量字面量，收到 ${typeof v}`);
+}
+
+/** 主 def → 归档表 def（列 = 主列 + deletedAt；剔除 _id 自增策略；indexes 继承） */
+function archiveDefnOf(defn) {
+  const fields = { ...(defn.fields || {}) };
+  fields.deletedAt = { type: 'number' };
+  if (fields._id && typeof fields._id === 'object') {
+    const { strategy, ...rest } = fields._id;
+    fields._id = rest;
+  }
+  return {
+    ...defn,
+    name: `${defn.name}Deleted`,
+    collection: `${defn.collection || defn.name}_deleted`,
+    fields,
+    timestamps: false,
+    _isArchive: true,
+  };
+}
+
+/** 新旧 schema def 对比 → { changes, errors }（后端无关，纯函数；白名单外记入 errors） */
+function diffDefs(oldDefn, newDefn) {
+  const changes = [];
+  const errors = [];
+  const oldFields = (oldDefn && oldDefn.fields) || {};
+  const newFields = newDefn.fields || {};
+
+  if (oldDefn === null || oldDefn === undefined) {
+    return { changes: [{ op: 'addTable', defn: newDefn }], errors };
+  }
+
+  for (const [name, nf] of Object.entries(newFields)) {
+    if (name === '_id') {
+      const of = oldFields._id;
+      if (of !== undefined && declaredType(of) !== declaredType(nf)) {
+        errors.push(`_id 主键类型变更不支持（${declaredType(of)} → ${declaredType(nf)}）`);
+      }
+      const oStrat = of && typeof of === 'object' ? of.strategy : undefined;
+      const nStrat = nf && typeof nf === 'object' ? nf.strategy : undefined;
+      if (oStrat !== nStrat) {
+        errors.push(`_id 主键策略变更不支持（${JSON.stringify(oStrat)} → ${JSON.stringify(nStrat)}）`);
+      }
+      continue;
+    }
+    const nfType = declaredType(nf);
+    if (!(name in oldFields)) {
+      if (!Object.prototype.hasOwnProperty.call(TYPES, nfType) && !NON_COLUMN.includes(nfType)) {
+        errors.push(`新列 "${name}" 类型 ${JSON.stringify(nfType)} 未知`);
+        continue;
+      }
+      changes.push({
+        op: 'addColumn', name,
+        field: nf && typeof nf === 'object' ? nf : { type: nf },
+      });
+      continue;
+    }
+    const of = oldFields[name];
+    const ofType = declaredType(of);
+    if (ofType === nfType) continue; // 恒等：不上报
+    if (nfType && (WIDEN[ofType] || []).includes(nfType)) {
+      changes.push({ op: 'widenColumn', name, from: ofType, to: nfType });
+    } else {
+      errors.push(
+        `字段 "${name}" 类型 ${JSON.stringify(ofType)} → ${JSON.stringify(nfType)} 非放宽变更`
+        + '（首批仅支持单向放宽：int→long/float/double、long→float/double、float→double）');
+    }
+  }
+  for (const name of Object.keys(oldFields)) {
+    if (!(name in newFields)) {
+      errors.push(`删除字段 "${name}" 不支持（破坏性变更；请显式走数据迁移脚本）`);
+    }
+  }
+
+  const indexKeys = (defn) => (defn.indexes || [])
+    .filter((ix) => ix && typeof ix === 'object' && ix.keys
+      && typeof ix.keys === 'object' && Object.keys(ix.keys).length);
+  const oldIdx = indexKeys(oldDefn);
+  for (const ix of indexKeys(newDefn)) {
+    if (!oldIdx.some((o) => JSON.stringify(o) === JSON.stringify(ix))) {
+      changes.push({ op: 'addIndex', index: ix });
+    }
+  }
+
+  const oldColl = oldDefn.collection || oldDefn.name;
+  const newColl = newDefn.collection || newDefn.name;
+  if (oldColl !== newColl) {
+    errors.push(`collection 改名不支持（${JSON.stringify(oldColl)} → ${JSON.stringify(newColl)}；破坏性变更）`);
+  }
+  return { changes, errors };
+}
+
+/** 新旧 schema def → 迁移 SQL 文本列表（per-dialect；只产文本、不执行） */
+function generateMigration(backend, oldDefn, newDefn) {
+  if (!BACKENDS.includes(backend)) {
+    throw new Error(`迁移生成：不支持的后端 ${JSON.stringify(backend)}（支持 ${BACKENDS.join('/')}）`);
+  }
+  const plan = diffDefs(oldDefn, newDefn);
+  if (plan.errors.length) {
+    throw new Error(
+      'MIGRATION_UNSUPPORTED: ' + plan.errors.join('；')
+      + '（首批白名单：加表/加列/类型放宽/加索引；破坏性变更请走显式数据迁移脚本）');
+  }
+
+  const table = newDefn.collection || newDefn.name;
+  const stmts = [];
+  const order = { addColumn: 0, widenColumn: 1, addIndex: 2 };
+  for (const ch of [...plan.changes].sort((a, b) => (order[a.op] ?? 9) - (order[b.op] ?? 9))) {
+    if (ch.op === 'addTable') {
+      stmts.push(createTable(newDefn, backend));
+      stmts.push(...indexStmts(newDefn, backend));
+      const arch = archiveDefnOf(newDefn);
+      stmts.push(createTable(arch, backend));
+      stmts.push(...indexStmts(arch, backend));
+    } else if (ch.op === 'addColumn') {
+      const ftype = declaredType(ch.field);
+      const colType = fieldSqlType(backend, ch.field);
+      const deflt = ch.field && typeof ch.field === 'object' ? ch.field.default : undefined;
+      let colSql = `${q(backend, ch.name)} ${colType}`;
+      if (deflt !== undefined && deflt !== null) {
+        if (NON_COLUMN.includes(ftype)) {
+          throw new Error(
+            `MIGRATION_UNSUPPORTED: 新列 "${ch.name}"（object/array JSON 列）不支持 DEFAULT`
+            + '（存量行缺失语义由 __present 哨兵表达；default 仅影响新写入）');
+        }
+        colSql += ` DEFAULT ${sqlLiteral(deflt)}`;
+      }
+      stmts.push(`ALTER TABLE ${q(backend, table)} ADD COLUMN ${colSql}`);
+      stmts.push(`ALTER TABLE ${q(backend, `${table}_deleted`)} ADD COLUMN ${colSql}`);
+    } else if (ch.op === 'widenColumn') {
+      const colType = fieldSqlType(backend, newDefn.fields[ch.name]);
+      if (backend === 'sqlite') {
+        throw new Error(
+          `MIGRATION_UNSUPPORTED: SQLite 不支持类型变更 `
+          + `（${ch.from} → ${ch.to} 需重建表）；加列/加索引/加表已支持`);
+      }
+      if (backend === 'mysql') {
+        stmts.push(`ALTER TABLE ${q(backend, table)} MODIFY COLUMN ${q(backend, ch.name)} ${colType}`);
+      } else {
+        stmts.push(
+          `ALTER TABLE ${q(backend, table)} ALTER COLUMN ${q(backend, ch.name)} `
+          + `TYPE ${colType} USING ${q(backend, ch.name)}::${colType}`);
+      }
+    } else if (ch.op === 'addIndex') {
+      stmts.push(...indexStmts({ collection: table, indexes: [ch.index] }, backend));
+    } else {
+      throw new Error(`MIGRATION_UNSUPPORTED: 未知变更 ${ch.op}`);
+    }
+  }
+  return stmts;
+}
+
+module.exports = { generate, diffDefs, generateMigration };
