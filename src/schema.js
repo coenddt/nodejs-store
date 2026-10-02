@@ -127,6 +127,21 @@ function setRequireContext(needCtx = true) {
   core.setRequireContext(Boolean(needCtx));
 }
 
+/** 豁免角色清单（命中者在一切判决环节直接放行）。默认空——无豁免（清单化语义） */
+function setExemptRoles(roles) {
+  core.setExemptRoles(roles);
+}
+
+/** 拒写角色清单（命中者一切写路径拒绝，读不受影响）。默认空——无拒写 */
+function setDenyWriteRoles(roles) {
+  core.setDenyWriteRoles(roles);
+}
+
+/** schema 白名单缺失/为空时的默认姿态：'open'（默认，放行）| 'closed'（全拒） */
+function setUnconfiguredPolicy(policy) {
+  core.setUnconfiguredPolicy(policy);
+}
+
 /** 「上下文强制」开关当前值（对齐 py_store.schema.require_context） */
 function requireContext() {
   return core.requireContext();
@@ -160,6 +175,9 @@ module.exports = {
   list,
   setRequireContext,
   requireContext,
+  setExemptRoles,
+  setDenyWriteRoles,
+  setUnconfiguredPolicy,
   setProfile,
   getProfile,
   getAsyncFn,

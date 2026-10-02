@@ -104,6 +104,9 @@ function registerAll() {
     _applyFns(defn);
     sc.register(defn);
   }
+  // 清单化语义（设计 §11.5）：super_admin/admin 不再默认放行，
+  // E-14 的三 ctx 全放行由显式豁免清单承载（判决 = 用户可见配置）
+  sc.setExemptRoles(['super_admin', 'admin']);
 }
 
 // ──────────────────────────────────────────────────────────── 后端 ──
