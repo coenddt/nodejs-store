@@ -37,6 +37,7 @@
 - [Multi-datasource & multi-tenant](https://github.com/coenddt/nodejs-store#multi-datasource-connections): `(source, namespace, collection)` and route override
 - [Schema reference](https://github.com/coenddt/nodejs-store#schema-reference): fields, relations, computes, indexes, read/write whitelists
 - [Advanced API](https://github.com/coenddt/nodejs-store#advanced-api): `buildPipeline`, `syncSchema`, `setFeedbackSink`, low-level modules
+- [AI ask (natural-language query)](https://github.com/coenddt/nodejs-store#storeaskquestion-opts): `store.ask` + `store.describeForAi` + pluggable LLM registry (`makeOpenaiCompat`), guarded by the read-only `text2query` profile
 - [Transactions](https://github.com/coenddt/nodejs-store#transaction-boundary): per-source atomicity guarantees
 
 ## Optional

@@ -379,6 +379,77 @@ store.setFeedbackSink((e) => logger.warn({ code: e.code }, e.hint));
 
 Non-pushdownable commands also throw `PushdownUnsupportedError`.
 
+### `store.ask(question, opts)`
+
+AI ask — natural-language query (L1, read-only). The question plus a permission-filtered
+schema summary go to a pluggable LLM, which must answer with a single `{"gql","params"}`
+JSON object; the query is planned and executed inside the hardened `text2query` profile
+(read-only, row/depth caps, route override disabled). Structured failures are fed back
+to the LLM for retry (up to `maxRetries`); on exhaustion `AskExhausted` is thrown — no
+silent degradation, no empty results.
+
+| Option | Type | Meaning |
+| --- | --- | --- |
+| `llm` | `string \| Function` | required; registry name or an `async (messages) => string` client |
+| `ctx` | object | required; server-side `{ userId, roles }`; missing ctx is rejected (fail-secure), never enters LLM messages |
+| `maxRetries` | number (default `3`) | retries after a failed attempt |
+| `knowledge` | string | override the system-prompt knowledge text |
+
+Resolves to `{ data, attempts, events }`; each attempt is `{ llmRaw, gql, params, rows }`
+(the successful round has no `error` key), failures carry
+`{ error: { code, message } }` with `code` ∈ `badLlmOutput`, `profileBlocked`,
+`permissionDenied`, `planError`. LLM client faults (`LlmError`) propagate untouched.
+
+```js
+const { llm } = require('nodejs-store');
+
+llm.registerLlm('deepseek', llm.makeOpenaiCompat({
+  baseUrl: 'https://api.deepseek.com/v1',
+  model: 'deepseek-chat',
+  apiKey: process.env.DEEPSEEK_API_KEY,
+}));
+
+const result = await store.ask('Total amount of my last 10 orders?', {
+  llm: 'deepseek',
+  ctx: { userId: 'u1', roles: ['viewer'] },
+});
+console.log(result.data, result.attempts.at(-1).gql);
+```
+
+> The `text2query` profile is a process-wide core singleton: serialize `ask()` calls
+> per process, or run each in its own worker.
+
+### `store.describeForAi(ctx?)`
+
+Permission-filtered schema summary for LLM prompts — a compact JSON array with one
+`{ name, fields, relations, computes }` entry per model. Without a context only model
+and field names are exposed (no types). With a context everything is filtered by the
+caller's role (`canRead` / `readableFields` / `readableRelations` / `readableComputes`);
+archive tables (`*Deleted`) and ops details (indexes / datasource / namespace) never
+enter the prompt. Bindings lacking the `readableComputes` verdict conservatively exclude
+`read`-whitelisted computed columns and emit `askSummaryComputeSkipped`.
+
+### LLM registry (`llm`)
+
+Pluggable LLM clients, no SDK bundled. A client is one function
+`async (messages: Array<{ role, content }>) => string`.
+
+```js
+llm.registerLlm('deepseek', client);  // duplicate name → throws
+llm.getLlm('deepseek');               // unregistered name → throws
+
+llm.makeOpenaiCompat({                // OpenAI-compatible factory (global fetch, zero deps)
+  baseUrl, model, apiKey,
+  jsonMode: true,                     // false → omit response_format
+  effort: 'low',                      // null → omit reasoning_effort
+  maxTokens: 4096,
+  timeoutMs: 90000,
+});
+```
+
+Client faults throw `LlmError` with a structured `.detail` (`code` ∈ `llmNetworkError`,
+`llmHttpError`, `llmEmptyContent`, `llmJsonPromptMissing`).
+
 ### Low-level modules
 
 ```js

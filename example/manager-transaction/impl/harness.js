@@ -16,7 +16,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { init, store, permission, feedback, schema: sc, executors } = require('../../../src');
+const { init, store, permission, feedback, schema: sc, executors, workflow, ddl } = require('../../../src');
 const { CHECKS } = require('./checks');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -30,12 +30,14 @@ const MAIN_TABLES = [
 ];
 const ARCHIVE_TABLES = MAIN_TABLES.map((t) => `${t}_deleted`);
 
-// 与 py 版同一批库名，保证两宿主可对照；可用环境变量整串覆盖
+// 独立库 mongo_store_e2e_mgrtx：与 course-platform harness（mongo_store_e2e）隔离——
+// node --test 并发跑多文件时两 harness 各自 reset/seed，同库即互踩（E11000 dup key）。
+// 库名与 py 版对照关系见各 harness 头注释；可用环境变量整串覆盖
 const MYSQL_URI =
   process.env.MYSQL_URI
-  || 'mysql://e2e:e2e123@127.0.0.1:3306/mongo_store_e2e?charset=utf8mb4';
-const PG_URI = process.env.PG_URI || 'postgres://e2e:e2e123@127.0.0.1:5432/mongo_store_e2e';
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/mongo_store_e2e';
+  || 'mysql://e2e:e2e123@127.0.0.1:3306/mongo_store_e2e_mgrtx?charset=utf8mb4';
+const PG_URI = process.env.PG_URI || 'postgres://e2e:e2e123@127.0.0.1:5432/mongo_store_e2e_mgrtx';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/mongo_store_e2e_mgrtx';
 
 // ──────────────────────────────────────────────────────────── 装载 ──
 
@@ -68,6 +70,19 @@ function loadDdl(kind) {
     .filter(Boolean);
 }
 
+/** 内建 schema（__workflowRun）建表语句——与业务表同一 DDL 生成器产出，零特判。
+ *
+ * 前置 DROP IF EXISTS：e2e 库随业务表一起可重入重建（生产启用工作流时由
+ * ddl.generate(backend, ['__workflowRun']) 一次性建表，见 README「事务边界」）。
+ */
+function builtinDdl(kind) {
+  const stmts = String(ddl.generate(kind, ['__workflowRun']))
+    .split('\n\n')
+    .filter((x) => x.trim());
+  const table = kind === 'mysql' ? '`__workflowRun`' : '"__workflowRun"';
+  return [`DROP TABLE IF EXISTS ${table}`].concat(stmts);
+}
+
 function registerAll() {
   for (const defn of loadSchemas()) sc.register(defn);
 }
@@ -78,7 +93,7 @@ async function setupBackend(kind) {
   if (kind === 'sqlite') {
     const Database = require('better-sqlite3');
     const db = new Database(':memory:');
-    for (const stmt of loadDdl('sqlite')) db.exec(stmt);
+    for (const stmt of [...loadDdl('sqlite'), ...builtinDdl('sqlite')]) db.exec(stmt);
     return { driver: db, conn: executors.createConnection('sqlite', db) };
   }
   if (kind === 'mysql') {
@@ -90,7 +105,7 @@ async function setupBackend(kind) {
       await pool.end().catch(() => {});
       return { error: `MySQL 不可达（${MYSQL_URI}）: ${e.message}` };
     }
-    for (const stmt of loadDdl('mysql')) await pool.query(stmt);
+    for (const stmt of [...loadDdl('mysql'), ...builtinDdl('mysql')]) await pool.query(stmt);
     return { driver: pool, conn: executors.createConnection('mysql', pool) };
   }
   if (kind === 'postgres') {
@@ -102,7 +117,7 @@ async function setupBackend(kind) {
       await pool.end().catch(() => {});
       return { error: `PostgreSQL 不可达（${PG_URI}）: ${e.message}` };
     }
-    for (const stmt of loadDdl('postgres')) await pool.query(stmt);
+    for (const stmt of [...loadDdl('postgres'), ...builtinDdl('postgres')]) await pool.query(stmt);
     return { driver: pool, conn: executors.createConnection('postgres', pool) };
   }
   if (kind === 'mongodb') {
@@ -266,7 +281,12 @@ async function runStep(h, step) {
     else if (op === 'upsert') result = await h.store.upsert(step.schema, step.condition, step.data);
     else if (op === 'mutation') result = await h.store.mutation(step.schema, step.data);
     else if (op === 'set_flag') result = _setFlag(step.name, step.value);
-    else throw new Error(`未知 op: ${op}`);
+    else if (op === 'set_ctx') result = (permission.setContext(step.ctx ?? null), null);
+    else if (op === 'register_workflow') result = workflow.register(step.defn);
+    else if (op === 'run_workflow') {
+      result = await store.runWorkflow(step.name, step.input ?? null,
+        { dryRun: Boolean(step.dryRun) });
+    } else throw new Error(`未知 op: ${op}`);
   } catch (e) {
     error = e; // 统一捕获作为「显式报错」证据
   }
@@ -314,6 +334,29 @@ async function assertStep(h, step, oracleRows) {
       return { ok: true, note: `显式(err=${err ? err.name : null}, events=${JSON.stringify(codes)})` };
     }
     return { ok: false, note: '不可翻译却静默返回了结果（既无错误也无告警）' };
+  }
+
+  if (kind === 'run') {
+    // run 文档断言：runWorkflow 统一契约不抛错；error 键显式存在时严格相等
+    // （含 null——no-error-masking §二：成功态 error 必须为 null 的正向断言）
+    if (err !== null && err !== undefined) {
+      return { ok: false, note: `run_workflow 不应抛错（统一契约），实际: ${err.message || err}` };
+    }
+    const r = h.result || {};
+    if (r.status !== expect.status) {
+      return { ok: false, note: `status=${r.status} 期望 ${expect.status}（error=${JSON.stringify(r.error)}）` };
+    }
+    if ('error' in expect && r.error !== expect.error) {
+      return { ok: false, note: `error=${JSON.stringify(r.error)} 期望 ${JSON.stringify(expect.error)}` };
+    }
+    if ('stepIndex' in expect && r.stepIndex !== expect.stepIndex) {
+      return { ok: false, note: `stepIndex=${r.stepIndex} 期望 ${expect.stepIndex}` };
+    }
+    const states = (r.steps || []).map((st) => st.state);
+    if ('stepStates' in expect && JSON.stringify(states) !== JSON.stringify(expect.stepStates)) {
+      return { ok: false, note: `stepStates=${JSON.stringify(states)} 期望 ${JSON.stringify(expect.stepStates)}` };
+    }
+    return { ok: true, note: `run=${r.status} states=${JSON.stringify(states)}` };
   }
 
   if (err !== null && err !== undefined) {

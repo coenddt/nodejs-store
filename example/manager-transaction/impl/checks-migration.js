@@ -139,7 +139,7 @@ async function migrate_widen(h) {
 }
 
 /** T4-04：破坏性变更显式拒绝（纯函数，sqlite 单后端） */
-async function migrate_destructive(h) {
+async function migrate_destructive(_h) {
   const { ddl } = require('../../../src');
   const oldDef = JSON.parse(JSON.stringify(orderDef()));
   const dropped = JSON.parse(JSON.stringify(oldDef));

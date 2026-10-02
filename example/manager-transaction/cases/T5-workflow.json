@@ -1,0 +1,655 @@
+[
+  {
+    "id": "T5-01",
+    "group": "T5",
+    "title": "线性成功路径：query → fail 守卫 → mutation 引用 {{inv._id}}（run=succeeded + 落库正确）",
+    "reset": "seed",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "register_workflow",
+        "defn": {
+          "name": "placeOrder",
+          "read": [
+            "admin",
+            "ops"
+          ],
+          "write": [
+            "admin"
+          ],
+          "run": [
+            "admin",
+            "ops",
+            "seller"
+          ],
+          "steps": [
+            {
+              "op": "query",
+              "as": "inv",
+              "gql": "Inventory($condition:@c0){_id, stock}",
+              "params": {
+                "c0": {
+                  "productId": "{{input.productId}}",
+                  "warehouse": "{{input.warehouse}}"
+                }
+              }
+            },
+            {
+              "op": "fail",
+              "when": {
+                "exists": "{{inv._id}}",
+                "is": null
+              },
+              "message": "库存记录不存在"
+            },
+            {
+              "op": "fail",
+              "when": {
+                "lt": "{{inv.stock}}",
+                "than": "{{input.qty}}"
+              },
+              "message": "库存不足"
+            },
+            {
+              "op": "mutation",
+              "as": "deduct",
+              "model": "Inventory",
+              "data": {
+                "_id": "{{inv._id}}",
+                "stock": "{{dec:{{inv.stock}},{{input.qty}}}}"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "op": "run_workflow",
+        "name": "placeOrder",
+        "input": {
+          "productId": "p1",
+          "warehouse": "w1",
+          "qty": 30
+        },
+        "expect": {
+          "kind": "run",
+          "status": "succeeded",
+          "stepStates": [
+            "ran",
+            "skipped",
+            "skipped",
+            "ran"
+          ]
+        }
+      },
+      {
+        "op": "query",
+        "gql": "Inventory($condition:@c0){_id, stock}",
+        "params": {
+          "c0": {
+            "_id": "inv1"
+          }
+        },
+        "expect": {
+          "kind": "rows",
+          "rows": [
+            {
+              "_id": "inv1",
+              "stock": 70
+            }
+          ],
+          "normalize": {
+            "sortBy": [
+              "_id"
+            ]
+          }
+        }
+      }
+    ],
+    "note": "工作流编排设计文档 §7 T5-01。占位符 {{input.*}}/{{as.*}}/{{dec}} 全覆盖；when 不成立 → skipped 显式留痕。"
+  },
+  {
+    "id": "T5-02",
+    "group": "T5",
+    "title": "fail 步骤：库存不足 → run=failed、error 命中、stepIndex=2、后继 mutation 未执行",
+    "reset": "seed",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "run_workflow",
+        "name": "placeOrder",
+        "input": {
+          "productId": "p1",
+          "warehouse": "w1",
+          "qty": 999
+        },
+        "expect": {
+          "kind": "run",
+          "status": "failed",
+          "error": "库存不足",
+          "stepIndex": 2,
+          "stepStates": [
+            "ran",
+            "skipped",
+            "failed"
+          ]
+        }
+      },
+      {
+        "op": "query",
+        "gql": "Inventory($condition:@c0){_id, stock}",
+        "params": {
+          "c0": {
+            "_id": "inv1"
+          }
+        },
+        "expect": {
+          "kind": "rows",
+          "rows": [
+            {
+              "_id": "inv1",
+              "stock": 100
+            }
+          ],
+          "normalize": {
+            "sortBy": [
+              "_id"
+            ]
+          }
+        }
+      }
+    ],
+    "note": "工作流编排设计文档 §7 T5-02。fail-fast：mutation 步骤无迹条目（未执行）；库存不变。"
+  },
+  {
+    "id": "T5-03",
+    "group": "T5",
+    "title": "when 跳过：skipped 显式留痕于步骤迹（含落库 run 迹回读），非静默",
+    "reset": "seed",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "run_workflow",
+        "name": "placeOrder",
+        "input": {
+          "productId": "p1",
+          "warehouse": "w1",
+          "qty": 5
+        },
+        "expect": {
+          "kind": "run",
+          "status": "succeeded",
+          "error": null,
+          "stepStates": [
+            "ran",
+            "skipped",
+            "skipped",
+            "ran"
+          ]
+        }
+      }
+    ],
+    "note": "工作流编排设计文档 §7 T5-03。stepStates 精确序列即 skipped 显式留痕（run 文档.steps 与落库同形）；落库 GQL 回读由 T5-08 证明（铁律 B 自举）。不断言 run 总数：__workflowRun 为审计留存不随 reset 清空，跨次运行会累积。"
+  },
+  {
+    "id": "T5-04",
+    "group": "T5",
+    "title": "破坏性 defn：未知 op / 后向占位符引用 / 悬空 as → 注册即 Err 含 WORKFLOW_UNSUPPORTED",
+    "reset": "none",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "register_workflow",
+        "defn": {
+          "name": "badLoop",
+          "steps": [
+            {
+              "op": "loop"
+            }
+          ]
+        },
+        "expect": {
+          "kind": "error",
+          "code": "WORKFLOW_UNSUPPORTED"
+        }
+      },
+      {
+        "op": "register_workflow",
+        "defn": {
+          "name": "badBackward",
+          "steps": [
+            {
+              "op": "mutation",
+              "as": "m1",
+              "model": "Inventory",
+              "data": {
+                "stock": "{{m2._id}}"
+              }
+            },
+            {
+              "op": "mutation",
+              "as": "m2",
+              "model": "Inventory",
+              "data": {
+                "stock": 1
+              }
+            }
+          ]
+        },
+        "expect": {
+          "kind": "error",
+          "code": "WORKFLOW_UNSUPPORTED"
+        }
+      },
+      {
+        "op": "register_workflow",
+        "defn": {
+          "name": "badDangling",
+          "steps": [
+            {
+              "op": "mutation",
+              "model": "Inventory",
+              "data": {
+                "stock": "{{ghost._id}}"
+              }
+            }
+          ]
+        },
+        "expect": {
+          "kind": "error",
+          "code": "WORKFLOW_UNSUPPORTED"
+        }
+      }
+    ],
+    "note": "工作流编排设计文档 §7 T5-04。纯函数断言（注册期静态校验，不触库）；白名单外显式 Err，不猜测语义。"
+  },
+  {
+    "id": "T5-05",
+    "group": "T5",
+    "title": "失败可见性正向断言：succeeded run 的 error 必须为 null（成功态无错误文案）",
+    "reset": "seed",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "run_workflow",
+        "name": "placeOrder",
+        "input": {
+          "productId": "p1",
+          "warehouse": "w1",
+          "qty": 10
+        },
+        "expect": {
+          "kind": "run",
+          "status": "succeeded",
+          "error": null
+        }
+      }
+    ],
+    "note": "工作流编排设计文档 §7 T5-05 + no-error-masking §二：只测失败有提示不够，漏测成功态无错误文案正是缺陷逃逸处。"
+  },
+  {
+    "id": "T5-06",
+    "group": "T5",
+    "title": "权限：run 白名单外 → rejected 落库；无 ctx + require_context → 拒跑（fail-secure 优先）",
+    "reset": "seed",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "set_ctx",
+        "ctx": {
+          "userId": "u9",
+          "roles": [
+            "buyer"
+          ]
+        }
+      },
+      {
+        "op": "run_workflow",
+        "name": "placeOrder",
+        "input": {
+          "productId": "p1",
+          "warehouse": "w1",
+          "qty": 1
+        },
+        "expect": {
+          "kind": "run",
+          "status": "rejected",
+          "error": "run 白名单拦截: 触发者角色不在 run 白名单内（[\"admin\",\"ops\",\"seller\"]）"
+        }
+      },
+      {
+        "op": "set_flag",
+        "name": "require_context",
+        "value": true
+      },
+      {
+        "op": "set_ctx",
+        "ctx": null
+      },
+      {
+        "op": "run_workflow",
+        "name": "placeOrder",
+        "input": {
+          "productId": "p1",
+          "warehouse": "w1",
+          "qty": 1
+        },
+        "expect": {
+          "kind": "run",
+          "status": "rejected",
+          "error": "ERR_NO_CONTEXT: 上下文强制开启，无 ctx 拒跑（fail-secure 优先于 dry-run）"
+        }
+      },
+      {
+        "op": "set_flag",
+        "name": "require_context",
+        "value": false
+      },
+      {
+        "op": "set_ctx",
+        "ctx": {
+          "userId": "u1",
+          "roles": [
+            "admin"
+          ]
+        }
+      },
+      {
+        "op": "query",
+        "gql": "__workflowRun($condition:@c0,$sort:@s0,$limit:@l1){status, error}",
+        "params": {
+          "c0": {
+            "workflow": "placeOrder",
+            "status": "rejected"
+          },
+          "s0": {
+            "now": -1
+          },
+          "l1": 2
+        },
+        "expect": {
+          "kind": "rows",
+          "rows": [
+            {
+              "status": "rejected",
+              "error": "ERR_NO_CONTEXT: 上下文强制开启，无 ctx 拒跑（fail-secure 优先于 dry-run）"
+            },
+            {
+              "status": "rejected",
+              "error": "run 白名单拦截: 触发者角色不在 run 白名单内（[\"admin\",\"ops\",\"seller\"]）"
+            }
+          ],
+          "normalize": {
+            "ignore": [
+              "_id"
+            ]
+          }
+        }
+      }
+    ],
+    "note": "工作流编排设计文档 §7 T5-06。rejected 落库可审计（内部写入走干净 internal 上下文——guest 硬拒写先于 internal 放行）。取最新 2 条：审计留存不随 reset 清空，按 now 倒序 + limit 幂等定位本次运行的 rejected。"
+  },
+  {
+    "id": "T5-07",
+    "group": "T5",
+    "title": "dry-run：query 真实执行、mutation 记 wouldRun 不执行、终态 drySucceeded",
+    "reset": "seed",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "run_workflow",
+        "name": "placeOrder",
+        "input": {
+          "productId": "p1",
+          "warehouse": "w1",
+          "qty": 5
+        },
+        "dryRun": true,
+        "expect": {
+          "kind": "run",
+          "status": "drySucceeded",
+          "error": null,
+          "stepStates": [
+            "ran",
+            "skipped",
+            "skipped",
+            "wouldRun"
+          ]
+        }
+      },
+      {
+        "op": "query",
+        "gql": "Inventory($condition:@c0){_id, stock}",
+        "params": {
+          "c0": {
+            "_id": "inv1"
+          }
+        },
+        "expect": {
+          "kind": "rows",
+          "rows": [
+            {
+              "_id": "inv1",
+              "stock": 100
+            }
+          ],
+          "normalize": {
+            "sortBy": [
+              "_id"
+            ]
+          }
+        }
+      }
+    ],
+    "note": "工作流编排设计文档 §7 T5-07。dry-run 只读安全（query 真跑、写不执行）；库存不变。"
+  },
+  {
+    "id": "T5-08",
+    "group": "T5",
+    "title": "run 自举查询：普通 GQL 查 failed run 命中（可观测性零新接口）",
+    "reset": "none",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "register_workflow",
+        "defn": {
+          "name": "witnessFail",
+          "steps": [
+            {
+              "op": "fail",
+              "message": "库存不足"
+            }
+          ]
+        }
+      },
+      {
+        "op": "run_workflow",
+        "name": "witnessFail",
+        "input": {},
+        "expect": {
+          "kind": "run",
+          "status": "failed",
+          "error": "库存不足",
+          "stepIndex": 0,
+          "stepStates": [
+            "failed"
+          ]
+        }
+      },
+      {
+        "op": "query",
+        "gql": "__workflowRun($condition:@c0,$sort:@s0,$limit:@l1){workflow, status, error, stepIndex}",
+        "params": {
+          "c0": {
+            "workflow": "witnessFail",
+            "status": "failed"
+          },
+          "s0": {
+            "now": -1
+          },
+          "l1": 1
+        },
+        "expect": {
+          "kind": "rows",
+          "rows": [
+            {
+              "workflow": "witnessFail",
+              "status": "failed",
+              "error": "库存不足",
+              "stepIndex": 0
+            }
+          ],
+          "normalize": {
+            "ignore": [
+              "_id"
+            ]
+          }
+        }
+      }
+    ],
+    "note": "工作流编排设计文档 §7 T5-08。普通 GQL 查 failed run 命中（可观测性零新接口）；用例内自造 witness run + workflow 名过滤 + now 倒序 limit 1——审计留存跨次运行累积时仍幂等定位。"
+  },
+  {
+    "id": "T5-09",
+    "group": "T5",
+    "title": "跨步骤原子（N1 实测升级）：单源两写步骤、第二步唯一键冲突 → 整体回滚（步骤 2 扣减不残留）",
+    "reset": "seed",
+    "ctx": {
+      "userId": "u1",
+      "roles": [
+        "admin"
+      ]
+    },
+    "sqlPolicy": "parity",
+    "steps": [
+      {
+        "op": "register_workflow",
+        "defn": {
+          "name": "orderAndDeduct",
+          "run": [
+            "admin"
+          ],
+          "steps": [
+            {
+              "op": "query",
+              "as": "inv",
+              "gql": "Inventory($condition:@c0){_id, stock}",
+              "params": {
+                "c0": {
+                  "productId": "{{input.productId}}",
+                  "warehouse": "{{input.warehouse}}"
+                }
+              }
+            },
+            {
+              "op": "mutation",
+              "as": "deduct",
+              "model": "Inventory",
+              "data": {
+                "_id": "{{inv._id}}",
+                "stock": "{{dec:{{inv.stock}},10}}"
+              }
+            },
+            {
+              "op": "mutation",
+              "model": "Order",
+              "data": {
+                "orderNo": "A001",
+                "buyerId": "u1",
+                "status": "new"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "op": "run_workflow",
+        "name": "orderAndDeduct",
+        "input": {
+          "productId": "p1",
+          "warehouse": "w1"
+        },
+        "expect": {
+          "kind": "run",
+          "status": "failed",
+          "stepStates": [
+            "ran",
+            "ran",
+            "failed"
+          ]
+        }
+      },
+      {
+        "op": "query",
+        "gql": "Inventory($condition:@c0){_id, stock}",
+        "params": {
+          "c0": {
+            "_id": "inv1"
+          }
+        },
+        "expect": {
+          "kind": "rows",
+          "rows": [
+            {
+              "_id": "inv1",
+              "stock": 100
+            }
+          ],
+          "normalize": {
+            "sortBy": [
+              "_id"
+            ]
+          }
+        }
+      }
+    ],
+    "note": "工作流编排设计文档 §6.2（N1 实测：外层 run_atomic 包住整个 run，内层 mutation 嵌套并入——单源 run 整体原子）。步骤 3 撞 Order.orderNo 唯一索引（A001 seed 既有）→ 失败即停 + 步骤 2 扣减整体回滚。Mongo standalone 降级为既有边界（非原子 + 反馈声明），本场景 replica set 原子成立。"
+  }
+]

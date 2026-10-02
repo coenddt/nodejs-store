@@ -523,6 +523,97 @@ store.setFeedbackSink((e) => logger.warn({ code: e.code }, e.hint));
 Non-pushdownable commands also throw `PushdownUnsupportedError` — catch it to re-run that
 segment against a Mongo source.
 
+### `store.ask(question, opts)`
+
+AI ask — natural-language query (L1, read-only). The question plus a permission-filtered
+schema summary (`store.describeForAi`) go to a pluggable LLM, which must answer with a
+single `{"gql","params"}` JSON object; that query is then planned and executed inside the
+hardened `text2query` profile (read-only, row/depth caps, route override disabled).
+Structured failures are fed back to the LLM for retry (up to `maxRetries` rounds); on
+exhaustion `AskExhausted` is thrown — ask never silently degrades and never returns
+empty data for a failed query.
+
+LLM output is treated as untrusted input: the guardrails (profile, context enforcement,
+read-only) are hardcoded server-side and unreachable by the model.
+
+| Option | Type | Meaning |
+| --- | --- | --- |
+| `llm` | `string \| Function` | required; registry name (see [`llm`](#llm-registry-llm) below) or an `async (messages) => string` client |
+| `ctx` | object | required; server-side user context `{ userId, roles }`; a missing ctx is rejected (fail-secure) and the context never enters any LLM message |
+| `maxRetries` | number (default `3`) | retries after a failed attempt (total attempts ≤ `1 + maxRetries`) |
+| `knowledge` | string | override the system-prompt knowledge text (default: bundled `ask_knowledge.md`) |
+
+Resolves to an `AskResult` `{ data, attempts, events }`. Each attempt is
+`{ llmRaw, gql, params, rows }` — the successful round carries no `error` key; failed
+rounds carry `{ error: { code, message } }` with `code` ∈ `badLlmOutput`,
+`profileBlocked`, `permissionDenied`, `planError`. LLM client faults (`LlmError`:
+network / HTTP status / empty content) propagate untouched — link failures fail
+explicitly and are not retried.
+
+```js
+const { llm } = require('nodejs-store');
+
+llm.registerLlm('deepseek', llm.makeOpenaiCompat({
+  baseUrl: 'https://api.deepseek.com/v1',
+  model: 'deepseek-chat',
+  apiKey: process.env.DEEPSEEK_API_KEY,
+}));
+
+const result = await store.ask('Total amount of my last 10 orders?', {
+  llm: 'deepseek',
+  ctx: { userId: 'u1', roles: ['viewer'] },
+});
+console.log(result.data);                 // query result rows
+console.log(result.attempts.at(-1).gql);  // the GQL the model produced
+```
+
+> The `text2query` profile is a process-wide core singleton: concurrent `ask()` calls in
+> one process interleave. Serialize asks per process, or run each in its own worker.
+
+### `store.describeForAi(ctx?)`
+
+Permission-filtered schema summary for LLM prompts — a compact JSON array with one
+`{ name, fields, relations, computes }` entry per model. Without a context only model
+and field *names* are exposed (no types — probe-resistant). With a context, models,
+fields, relations and computed columns are filtered by the caller's role
+(`canRead` / `readableFields` / `readableRelations` / `readableComputes`), archive
+tables (`*Deleted`) are dropped, and ops details (indexes / datasource / namespace)
+never enter the prompt.
+
+```js
+const summary = store.describeForAi({ userId: 'u1', roles: ['viewer'] });
+// [{ name: 'Order', fields: { _id: 'string', code: 'string', ... }, relations: { ... }, computes: { ... } }]
+```
+
+On native bindings that lack the `readableComputes` verdict, computed columns with a
+`read` whitelist are conservatively excluded from the summary and an
+`askSummaryComputeSkipped` feedback event is emitted — narrow the exposure, never
+over-disclose.
+
+### LLM registry (`llm`)
+
+Pluggable LLM clients with no SDK bundled. A client is a single function
+`async (messages: Array<{ role, content }>) => string`:
+
+```js
+const { llm } = require('nodejs-store');
+
+llm.registerLlm('deepseek', client);  // duplicate name → throws
+llm.getLlm('deepseek');               // unregistered name → throws
+
+llm.makeOpenaiCompat({                // OpenAI-compatible factory (global fetch, zero deps);
+  baseUrl, model, apiKey,             // covers DeepSeek / OpenAI / Moonshot / Ollama / ...
+  jsonMode: true,                     // false → omit response_format (prompt convention + strict parse fallback)
+  effort: 'low',                      // null → omit reasoning_effort
+  maxTokens: 4096,
+  timeoutMs: 90000,
+});
+```
+
+Client faults throw `LlmError` with a structured `.detail` (`code` ∈ `llmNetworkError`,
+`llmHttpError`, `llmEmptyContent`, `llmJsonPromptMissing`); `store.ask` propagates them
+untouched.
+
 ### Low-level modules
 
 The package re-exports its building blocks for advanced hosts:
@@ -578,6 +669,71 @@ complex reads). Full details, semantics and the explicit-error list:
 - **Autoincrement PKs** — `_id: { type: 'int', strategy: 'autoincrement' }`; PG/SQLite read back via `INSERT…RETURNING`, MySQL via insertId; MongoDB and `insertMany` fail explicitly with `AUTOINCREMENT_NOT_SUPPORTED` (no silent ObjectId substitution).
 - **Index DDL** — `schema.indexes` (MongoDB shape) → `CREATE [UNIQUE] INDEX idx_<table>_<cols>` in `ddl.generate`, byte-identical across MySQL/PostgreSQL/SQLite.
 - **Declarative migration** — `ddl.diffDefs(old, new)` + `ddl.generateMigration(backend, old, new)`: whitelist-only (add table/column/index, type widening), per-dialect SQL, pure functions; destructive changes fail with `MIGRATION_UNSUPPORTED`.
+
+## Workflow orchestration (first batch)
+
+Express "orchestration of multi-step data operations" as data: a workflow definition (defn) is pure
+JSON isomorphic to a schema defn, and each run is persisted to the built-in schema `__workflowRun`
+(queryable with plain GQL — zero new observability endpoints). Execution generalizes the existing
+mutation step-sequence mechanism: linear steps + per-step `when` guards + fail-fast. The engine
+lives in the host layer (`src/workflow.js`), core unchanged; aligned with
+`nodejs-store/src/workflow.js` (byte-identical outputs guarded by parity anchor tests).
+
+```python
+from py_store import workflow
+
+store.registerWorkflow({
+    'name': 'placeOrder',
+    'run': ['admin', 'ops'],              # three-tier whitelists read/write/run (run falls back to write)
+    'steps': [
+        {'op': 'query', 'as': 'inv',
+         'gql': 'Inventory($condition:@c0){_id, stock}',
+         'params': {'c0': {'productId': '{{input.productId}}', 'warehouse': '{{input.warehouse}}'}}},
+        {'op': 'fail', 'when': {'exists': '{{inv._id}}', 'is': None}, 'message': '库存记录不存在'},
+        {'op': 'fail', 'when': {'lt': '{{inv.stock}}', 'than': '{{input.qty}}'}, 'message': '库存不足'},
+        {'op': 'mutation', 'model': 'Inventory',
+         'data': {'_id': '{{inv._id}}', 'stock': '{{dec:{{inv.stock}},{{input.qty}}}}'}},
+    ],
+})
+
+run = await store.runWorkflow('placeOrder', { productId: 'p1', warehouse: 'w1', qty: 30 })
+# run['status'] ∈ succeeded | failed | rejected | drySucceeded | dryFailed
+# Uniform contract: business failures never raise; the error lives in run['error']
+# (set only on failure; always null on success — never `||`-masked downstream)
+```
+
+- **Step whitelist** (three kinds; anything else fails registration with `WORKFLOW_UNSUPPORTED`):
+  `query` (result must be unique — >1 row is an explicit error), `mutation` (store.mutation /
+  upsert), `fail` (explicit business assertion). Optional `when` guards (exists / is / eq / ne /
+  lt / lte / gt / gte) record `skipped` explicitly — never silently skipped.
+- **Placeholders**: `{{input.<path>}}`, `{{<as>.<path>}}` (forward references only),
+  `{{dec:<a>,<b>}}`; full-string replacement keeps the value type. No placeholders inside gql
+  (bind via params — injection safety); no array-index path segments.
+- **Permissions**: three-tier role whitelists embedded in the defn (same RBAC semantics: admin /
+  super_admin bypass, guest denied, internal bypass); runs inherit the caller's Context and every
+  step goes through core permission checks — no superuser. `require_context(true)` rejects
+  context-less runs (fail-secure wins over dry-run); rejected runs are persisted for audit.
+- **Atomicity**: a single-source run is atomic across steps (outer `run_atomic` wraps the whole
+  loop, inner mutations nest into it); multi-source / prescan-failed runs execute sequentially and
+  emit feedback events (`workflow_non_atomic` / `workflow_prescan_failed`) — never silent. The run
+  record (running → terminal) is committed outside the business transaction so failed runs stay
+  queryable after rollback.
+- **dry-run**: `store.runWorkflow(name, input, { dryRun: true })` — query steps execute for real (read-only
+  safe); mutation / fail are recorded as `wouldRun` (`drySucceeded | dryFailed`).
+- **Run persistence**: `__workflowRun` is bootstrapped on import (idempotent); SQL backends need a
+  one-time `ddl.generate(backend, ['__workflowRun'])` (Mongo creates the collection on first write).
+  Its `write` whitelist is explicitly empty (GQL tampering with run audit is rejected by R2).
+
+### Explicitly not in the first batch (detected → error; boundaries shipped with the same weight as features)
+
+| Not supported | Why | Escape hatch |
+|---|---|---|
+| Loops / parallel / sub-workflows / human approval | DAG & wait semantics explode; linear + `when` covers the first batch | orchestrate in host code via the store API |
+| Auto compensation (Saga) / auto retry | Inverse-operation burden; steps have no automatic idempotency | inspect run records and handle explicitly |
+| Per-step host callbacks | Arbitrary code breaks whitelist governance | schema computes (read) / host code (write) |
+| Workflow defn persistence / hot reload | Depends on schema versioning (next on the roadmap) | defn stays code-side JSON + register, like schemas today |
+| Timers / event triggers | Scheduling is a resident-IO concern, orthogonal to pure orchestration | call `runWorkflow` from the application layer |
+| Placeholders inside gql / array-index paths | Injection surface / per-row iteration semantics | params binding / host-code orchestration |
 
 ## FAQ
 

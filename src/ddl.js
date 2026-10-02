@@ -348,7 +348,7 @@ function generateMigration(backend, oldDefn, newDefn) {
       const colType = fieldSqlType(backend, newDefn.fields[ch.name]);
       if (backend === 'sqlite') {
         throw new Error(
-          `MIGRATION_UNSUPPORTED: SQLite 不支持类型变更 `
+          'MIGRATION_UNSUPPORTED: SQLite 不支持类型变更 '
           + `（${ch.from} → ${ch.to} 需重建表）；加列/加索引/加表已支持`);
       }
       if (backend === 'mysql') {

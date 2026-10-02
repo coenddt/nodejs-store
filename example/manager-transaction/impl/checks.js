@@ -26,7 +26,7 @@ function autoDef() {
 }
 
 /** 注册 autoincrement 探针 schema（nodejs 同名重复注册 = 更新语义，天然幂等） */
-async function register_auto_schema(h) {
+async function register_auto_schema(_h) {
   const { schema: sc } = require('../../../src');
   try {
     sc.register(autoDef());
@@ -87,6 +87,6 @@ const CHECKS = {
   check_ddl_create_index,
 };
 
-Object.assign(CHECKS, require("./checks-migration"));
+Object.assign(CHECKS, require('./checks-migration'));
 
 module.exports = { CHECKS };

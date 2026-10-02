@@ -41,9 +41,26 @@ function register(defn) {
   const computes = {};
   for (const [key, val] of Object.entries(defn.computes || {})) {
     const fnRef = val.fnRef || key;
-    if (val.fn) core.setFn(fnRef, val.fn);
+    if (val.fn) {
+      const userFn = val.fn;
+      // FFI 边界契约：JS `undefined` 无法表示为 JSON 值（core 回调桥 SyncFnBridge
+      // 对 fn 返回值做 serde 序列化，undefined 即 InvalidArg）；归一为 null——
+      // 与 py 侧 lambda 返回 None → null 同语义，非错误兜底
+      core.setFn(fnRef, (item, ctx) => {
+        const r = userFn(item, ctx);
+        return r === undefined ? null : r;
+      });
+    }
     if (val.asyncFn) _asyncFns[fnRef] = val.asyncFn;
-    computes[key] = { fnRef };
+    // 镜像保留声明元数据（对齐 py_store.schema.register）：agg 形态与 read 白名单
+    // 供 AI 摘要（ask.describeForAi）等消费者读取；可执行物（fn/asyncFn）不入镜像
+    // （执行判决唯一在 core 规划 + Host 尾处理）
+    const meta = {};
+    for (const k of ['type', 'depends', 'agg', 'read']) {
+      if (k in val) meta[k] = val[k];
+    }
+    meta.fnRef = fnRef;
+    computes[key] = meta;
   }
 
   _schemas[defn.name] = {

@@ -1,6 +1,57 @@
 # Changelog
 
-## [Unreleased]
+## 2.7.0 (2026-10-02)
+
+### Added
+
+- **AI 问数（L1）**：`store.ask(question, opts)`（自然语言 → LLM 翻译 `{"gql","params"}` →
+  `text2query` 档受控执行 → 失败结构化回喂重试，耗尽抛 `AskExhausted`）、
+  `store.describeForAi(ctx?)` 权限过滤摘要、`llm` 插拔注册表（`registerLlm` / `getLlm` /
+  `makeOpenaiCompat` 零依赖 OpenAI 兼容工厂，`LlmError` 结构化失败）——与 py-store ask 同构
+  （parity）。护栏（只读、行数/深度硬限、ctx fail-secure、routeOverride 封闭）服务端硬编码。
+- **RBAC 门面（6 方法）**：`store.setRbac` / `rbacEnabled` / `rbacCan` / `rbacReadableFields` /
+  `rbacWritableFields` / `rbacRowCondition`——判决唯一在 Rust core，宿主零判决。
+- **声明式 schema 迁移**：`store.migrate(defs)` 声明式加列 / 加索引 / 类型放宽，破坏性变更
+  显式拒绝（`MIGRATION_UNSUPPORTED`），存量行缺失语义 + 归档跟随。
+- **文档**：README（双语）/ llms.txt / llms-full.txt 补 `ask` / `describeForAi` / `llm` API 章节。
+- **工作流编排（首批）**：`workflow.register(defn)` / `workflow.run(name, input)`（node:
+  `store.registerWorkflow` / `store.runWorkflow`）——线性步骤 + 步骤级 `when` 守卫 + fail-fast。
+  步骤白名单 `query` / `mutation` / `fail`，白名单外注册即 `WORKFLOW_UNSUPPORTED`；占位符
+  `{{input.*}}` / `{{<as>.*}}`（前向引用）/ `{{dec:a,b}}`；dry-run（query 真实执行、写记
+  `wouldRun`）；三级角色白名单（read/write/run）内嵌 defn，run 继承触发者 Context、每步过 core
+  权限判定，rejected 落库可审计。
+
+### Changed
+
+- 依赖下限 `rust-store-node` ^2.3.0 → **^2.7.0**：2.7.0 绑定才导出 RBAC 系列、
+  `readableComputes`、`clearSchemas` 与完整 `text2query` 档位判决（`ERR_TEXT2QUERY` 前缀）；
+  旧绑定上这些面为空或缺判决（实测 npm 2.6.0 全量 fail 8）。
+- **内建 `__workflowRun` schema 自举**：run 记录落库（status: running → succeeded | failed |
+  rejected；dry-run 终态 drySucceeded | dryFailed + 步骤迹），普通 GQL 即查——可观测性零新接口。
+  `write` 显式空名单（R2 拒普通角色篡改 run 审计）；模块内部写入走干净 internal 上下文
+  （guest 硬拒写先于 internal 放行，不能复用保留 roles 的 run_as_internal）。
+- **单源 run 跨步骤原子**（N1 实测升级）：外层 `run_atomic` 包住整个步骤循环、内层 mutation
+  嵌套并入（SQL 保存点 / Mongo 并入外层）——任一步失败整体回滚；多源 / 源预扫失败按顺序执行并
+  发反馈事件（`workflow_non_atomic` / `workflow_prescan_failed`，禁静默）。run 记录在业务事务外
+  独立提交，业务回滚不影响失败 run 可查。
+- **校验器**：注册即静态检查（纯函数）——步骤/字段白名单、占位符前向引用（含自引用与 dec 形态）、
+  when 结构（exists 优先消解，is/than 参数键）、upsert 必带 match、gql 禁占位符（防注入）、
+  `__` 前缀保留；错误全量收集，文案双宿主逐字节一致（parity 锚单测：
+  `py-store/tests/test_workflow.py` ↔ `nodejs-store/tests/workflow.test.js`）。
+
+### 明确不做（首批边界，与能力同权重）
+
+循环 / 并行 / 子工作流 / 人工审批、自动补偿（Saga）/ 自动重试、步骤级宿主回调、工作流定义存库 /
+热更（依赖 schema 版本化先行）、定时 / 事件触发、gql 内嵌占位符、数组下标路径——检出即
+`WORKFLOW_UNSUPPORTED`，不静默降级；出口见 README「工作流编排（首批）」。
+
+### 证据
+
+T5 组 e2e（9 用例 × 4 后端：manager-transaction 场景，含 T5-05「succeeded run 的 error 必须为
+null」正向断言与 T5-09 跨步骤原子整体回滚）双宿主全绿；报告见
+`doc/test-eval/2026/10/manager-transaction-场景矩阵-*.md`；设计文档
+`common-store/工作流编排设计文档.md`（§6.2 按 N1 实测结论升级为「单源 run 整体原子」）。
+
 
 ### Added
 

@@ -522,6 +522,91 @@ store.setFeedbackSink((e) => logger.warn({ code: e.code }, e.hint));
 不可下推的命令还会抛出 `PushdownUnsupportedError` —— 捕获它即可把该片段
 改投到某个 Mongo 源重跑。
 
+### `store.ask(question, opts)`
+
+AI 问数——自然语言查询（L1，只读）。问题与一份按权限过滤的 schema 摘要
+（`store.describeForAi`）一起交给可插拔的 LLM，LLM 必须返回唯一的
+`{"gql","params"}` JSON 对象；该查询再经加固的 `text2query` 档位规划并执行
+（只读、行数/深度硬限、路由覆盖禁用）。结构化失败会回喂 LLM 重试（至多
+`maxRetries` 轮）；耗尽抛 `AskExhausted`——问数失败就是失败，不静默降级、
+不返回空结果。
+
+LLM 输出永远当不可信输入：护栏（档位、上下文强制、只读）在服务端硬编码，
+模型不可触达。
+
+| 参数 | 类型 | 含义 |
+| --- | --- | --- |
+| `llm` | `string \| Function` | 必填；注册名（见下方 [`llm` 注册表](#llm-注册表)）或符合 `async (messages) => string` 协议的客户端 |
+| `ctx` | object | 必填；服务端构造的用户上下文 `{ userId, roles }`；缺失直接拒绝（fail-secure），且上下文绝不进入任何 LLM 消息 |
+| `maxRetries` | number（默认 `3`） | 失败后的最大重试次数（总尝试 ≤ `1 + maxRetries`） |
+| `knowledge` | string | 覆盖 system prompt 知识文本（缺省用包内 `ask_knowledge.md`） |
+
+返回 `AskResult` `{ data, attempts, events }`。每次尝试为
+`{ llmRaw, gql, params, rows }`——成功轮不含任何 `error` 键；失败轮携带
+`{ error: { code, message } }`，`code` ∈ `badLlmOutput`、`profileBlocked`、
+`permissionDenied`、`planError`。LLM 客户端自身故障（`LlmError`：网络 /
+HTTP 状态 / 空 content）原样穿透——链路故障显式失败，不重试。
+
+```js
+const { llm } = require('nodejs-store');
+
+llm.registerLlm('deepseek', llm.makeOpenaiCompat({
+  baseUrl: 'https://api.deepseek.com/v1',
+  model: 'deepseek-chat',
+  apiKey: process.env.DEEPSEEK_API_KEY,
+}));
+
+const result = await store.ask('我最近 10 笔订单的金额合计是多少？', {
+  llm: 'deepseek',
+  ctx: { userId: 'u1', roles: ['viewer'] },
+});
+console.log(result.data);                 // 查询结果行
+console.log(result.attempts.at(-1).gql);  // 模型产出的 GQL
+```
+
+> `text2query` 档位是进程级 core 单例：同一进程内并发调用 `ask()` 会互相串扰。
+> 请在进程内串行化问数，或每个任务独享进程/worker。
+
+### `store.describeForAi(ctx?)`
+
+输出给 LLM prompt 用的权限过滤 schema 摘要——紧凑 JSON 数组，每模型一条
+`{ name, fields, relations, computes }`。无上下文时仅暴露模型名与字段名
+（不暴露类型细节，防探针）。有上下文时，模型/字段/关系/计算列按调用者角色过滤
+（`canRead` / `readableFields` / `readableRelations` / `readableComputes`），
+归档表（`*Deleted`）排除，运维细节（indexes / datasource / namespace）不进 prompt。
+
+```js
+const summary = store.describeForAi({ userId: 'u1', roles: ['viewer'] });
+// [{ name: 'Order', fields: { _id: 'string', code: 'string', ... }, relations: { ... }, computes: { ... } }]
+```
+
+原生绑定未导出 `readableComputes` 判决时，配置了 `read` 白名单的计算列会保守
+排除出摘要，并 emit `askSummaryComputeSkipped` 反馈事件——宁缺勿泄。
+
+### `llm` 注册表
+
+可插拔 LLM 客户端，不内置任何 SDK。客户端就是一个函数
+`async (messages: Array<{ role, content }>) => string`：
+
+```js
+const { llm } = require('nodejs-store');
+
+llm.registerLlm('deepseek', client);  // 同名重复注册 → 报错
+llm.getLlm('deepseek');               // 未注册 → 报错
+
+llm.makeOpenaiCompat({                // OpenAI 兼容通用工厂（全局 fetch，零依赖），
+  baseUrl, model, apiKey,             // 覆盖 DeepSeek / OpenAI / Moonshot / Ollama 等
+  jsonMode: true,                     // false → 不传 response_format（prompt 约定 + 严格解析回喂）
+  effort: 'low',                      // null → 不传 reasoning_effort
+  maxTokens: 4096,
+  timeoutMs: 90000,
+});
+```
+
+客户端故障抛 `LlmError`（`.detail` 结构化，`code` ∈ `llmNetworkError`、
+`llmHttpError`、`llmEmptyContent`、`llmJsonPromptMissing`）；`store.ask`
+对其原样穿透。
+
 ### 底层模块
 
 该包会重导出其构建模块，供高级宿主使用：
@@ -557,6 +642,7 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
 | `store.session(...)` | 会话内单 SQL 源**跨多次调用**原子；跨源写被显式拦截（`NonAtomicWriteError`） |
 | 无会话的跨源多写 | 非原子（无 2PC / Saga 支持），按数据源顺序执行，并经反馈通道声明 `nonAtomic`（事件 `non_atomic_write`，含涉及源） |
 | Mongo 多步写 | replica set / sharded：单 Mongo 源原子（session 事务）；standalone：非原子并显式声明 `mongo_transaction_unsupported` |
+| 工作流 run（`runWorkflow`） | 单源 run **跨步骤**整体原子（外层 `runAtomic` 包住步骤循环、内层 mutation 嵌套并入）；多源 / 源预扫失败按顺序执行并经反馈通道声明非原子 |
 
 - **Mongo 源**：会话内按运行时能力探测结果事务化；不可事务（standalone / 探测失败）按原样执行，
   并发出 `mongo_transaction_unsupported` 反馈（`deployment: standalone|unknown`）（允许降级，绝不静默假装已事务化）；
@@ -581,6 +667,66 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
 - **自增主键** —— `_id: { type: 'int', strategy: 'autoincrement' }`；PG/SQLite 经 `INSERT…RETURNING` 回读、MySQL 经 insertId；MongoDB 与 `insertMany` 显式报 `AUTOINCREMENT_NOT_SUPPORTED`（禁 ObjectId 静默顶替）。
 - **索引 DDL** —— `schema.indexes`（Mongo 形态）→ `ddl.generate` 产出 `CREATE [UNIQUE] INDEX idx_<表>_<字段>`，MySQL/PostgreSQL/SQLite 三方言逐字节一致。
 - **声明式迁移** —— `ddl.diffDefs(old, new)` + `ddl.generateMigration(backend, old, new)`：白名单制（加表/加列/加索引/类型放宽），纯函数按方言产 SQL；白名单外显式报 `MIGRATION_UNSUPPORTED`。
+
+## 工作流编排（首批）
+
+把「多步数据操作的编排」用数据表达：工作流定义（Workflow defn）是与 schema defn 同构的纯 JSON、
+运行记录（run）落库为内建 schema `__workflowRun`（普通 GQL 即查，可观测性零新接口）。执行是既有
+mutation 步骤序列机制的推广——线性步骤 + 步骤级 `when` 守卫 + fail-fast。引擎落在宿主层
+（`src/workflow.js`），core 零改动；对齐 `py-store/src/py_store/workflow.py`（双宿主输出逐字节
+一致由 parity 锚单测守护）。
+
+```js
+store.registerWorkflow({                   // 注册即静态校验；白名单外显式 Err（WORKFLOW_UNSUPPORTED）
+  name: 'placeOrder',
+  run: ['admin', 'ops'],                   // 三级白名单 read/write/run（run 缺省回退 write）
+  steps: [
+    { op: 'query', as: 'inv',
+      gql: 'Inventory($condition:@c0){_id, stock}',
+      params: { c0: { productId: '{{input.productId}}', warehouse: '{{input.warehouse}}' } } },
+    { op: 'fail', when: { exists: '{{inv._id}}', is: null }, message: '库存记录不存在' },
+    { op: 'fail', when: { lt: '{{inv.stock}}', than: '{{input.qty}}' }, message: '库存不足' },
+    { op: 'mutation', model: 'Inventory',
+      data: { _id: '{{inv._id}}', stock: '{{dec:{{inv.stock}},{{input.qty}}}}' } },
+  ],
+});
+
+const run = await store.runWorkflow('placeOrder', { productId: 'p1', warehouse: 'w1', qty: 30 });
+// run.status ∈ succeeded | failed | rejected | drySucceeded | dryFailed
+// 统一契约：业务失败不抛错，错误在 run.error（失败才有值；succeeded 态恒为 null）
+```
+
+- **步骤白名单**（首批仅三种，白名单外注册即 `WORKFLOW_UNSUPPORTED`）：`query`（store.query；
+  结果单条化，>1 行显式 Err）、`mutation`（store.mutation / upsert，继承其步骤序列与占位符机制）、
+  `fail`（显式业务断言失败：run 记 failed + stepIndex + message）。步骤可选 `when` 守卫
+  （exists / is / eq / ne / lt / lte / gt / gte），不满足记 `skipped`——显式留痕，绝不静默跳过。
+- **占位符**：`{{input.<path>}}`（本次 run 输入）、`{{<as>.<path>}}`（前序步骤结果，必须前向引用）、
+  `{{dec:<a>,<b>}}`（递减）；整值替换保类型、内嵌替换字符串化。gql 内禁占位符（参数走 params
+  绑定，防注入）；数组下标路径不支持（逐行处理请走宿主代码编排）。
+- **权限**：defn 内嵌三级角色白名单（复用四级 RBAC 语义：admin / super_admin 放行、guest 拒绝、
+  internal 放行、creator 按 Missing 通过）；run 继承触发者 Context，每步 query/mutation 都过 core
+  权限判定——工作流是「权限内的一次次普通调用」，不存在超级身份。`requireContext(true)` 开启时
+  无 ctx 拒跑（fail-secure 优先于 dry-run）。rejected 同样落库（拒绝可审计）。
+- **原子性**：单源 run 整体原子（外层 `runAtomic` 包住整个步骤循环，内层 mutation 嵌套并入——
+  任一步失败整体回滚）；多源 / 预扫失败按顺序执行并发反馈事件（`workflow_non_atomic` /
+  `workflow_prescan_failed`，禁静默）。run 记录时序：先落 `running`（进程崩溃可见）→ 步骤事务 →
+  终态在事务外独立提交（业务回滚不影响失败 run 可查）。
+- **dry-run**：`store.runWorkflow(name, input, { dryRun: true })`——query 真实执行（只读安全），
+  mutation / fail 记 `wouldRun`；终态 `drySucceeded | dryFailed`。
+- **run 落库**：`__workflowRun` 由模块加载即自举注册（幂等）；SQL 后端首次启用工作流需执行
+  `ddl.generate(backend, ['__workflowRun'])` 建表（Mongo 无需，首次写入自动建集合）。
+  其 `write` 为显式空名单（普通角色 GQL 篡改 run 审计被 R2 拒绝；模块内部写入走 internal 上下文）。
+
+### 首批明确不做（检出即 Err，边界与能力同权重）
+
+| 不做 | 理由 | 出口 |
+|---|---|---|
+| 循环 / 并行 / 子工作流 / 人工审批 | DAG 与人工等待语义复杂度爆炸；线性 + `when` 覆盖首批场景 | 宿主代码用 store API 编排 |
+| 自动补偿（Saga）/ 自动重试 | 反向操作语义负担大；步骤无自动幂等保证 | 人查 run 记录显式处置 |
+| 步骤级宿主回调 | 任意代码击穿白名单治理 | schema computes（读）/ 宿主代码（写） |
+| 工作流定义存库 / 热更 | 依赖 schema 版本化先行（路线图下一步） | defn 暂与 schema 同模式：代码内 JSON + register |
+| 定时触发 / 事件触发 | 触发器是常驻 IO 职责，属调度层，与「纯编排」正交 | 应用层自行调用 `runWorkflow` |
+| gql 内嵌占位符 / 数组下标路径 | 注入面 / 数组逐行处理语义 | params 绑定 / 宿主代码编排 |
 
 ## 常见问题
 

@@ -26,7 +26,12 @@ export default [
       indent: ['error', 2, { SwitchCase: 1 }],
       quotes: ['error', 'single', { avoidEscape: true }],
       semi: ['error', 'always'],
-      'no-unused-vars': ['error', { argsIgnorePattern: '^_', caughtErrors: 'none' }],
+      'no-unused-vars': ['error', {
+        argsIgnorePattern: '^_',
+        caughtErrors: 'none',
+        // 解构 rest 剔除键的惯用形（如 `const { strategy, ...rest } = fields._id;`）不算未使用
+        ignoreRestSiblings: true,
+      }],
     },
   },
   {

@@ -23,6 +23,11 @@ function setSink(fn) {
   _sink = typeof fn === 'function' ? fn : null;
 }
 
+/** 当前 sink（无则 null）——供接管方（如 ask 编排器）保存/恢复现场 */
+function getSink() {
+  return _sink;
+}
+
 /** 产出一条反馈事件：有 sink 回调之；否则打印 stderr（允许拦截，禁止静默） */
 function emit(event) {
   const e = event || {};
@@ -36,4 +41,4 @@ function emit(event) {
   );
 }
 
-module.exports = { setSink, emit };
+module.exports = { setSink, getSink, emit };

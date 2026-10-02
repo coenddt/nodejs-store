@@ -374,7 +374,7 @@ test('ddl 标量列 + object/array JSON 列 + __present + 归档表', () => {
   assert.ok(sql.includes('`tags` JSON'));
 });
 
-test('ddl timestamps 且不生成索引', () => {
+test('ddl timestamps 且生成声明索引', () => {
   store.register({
     name: 'DdlTs', collection: 'ddl_ts', idPrefix: 't', timestamps: true,
     indexes: [{ keys: { name: 1 } }],
@@ -386,7 +386,10 @@ test('ddl timestamps 且不生成索引', () => {
   assert.ok(sql.includes('"createdAt" BIGINT'));
   assert.ok(sql.includes('"updatedAt" BIGINT'));
   assert.ok(sql.includes('"__present" TEXT'));
-  assert.ok(!sql.toUpperCase().includes('INDEX'));
+  // schema.indexes → CREATE INDEX（阶段 3 索引落地；原「仅元数据不建索引」铁律 6
+  // 子项按用户裁决放开，见 ddl.js 头注释与事务型能力增补执行文档.md 附录 D）。
+  // 旧断言「不生成 INDEX」已随该裁决过期——按实现取证更新为索引形态断言。
+  assert.ok(sql.includes('CREATE INDEX "idx_ddl_ts_name" ON "ddl_ts" ("name" ASC)'));
 });
 
 test('ddl 三后端类型映射', () => {
