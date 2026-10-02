@@ -344,6 +344,19 @@ class Store {
   rbacRowCondition(model, action, ctx) {
     return permission.rbacRowCondition(model, action, ctx);
   }
+
+  // ── 角色清单与未配置姿态（清单化语义，判决唯一在 core；本层仅透传配置） ──
+  setExemptRoles(roles) {
+    return permission.setExemptRoles(roles);
+  }
+
+  setDenyWriteRoles(roles) {
+    return permission.setDenyWriteRoles(roles);
+  }
+
+  setUnconfiguredPolicy(policy) {
+    return permission.setUnconfiguredPolicy(policy);
+  }
 }
 
 /** 自定义权限错误（实例可被 store.PermissionError 捕获） */

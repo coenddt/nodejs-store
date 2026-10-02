@@ -133,6 +133,20 @@ function rbacRowCondition(model, action, ctx) {
   return core.rbacRowCondition(_model(model), action, ctx ?? null);
 }
 
+// ── 角色清单与未配置姿态（清单化语义，判决唯一在 core；本层仅透传） ──
+
+function setExemptRoles(roles) {
+  return core.setExemptRoles(roles);
+}
+
+function setDenyWriteRoles(roles) {
+  return core.setDenyWriteRoles(roles);
+}
+
+function setUnconfiguredPolicy(policy) {
+  return core.setUnconfiguredPolicy(policy);
+}
+
 // ─── 自定义错误 ──────────────────────────────────────────────
 
 class PermissionError extends Error {
@@ -165,5 +179,8 @@ module.exports = {
   rbacReadableFields,
   rbacWritableFields,
   rbacRowCondition,
+  setExemptRoles,
+  setDenyWriteRoles,
+  setUnconfiguredPolicy,
   PermissionError,
 };
