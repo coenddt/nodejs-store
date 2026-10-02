@@ -32,6 +32,8 @@ jobs:
         image: mongo:7
         ports:
           - 27017:27017
+        options: >-
+          --replSet rs0
       mysql:
         image: mysql:8
         env:
@@ -61,6 +63,18 @@ jobs:
           --health-retries=12
     steps:
       - uses: actions/checkout@v4
+      # 工作流 T5-09（跨步骤原子回滚）依赖 MongoDB 事务：单机须起 replica set 才支持
+      - name: Init Mongo replica set
+        run: |
+          for i in $(seq 1 30); do
+            mongosh --quiet --eval 'try { rs.initiate({_id: "rs0", members: [{_id: 0, host: "127.0.0.1:27017"}]}) } catch (e) {}' && break
+            sleep 2
+          done
+          for i in $(seq 1 30); do
+            mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep -q true && exit 0
+            sleep 2
+          done
+          echo "mongo PRIMARY 未就绪" && exit 1
       - uses: actions/setup-node@v4
         with:
           node-version: 22
