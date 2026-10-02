@@ -332,18 +332,24 @@ describe('ask L1 · 验收矩阵 T1-T12', () => {
   it('T8c: admin 摘要含 role 与 read 白名单计算列（core readableComputes 判决），无收窄告警', () => {
     _reset();
     askMod._computeSkipSigs.clear(); // 告警去重为进程级，单测内复位以保证可断言
-    const events = [];
-    feedback.setSink((e) => events.push(e));
-    const s = store.describeForAi(CTX_ADMIN);
-    const aku = s.find((m) => m.name === 'AkUser');
-    assert.equal(aku.fields.role, 'string');
-    // core-node 已导出 readableComputes（rust-store 联动任务合入）：read 白名单计算列
-    // 按角色判决——admin 可读 → 进摘要；不再走旧绑定的收窄 + 告警路径
-    assert.deepEqual(aku.computes.displayName, { type: 'string' });
-    assert.deepEqual(aku.computes.upperName, { type: 'string' });
-    assert.ok('itemCount' in s.find((m) => m.name === 'AkOrder').computes);
-    // 新绑定路径不产生收窄告警（guest 侧不进摘要由 T8 断言）
-    assert.deepEqual(events.filter((e) => e.type === 'ask_summary_compute_skipped'), []);
+    // 清单化语义（设计 §11.5）：AkUser.read 白名单不含 admin，admin 视角需显式豁免
+    permission.setExemptRoles(['admin']);
+    try {
+      const events = [];
+      feedback.setSink((e) => events.push(e));
+      const s = store.describeForAi(CTX_ADMIN);
+      const aku = s.find((m) => m.name === 'AkUser');
+      assert.equal(aku.fields.role, 'string');
+      // core-node 已导出 readableComputes（rust-store 联动任务合入）：read 白名单计算列
+      // 按角色判决——admin 可读 → 进摘要；不再走旧绑定的收窄 + 告警路径
+      assert.deepEqual(aku.computes.displayName, { type: 'string' });
+      assert.deepEqual(aku.computes.upperName, { type: 'string' });
+      assert.ok('itemCount' in s.find((m) => m.name === 'AkOrder').computes);
+      // 新绑定路径不产生收窄告警（guest 侧不进摘要由 T8 断言）
+      assert.deepEqual(events.filter((e) => e.type === 'ask_summary_compute_skipped'), []);
+    } finally {
+      permission.setExemptRoles([]);
+    }
   });
 
   it('T8c-旧绑定降级: core 未导出 readableComputes 时收窄 + 告警（同签名去重，对齐 py 现状）', () => {
@@ -351,6 +357,8 @@ describe('ask L1 · 验收矩阵 T1-T12', () => {
     askMod._computeSkipSigs.clear();
     const coreObj = _sc.core;
     coreObj.readableComputes = undefined; // 能力探测降级：模拟旧绑定（如 npm rust-store-node 2.0.0）
+    // 清单化语义（设计 §11.5）：AkUser.read 白名单不含 admin，admin 视角需显式豁免
+    permission.setExemptRoles(['admin']);
     const events = [];
     feedback.setSink((e) => events.push(e));
     try {
@@ -368,6 +376,7 @@ describe('ask L1 · 验收矩阵 T1-T12', () => {
       assert.equal(events.filter((e) => e.type === 'ask_summary_compute_skipped').length, 1);
     } finally {
       delete coreObj.readableComputes; // 摘除实例遮蔽，恢复原型方法
+      permission.setExemptRoles([]);
       feedback.setSink(null);
     }
   });

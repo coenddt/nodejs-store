@@ -149,11 +149,19 @@ test('permission 包装: 所有者条件注入判定与合并', () => {
     permission.shouldInjectOwnerCondition('FacadeOwned', { userId: 'u1', roles: ['creator'] }),
     true,
   );
+  // 清单化语义（设计 §11.5）：admin 不再默认豁免——creator-only 下同样注入；显式豁免后不注入
+  assert.equal(
+    permission.shouldInjectOwnerCondition('FacadeOwned', { userId: 'u1', roles: ['admin'] }),
+    true,
+    'admin 不再默认豁免，creator-only 下注入',
+  );
+  permission.setExemptRoles(['admin']);
   assert.equal(
     permission.shouldInjectOwnerCondition('FacadeOwned', { userId: 'u1', roles: ['admin'] }),
     false,
-    'admin 不注入',
+    '显式豁免后 admin 不注入',
   );
+  permission.setExemptRoles([]);
   assert.equal(permission.shouldInjectOwnerCondition('FacadeOwned', { roles: ['creator'] }), false, '缺 userId 不注入');
   assert.equal(
     permission.shouldInjectOwnerCondition('FacadeOwned', { userId: 'u1', internal: true }),
