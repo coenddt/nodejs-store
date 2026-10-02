@@ -36,6 +36,18 @@ function scopedRoles(roles, fn) {
   return _als.run(next, () => fn());
 }
 
+/**
+ * 以完整上下文 ctx 进入临时权限上下文（嵌套安全），执行 fn 后自动恢复原上下文。
+ *
+ * 对齐 py_store.permission.scoped_context；与 scopedRoles 同构，区别在于整体替换
+ * ctx（保留调用方原上下文于外层），供 AI 问数（ask）等把服务端构造的用户上下文
+ * 显式注入执行面的场景——不用「setContext + finally 清空」写法（嵌套时误清外层，
+ * 静默失守方向）。
+ */
+function scopedContext(ctx, fn) {
+  return _als.run(ctx ?? null, () => fn());
+}
+
 /** 在内部上下文中执行操作（绕过权限检查），结束后自动恢复上下文 */
 async function runAsInternal(fn) {
   const prev = getContext();
@@ -76,12 +88,49 @@ function getReadableRelations(schema, ctx) {
   return core.readableRelations(_model(schema), ctx ?? null);
 }
 
+/** 角色可读计算列集（列级白名单；core 未导出该判决的旧绑定上为 undefined） */
+function getReadableComputes(schema, ctx) {
+  return core.readableComputes(_model(schema), ctx ?? null);
+}
+
 function getWritableFields(schema, ctx) {
   return core.writableFields(_model(schema), ctx ?? null);
 }
 
 function filterWritableData(schema, ctx, data) {
   return core.filterWritableData(_model(schema), ctx ?? null, data);
+}
+
+// ─── RBAC 动态策略（core 判决；本模块零判决，仅透传，对齐 py_store.permission） ──
+
+/** 注入/清除 RBAC 策略。object = 注入（解析失败 core 抛错）；null = 清除关闭 */
+function setRbac(policy) {
+  return core.setRbac(policy ?? null);
+}
+
+/** RBAC 策略是否已注入 */
+function rbacEnabled() {
+  return core.rbacEnabled();
+}
+
+/** RBAC 动作判决：action ∈ {read, insert, update, remove}；RBAC 不介入 → true */
+function rbacCan(model, action, ctx) {
+  return core.rbacCan(_model(model), action, ctx ?? null);
+}
+
+/** RBAC 叠加后的可读字段集（静态 ∩ readFields）；无 ctx → null 不裁剪 */
+function rbacReadableFields(model, ctx) {
+  return core.rbacReadableFields(_model(model), ctx ?? null);
+}
+
+/** RBAC 叠加后的可写字段集（静态 ∩ writeFields）；无 ctx → null 不裁剪 */
+function rbacWritableFields(model, ctx) {
+  return core.rbacWritableFields(_model(model), ctx ?? null);
+}
+
+/** RBAC 行级条件（ownerOnly/condition 的 OR 合并体）；action ∈ {read, update, remove} */
+function rbacRowCondition(model, action, ctx) {
+  return core.rbacRowCondition(_model(model), action, ctx ?? null);
 }
 
 // ─── 自定义错误 ──────────────────────────────────────────────
@@ -96,8 +145,10 @@ class PermissionError extends Error {
 
 module.exports = {
   setContext,
+  _als,
   getContext,
   scopedRoles,
+  scopedContext,
   runAsInternal,
   canReadSchema,
   canWriteSchema,
@@ -105,7 +156,14 @@ module.exports = {
   mergeOwnerCondition,
   getReadableFields,
   getReadableRelations,
+  getReadableComputes,
   getWritableFields,
   filterWritableData,
+  setRbac,
+  rbacEnabled,
+  rbacCan,
+  rbacReadableFields,
+  rbacWritableFields,
+  rbacRowCondition,
   PermissionError,
 };

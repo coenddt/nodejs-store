@@ -21,8 +21,7 @@
  *   const items = await store.query('Model($condition:@c0) { field1, field2 }', { c0: {} });
  */
 
-const { AsyncLocalStorage } = require('node:async_hooks');
-
+const ask = require('./ask');
 const crud = require('./crud');
 const datasource = require('./datasource');
 const { Session, NonAtomicWriteError } = require('./datasource');
@@ -30,32 +29,12 @@ const ddl = require('./ddl');
 const executors = require('./executors');
 const feedback = require('./feedback');
 const introspect = require('./introspect');
+const llm = require('./llm');
 const permission = require('./permission');
+const { text2query } = require('./profile');
 const schema = require('./schema');
 const { syncSchema } = require('./sync');
-
-/** 档位 AsyncLocalStorage：记录「进入 text2query 前的原档」，供退出恢复（嵌套安全） */
-const _profileAls = new AsyncLocalStorage();
-
-/**
- * 以 text2query 档执行（功能收缩 + 硬限制），退出恢复原档位。
- *
- * AI 问数链路入口；与 permission.scopedRoles 同构（token-set/reset，嵌套安全）。
- * 档位是 core 进程级状态（非本 ALS 隔离），ALS 仅记录「进入时的原档」以便正确恢复，
- * 使异步 / 嵌套调用各自回到自己进入前的档位。进入档位即等效强制携带用户上下文
- * （core `ensureProfileCtx`，见执行文档 §4.2）。
- */
-async function text2query(fn) {
-  const prev = schema.getProfile();
-  schema.setProfile('text2query');
-  return _profileAls.run(prev, async () => {
-    try {
-      return await fn();
-    } finally {
-      schema.setProfile(prev);
-    }
-  });
-}
+const workflow = require('./workflow');
 
 class Store {
   // ── Schema 管理 ──
@@ -233,6 +212,30 @@ class Store {
     return ddl.generate(backend, names);
   }
 
+  // ── 工作流编排（首批：线性 + when 守卫 + fail-fast；见 workflow.js 与设计文档）──
+  /** 注册工作流定义（注册即静态校验，白名单外显式 Err 含 WORKFLOW_UNSUPPORTED） */
+  registerWorkflow(defn) {
+    return workflow.register(defn);
+  }
+
+  /** 全部可见工作流名（read 白名单过滤） */
+  workflows(ctx) {
+    return workflow.list(ctx);
+  }
+
+  /** 按名取工作流定义（read 白名单过滤；不可见与不存在同形——防枚举） */
+  getWorkflow(name, ctx) {
+    return workflow.get(name, ctx);
+  }
+
+  /**
+   * 触发工作流 → 完整 run 文档
+   * （终态 failed/rejected 不抛错，以 run.status + error 表达；dryRun 下 mutation/fail 记 wouldRun）
+   */
+  async runWorkflow(name, input, opts) {
+    return workflow.run(name, input ?? null, opts);
+  }
+
   // ── 底层工具（调试/高级用法） ──
   /** 解析 GQL 并构建 pipeline，返回 `{tokens, ast, pipeline, projection}` */
   buildPipeline(gql, params) {
@@ -273,6 +276,23 @@ class Store {
     return text2query(fn);
   }
 
+  // ── AI 问数（L1，对齐 py-store store.ask / store.describe_for_ai）──
+  /**
+   * AI 问数唯一入口（LLM 输出永远当不可信输入；护栏面服务端硬编码，详见 ask.js）
+   *
+   * @param {string} question 自然语言问题
+   * @param {{llm: (string|Function), ctx: object, maxRetries?: number, knowledge?: string}} opts
+   * @returns {Promise<ask.AskResult>}
+   */
+  ask(question, opts) {
+    return ask.ask(question, opts);
+  }
+
+  /** 输出 LLM 可读的 schema 摘要（权限过滤后的紧凑 JSON 数组；详见 ask.js） */
+  describeForAi(ctx = null) {
+    return ask.describeForAi(ctx);
+  }
+
   /** 设置数据源连接映射（多后端路由；对齐 py-store store.set_connections） */
   setConnections(connections) {
     return datasource.setConnections(connections);
@@ -299,6 +319,31 @@ class Store {
   async runAsInternal(fn) {
     return permission.runAsInternal(fn);
   }
+
+  // ── RBAC 动态策略（判决唯一在 core；本层仅透传配置与查询面） ──
+  setRbac(policy) {
+    return permission.setRbac(policy);
+  }
+
+  rbacEnabled() {
+    return permission.rbacEnabled();
+  }
+
+  rbacCan(model, action, ctx) {
+    return permission.rbacCan(model, action, ctx);
+  }
+
+  rbacReadableFields(model, ctx) {
+    return permission.rbacReadableFields(model, ctx);
+  }
+
+  rbacWritableFields(model, ctx) {
+    return permission.rbacWritableFields(model, ctx);
+  }
+
+  rbacRowCondition(model, action, ctx) {
+    return permission.rbacRowCondition(model, action, ctx);
+  }
 }
 
 /** 自定义权限错误（实例可被 store.PermissionError 捕获） */
@@ -309,6 +354,10 @@ Store.prototype.ProfileViolation = crud.ProfileViolation;
 Store.prototype.RawSqlError = datasource.RawSqlError;
 /** 原生 Mongo 命令入口错误（实例可被 store.NativeCommandError 捕获） */
 Store.prototype.NativeCommandError = datasource.NativeCommandError;
+/** AI 问数重试耗尽（实例可被 store.AskExhausted 捕获，携带 .attempts / .events 全轨迹） */
+Store.prototype.AskExhausted = ask.AskExhausted;
+/** AI 问数成功结果（store.ask 的返回类型） */
+Store.prototype.AskResult = ask.AskResult;
 
 const store = new Store();
 
@@ -416,4 +465,12 @@ module.exports = {
   feedback,
   introspect,
   syncSchema,
+  workflow,
+  WorkflowError: workflow.WorkflowError,
+  // ── AI 问数（L1）：编排器 + schema 摘要 + LLM 插拔注册表（对齐 py-store ask/llm）──
+  ask: ask.ask,
+  describeForAi: ask.describeForAi,
+  AskResult: ask.AskResult,
+  AskExhausted: ask.AskExhausted,
+  llm,
 };
