@@ -27,8 +27,8 @@ const _DEF_FIELDS = '_id, tenant, env, name, version, defn, status, createdBy';
  *
  * 不声明 indexes：内建表随宿主注册表进入 `ddl.generate()`，而场景 harness 会对全部
  * 注册表执行其中的 CREATE INDEX（建表仅限业务表）——为内建表加索引会令其对未建的
- * 内建表建索引而报错。版本唯一性由控制面「读最新行 + 1」保证（§4.3）；一旦存储层
- * 报唯一键冲突按 §4.4 显式上抛（不重试、不吞）。
+ * 内建表建索引而报错。版本唯一性改由行自然键 `_id`（见 `defId`，D2）在**存储层**保证：
+ * 并发写同版本必触发唯一键冲突，按 §4.4 显式上抛（不重试、不吞）。
  */
 function _defModel(name, idPrefix) {
   return {
@@ -122,6 +122,20 @@ function buildDefRow(defn, opts, version) {
   };
 }
 
+/**
+ * 定义行自然键 `_id` = `(tenant, env, name, version)`（D2；对齐 py `def_id`）。
+ *
+ * 作为存储层主键，同 `(tenant,env,name,version)` 二次写入必触发唯一键冲突
+ * （Mongo E11000 / SQLite UNIQUE），使「读最新行 +1」的并发窗口在存储层收口 ——
+ * 并发写同版本时后到者显式报错（控制面映射 409 CONFLICT），不产重复 version。
+ * 分隔符用 US（\u001f）：schema name 不含该控制字符，拼接无歧义。
+ */
+function defId(tenant, env, name, version) {
+  const t = tenant == null ? '' : tenant;
+  const e = env == null ? '' : env;
+  return `${t}\u001f${e}\u001f${name}\u001f${version}`;
+}
+
 /** 干净 internal 上下文（{internal: true}，丢弃触发者 roles）——内建表写约束对齐 __workflowRun */
 function _runInternal(fn) {
   return _als.run({ internal: true }, fn);
@@ -166,8 +180,36 @@ async function persistDef(store, defn, opts) {
   const latest = rows.length ? rows[0] : null;
   const coreDefn = _toCoreDefn(defn); // 函数值剔除（纯 JSON 入库，A3 前提）
   if (latest && sameDefn(latest.defn, coreDefn)) return latest;
-  const row = buildDefRow(coreDefn, o, nextVersion(rows));
+  const version = nextVersion(rows);
+  const row = buildDefRow(coreDefn, o, version);
+  // 自然键 `_id`（D2）：同版本并发写必冲突 → 存储层保证 version 唯一
+  row._id = defId(o.tenant, o.env, coreDefn.name, version);
   return _runInternal(() => store.insert(_SCHEMA_DEF, row));
+}
+
+/** 已重建进注册表的定义自然键（进程级；同名同版本只注册一次，避免每次 reload 全量覆盖） */
+const _applied = new Set();
+
+/**
+ * 从持久化定义重建注册表（D1 闭环桥）：`loadDefs` → 逐条 `register(defn, internalCtx)`。
+ *
+ * 网关 reload 在重装配前调用本函数，使「控制面 publish（写库）」与「协议面可见（注册）」
+ * 经 reload 衔接。已注册过的同版本跳过（幂等）；版本变化时以新 defn 覆盖注册。
+ * 注册走 internal 上下文：属系统重建动作，不受业务定义层门禁（MetaPolicy）影响。
+ * @returns {Promise<{total: number, applied: number}>} total=库内最新 active 行数；applied=本次新注册数
+ */
+async function restoreDefs(store, opts) {
+  const o = opts || {};
+  const rows = await loadDefs(store, o);
+  let applied = 0;
+  for (const r of rows) {
+    const key = defId(o.tenant, o.env, r.name, r.version);
+    if (_applied.has(key)) continue;
+    _registerSchema(r.defn, { internal: true });
+    _applied.add(key);
+    applied += 1;
+  }
+  return { total: rows.length, applied };
 }
 
 /** 回滚到历史版本：取历史行 → 重新 register(row.defn) → 返回该行 */
@@ -189,9 +231,11 @@ module.exports = {
   sameDefn,
   nextVersion,
   buildDefRow,
+  defId,
   listDefs,
   loadDefs,
   persistDef,
+  restoreDefs,
   rollbackTo,
   // parity 锚与内部件（下划线内部语义）
   _stableStringify,

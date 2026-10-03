@@ -230,6 +230,11 @@ class Store {
     return metadef.loadDefs(this, opts);
   }
 
+  /** 从持久化定义重建注册表（D1 闭环桥；网关 reload 重装配前调用） */
+  async restoreDefs(opts) {
+    return metadef.restoreDefs(this, opts);
+  }
+
   /** 回滚到历史版本（重新 register 该版本 defn） */
   async rollbackTo(opts) {
     return metadef.rollbackTo(this, opts);

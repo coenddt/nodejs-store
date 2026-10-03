@@ -12,9 +12,13 @@
  */
 
 const native = require('./core');
+const { emit: _emitFeedback } = require('./feedback');
 
 /** Rust core 注册表（全项目共享单例） */
 const core = new native.Registry();
+
+// 重复名去重签名（同一重复形态只告警一次，避免 list() 高频调用刷屏）
+const _dupSignatures = new Set();
 
 // Host 侧元数据镜像
 const _schemas = Object.create(null);
@@ -86,19 +90,27 @@ function register(defn, ctx) {
     write: defn.write,
   };
 
-  // 归档表镜像（与 core register 的自动派生保持一致，供 Host 查询元数据）
+  // 归档表镜像（形状对齐 core archive_defn，供 Host 查询元数据）
+  // —— 只补 Host 镜像，**不再调用 core.register**：`<Name>Deleted` 已由 core 在
+  // register 内自动派生并注册（registry.rs），二次注册会让同名条目再进 core.order，
+  // 使 list()/generate_ddl() 出现重复表（对齐 py `schema.register` 的既有处置）。
   if (!defn._isArchive && !defn.name.endsWith('Deleted')) {
-    register({
+    _schemas[`${defn.name}Deleted`] = {
       name: `${defn.name}Deleted`,
       collection: `${defn.collection || defn.name}_deleted`,
+      namespace: defn.namespace || null,
       idPrefix: '',
-      _isArchive: true,
+      timestamps: true,
+      timestampUnit: 'ms',
       fields: { ...(defn.fields || {}), deletedAt: { type: 'number' } },
+      relations: {},
+      computes: {},
       indexes: defn.indexes || [],
       // 归档表与原表同 (source, namespace)
       datasource: defn.datasource || null,
-      namespace: defn.namespace || null,
-    }, ctx);
+      read: undefined,
+      write: undefined,
+    };
   }
 
   return _schemas[defn.name];
@@ -118,9 +130,37 @@ function has(name) {
   return core.has(name);
 }
 
-/** 所有已注册 schema 名称（core 侧，含归档表，按注册顺序） */
+/**
+ * 所有已注册 schema 名称（core 侧，含归档表，按注册顺序；同名只保留首次出现）
+ *
+ * 去重是纵深防御的第二层（对齐 py `schema.list`）：同名覆盖重注册（如 metadef
+ * `restoreDefs` 应用新版本）会让 core.order 出现重复项——不去重则协议皮按名重复
+ * 装配路由（fastify 报错）。一旦检出重复即 emit 告警（同签名只告警一次），禁静默。
+ */
 function list() {
-  return core.list();
+  const names = core.list();
+  const seen = new Set();
+  const out = [];
+  for (const name of names) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  if (out.length !== names.length) {
+    const sig = JSON.stringify(names);
+    if (!_dupSignatures.has(sig)) {
+      _dupSignatures.add(sig);
+      _emitFeedback({
+        type: 'schema_duplicate_name',
+        code: 'schemaDuplicateName',
+        layer: 'host',
+        message: `schema 注册表存在重复名（多 ${names.length - out.length} 条），已顺序去重`,
+        hint: '上游注册逻辑失守（core.order 同名两次）；核查 register 是否重复调用 core.register，或 core.register 未对同名去重',
+        names,
+      });
+    }
+  }
+  return out;
 }
 
 /**
