@@ -240,6 +240,17 @@ class Store {
     return metadef.ensureBuiltins();
   }
 
+  // ── 反馈事件落库（A6；见 feedback.js）──
+  /** 一键接线：注册内建 __feedback 并把 sink 指向落库；返回 disposer（恢复原 sink） */
+  enableFeedbackTable() {
+    return feedback.enableFeedbackTable(this);
+  }
+
+  /** 注入进程级 ns 标签（tenant/env），供落库事件附加（进程级隔离下天然单 ns） */
+  setFeedbackMeta(meta) {
+    return feedback.setMeta(meta);
+  }
+
   // ── 工作流编排（首批：线性 + when 守卫 + fail-fast；见 workflow.js 与设计文档）──
   /** 注册工作流定义（注册即静态校验，白名单外显式 Err 含 WORKFLOW_UNSUPPORTED） */
   registerWorkflow(defn) {

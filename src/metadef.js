@@ -18,6 +18,7 @@ const { _als } = require('./permission');
 // 内建定义表名（`__` 前缀为内建保留名，对齐 workflow 的 name.startsWith('__') 校验）
 const _SCHEMA_DEF = '__schemaDef';
 const _WORKFLOW_DEF = '__workflowDef';
+const _FEEDBACK = '__feedback';
 // 读取投影（双端一致；对拍比较用）
 const _DEF_FIELDS = '_id, tenant, env, name, version, defn, status, createdBy';
 
@@ -52,10 +53,31 @@ function _defModel(name, idPrefix) {
 const _SCHEMA_DEF_MODEL = _defModel(_SCHEMA_DEF, 'sdef');
 const _WORKFLOW_DEF_MODEL = _defModel(_WORKFLOW_DEF, 'wdef');
 
-/** 注册内建 `__schemaDef`/`__workflowDef`（幂等；core 对重复三元组显式报错，故先 has 守卫） */
+// 内建反馈事件表（05）：承载结构化降级/拦截事件（write 空名单——普通角色禁写，事件审计）
+const _FEEDBACK_MODEL = {
+  name: _FEEDBACK,
+  system: true,
+  collection: _FEEDBACK,
+  idPrefix: 'fdbk',
+  write: [],
+  fields: {
+    _id: { type: 'string' },
+    type: { type: 'string' },
+    code: { type: 'string' },
+    layer: { type: 'string' },
+    message: { type: 'string' },
+    hint: { type: 'string' },
+    tenant: { type: 'string' },
+    env: { type: 'string' },
+    now: { type: 'number' },
+  },
+};
+
+/** 注册内建 `__schemaDef`/`__workflowDef`/`__feedback`（幂等；core 对重复三元组显式报错，故先 has 守卫） */
 function ensureBuiltins() {
   if (!_hasSchema(_SCHEMA_DEF)) _registerSchema(_SCHEMA_DEF_MODEL);
   if (!_hasSchema(_WORKFLOW_DEF)) _registerSchema(_WORKFLOW_DEF_MODEL);
+  if (!_hasSchema(_FEEDBACK)) _registerSchema(_FEEDBACK_MODEL);
 }
 
 /** metadef 契约失败（defn.name 缺失 / 版本不存在 / 唯一冲突） */
@@ -173,6 +195,8 @@ module.exports = {
   rollbackTo,
   // parity 锚与内部件（下划线内部语义）
   _stableStringify,
+  _runInternal,
   _SCHEMA_DEF_MODEL,
   _WORKFLOW_DEF_MODEL,
+  _FEEDBACK_MODEL,
 };

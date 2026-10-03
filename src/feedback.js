@@ -18,6 +18,12 @@
 
 let _sink = null;
 
+// 进程级 ns 标签（进程级隔离下天然单 ns；由宿主 setMeta 注入）
+let _meta = { tenant: '', env: '' };
+
+// 落库失败累计计数（进程级；>0 表示有事件未入表——可观测，不静默）
+let _failCount = 0;
+
 /** 注册反馈事件回调 `fn(event)`；传 null/非函数恢复默认 stderr 行为 */
 function setSink(fn) {
   _sink = typeof fn === 'function' ? fn : null;
@@ -26,6 +32,42 @@ function setSink(fn) {
 /** 当前 sink（无则 null）——供接管方（如 ask 编排器）保存/恢复现场 */
 function getSink() {
   return _sink;
+}
+
+/** 注入进程级 ns 标签（tenant/env），供落库 sink 附加到事件 */
+function setMeta(meta) {
+  _meta = { ..._meta, ...(meta || {}) };
+}
+
+/** 落库失败累计计数（进程级；>0 表示有事件未入表——可观测，不静默） */
+function failCount() {
+  return _failCount;
+}
+
+function _fail(msg) {
+  _failCount += 1;
+  console.error(`[nodejs-store][feedback] ${msg}`);
+}
+
+/**
+ * 一键接线：注册内建 `__feedback` 并把 sink 指向落库；返回 disposer（恢复原 sink）。
+ *
+ * 落库为异步 fire-and-forget；失败走 stderr + 计数，绝不抛回 `emit`（不破坏主链路）。
+ * 未调用本函数时 `emit` 保持原 stderr 行为（不改变默认语义）。
+ */
+function enableFeedbackTable(store) {
+  // 延迟 require：避免 schema ↔ feedback 的加载期循环
+  // eslint-disable-next-line global-require
+  const metadef = require('./metadef');
+  metadef.ensureBuiltins(); // 幂等（含 __feedback）
+  const prev = getSink();
+  setSink((event) => {
+    const row = { ...(event || {}), tenant: _meta.tenant || '', env: _meta.env || '', now: Date.now() };
+    Promise.resolve(metadef._runInternal(() => store.insert('__feedback', row))).catch((e) => {
+      _fail(`__feedback 落库失败: ${e && e.message ? e.message : e}`);
+    });
+  });
+  return () => setSink(prev);
 }
 
 /** 产出一条反馈事件：有 sink 回调之；否则打印 stderr（允许拦截，禁止静默） */
@@ -41,4 +83,4 @@ function emit(event) {
   );
 }
 
-module.exports = { setSink, getSink, emit };
+module.exports = { setSink, getSink, emit, setMeta, enableFeedbackTable, failCount };
