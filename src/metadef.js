@@ -28,7 +28,7 @@ const _TABLES = { schema: _SCHEMA_DEF, workflow: _WORKFLOW_DEF };
 // 注册函数：(defn, internal) → 注册到对应注册表；internal 仅供系统重建（restore）使用
 const _REGISTRARS = {
   schema: (defn, internal) => _registerSchema(defn, internal ? { internal: true } : undefined),
-  workflow: (defn) => _registerWorkflow(defn),
+  workflow: (defn, internal) => _registerWorkflow(defn, internal ? { internal: true } : undefined),
 };
 
 /** 解析 kind → {kind, table}；未知 kind 显式 Err（不兜底） */
@@ -249,7 +249,8 @@ async function rollbackTo(store, opts) {
   if (!row) throw new MetaDefError(`metadef: 版本不存在 ${o.name}@${o.version}`);
   // 追加式回滚：以历史 defn 走 persist 语义（异形 → version+1；同形 → 返回当前最新）
   const persisted = await persistDef(store, row.defn, o);
-  _REGISTRARS[kind](row.defn);
+  // 系统重建动作：workflow 走 internal；schema 维持既有调用形态（false = 无 ctx，门禁行为零变更）
+  _REGISTRARS[kind](row.defn, kind === 'workflow');
   return persisted;
 }
 
