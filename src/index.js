@@ -230,14 +230,37 @@ class Store {
     return metadef.loadDefs(this, opts);
   }
 
-  /** 从持久化定义重建注册表（D1 闭环桥；网关 reload 重装配前调用） */
+  /** 从持久化定义重建注册表：schema + workflow 两类（网关 reload 重装配前调用） */
   async restoreDefs(opts) {
-    return metadef.restoreDefs(this, opts);
+    const s = await metadef.restoreDefs(this, { ...(opts || {}), kind: 'schema' });
+    const w = await metadef.restoreDefs(this, { ...(opts || {}), kind: 'workflow' });
+    return { total: s.total + w.total, applied: s.applied + w.applied };
   }
 
   /** 回滚到历史版本（重新 register 该版本 defn） */
   async rollbackTo(opts) {
     return metadef.rollbackTo(this, opts);
+  }
+
+  // ── 定义控制面：workflow 定义（kind=workflow；见 metadef.js）──
+  /** 持久化 workflow 定义（同名同形幂等，异形 version+1） */
+  async persistWorkflowDef(defn, opts) {
+    return metadef.persistDef(this, defn, { ...(opts || {}), kind: 'workflow' });
+  }
+
+  /** 列 workflow 定义行（按 version desc；name 缺省列全部） */
+  async listWorkflowDefs(opts) {
+    return metadef.listDefs(this, { ...(opts || {}), kind: 'workflow' });
+  }
+
+  /** 各 name 的最新 active workflow 定义行 */
+  async loadWorkflowDefs(opts) {
+    return metadef.loadDefs(this, { ...(opts || {}), kind: 'workflow' });
+  }
+
+  /** 回滚 workflow 定义到历史版本（追加式） */
+  async rollbackWorkflowTo(opts) {
+    return metadef.rollbackTo(this, { ...(opts || {}), kind: 'workflow' });
   }
 
   /** 自举内建定义表 __schemaDef/__workflowDef（幂等） */
