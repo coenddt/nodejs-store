@@ -12,6 +12,16 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { workflow, schema } = require('../src');
 
+// B1 前置：GOOD 的 gql/mutation 引用 Inventory，注册期可规划性校验要求其已注册。
+// node --test 按文件隔离进程，且全仓测试无其它 Inventory 注册，故此处安全。
+schema.register({
+  name: 'Inventory', collection: 'inventory', idPrefix: 'inv',
+  fields: {
+    _id: { type: 'string' }, stock: { type: 'int' },
+    productId: { type: 'string' }, warehouse: { type: 'string' },
+  },
+});
+
 const GOOD = {
   name: 'placeOrder',
   read: ['admin', 'ops'],
@@ -284,4 +294,31 @@ test('parity run 文档形状（keys 与迹条目形状）', async () => {
     workflow._workflows.delete('shapeWf');
     db.close();
   }
+});
+
+// ─── B1：注册期 GQL 可规划性校验（结构 + 参数键完整） ─────────
+
+test('B1：注册期可规划性——gql 不可规划拒绝', () => {
+  const bad = { name: 'noModelWf', steps: [
+    { op: 'query', as: 'a', gql: 'NoSuchModel{_id}', params: {} },
+  ] };
+  assert.deepEqual(workflow.validatePlanable(bad).length, 1);
+  assert.throws(() => workflow.register(bad), /WORKFLOW_UNSUPPORTED: steps\[0\]: gql 不可规划/);
+});
+
+test('B1：注册期可规划性——缺参数键拒绝', () => {
+  const bad = { name: 'missParamWf', steps: [
+    { op: 'query', as: 'a', gql: 'Inventory($condition:@c0){_id}', params: {} },
+  ] };
+  assert.deepEqual(workflow.validatePlanable(bad),
+    ['steps[0]: gql 引用了未提供的参数 @c0（params 须提供该键）']);
+});
+
+test('B1：注册期可规划性——合法通过', () => {
+  assert.deepEqual(workflow.validatePlanable({
+    name: 'okWf', steps: [
+      { op: 'query', as: 'a', gql: 'Inventory($condition:@c0){_id, stock}',
+        params: { c0: { stock: 1 } } },
+    ],
+  }), []);
 });
