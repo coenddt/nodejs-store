@@ -38,6 +38,7 @@
 - [Transactional capabilities](#transactional-capabilities)
 - [FAQ](#faq)
 - [Related projects](#related-projects)
+- [Framework usage contract](#framework-usage-contract)
 
 ---
 
@@ -775,6 +776,12 @@ The command throws `PushdownUnsupportedError` **and** emits a structured feedbac
 - [`py-store`](https://github.com/coenddt/py-store) — the Python asyncio twin (pip `storepy`, `from py_store import init, store`).
 - [`rust-store`](https://github.com/coenddt/rust-store) — the shared Rust core and its `rust-store-node` / `rust-store-py` bindings.
 - `text-to-query` — a companion skill that turns natural-language questions into GQL + params for this data layer.
+
+## Framework usage contract
+
+- Definition layer (data): models / permissions / workflows / interfaces are always pure JSON — publishable, rollbackable, hot-reloadable.
+- Callback layer (code): datasource IO, computed-column implementations, external calls, transactions — declared via `fnRef` and injected at startup; not serializable, must never be persisted.
+- Observability layer: every degradation / interception / fallback event lands in `__feedback` (queryable via GQL) — never silent.
 
 ## License
 

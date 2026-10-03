@@ -37,6 +37,7 @@
 - [事务型能力](#事务型能力)
 - [常见问题](#常见问题)
 - [相关项目](#相关项目)
+- [框架使用契约](#框架使用契约)
 
 ---
 
@@ -768,6 +769,12 @@ const run = await store.runWorkflow('placeOrder', { productId: 'p1', warehouse: 
 - [`py-store`](https://github.com/coenddt/py-store) —— Python asyncio 孪生版（pip `storepy`，`from py_store import init, store`）。
 - [`rust-store`](https://github.com/coenddt/rust-store) —— 共享的 Rust 核心及其 `rust-store-node` / `rust-store-py` 绑定。
 - `text-to-query` —— 配套技能：把自然语言问题转换为该数据层所需 GQL + params。
+
+## 框架使用契约
+
+- 定义层（数据）：模型 / 权限 / 编排 / 接口 —— 一律纯 JSON，可发布、可回滚、可热更。
+- 回调层（代码）：数据源 IO、计算列实现、外部调用、事务 —— 以 `fnRef` 声明、启动时注入；不可序列化，禁止入库。
+- 可观测层：一切降级/拦截/兜底事件落 `__feedback`（可用 GQL 查询），绝不静默。
 
 ## 许可证
 
