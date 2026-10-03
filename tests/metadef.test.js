@@ -146,6 +146,32 @@ test('D21：rollback 以历史 defn 追加新版本 → restoreDefs 按历史 de
   });
 });
 
+// ─── N3：回调类定义不可持久化（持久化定义 = 纯 JSON）─────────────
+
+test('N3：含函数回调的 defn 经 persistDef 显式拒绝且库内零新增行', async () => {
+  await run(async () => {
+    const o = { tenant: 't12', env: 'dev' };
+    const defn = { name: 'CbItem', fields: { _id: { type: 'string' } }, computes: { total: { fn: () => 1 } } };
+    await assert.rejects(() => md.persistDef(store, defn, o), /不可持久化/);
+    const rows = await md.listDefs(store, { ...o, name: 'CbItem' });
+    assert.equal(rows.length, 0); // 拒绝先于 IO：库内零新增行
+  });
+});
+
+test('N3：纯 JSON defn（fnRef 字符串）正常落库且与入参同形', async () => {
+  await run(async () => {
+    const o = { tenant: 't12', env: 'dev' };
+    const defn = {
+      name: 'CbPure',
+      fields: { _id: { type: 'string' } },
+      computes: { total: { fnRef: 'sum', type: 'int' } },
+    };
+    const row = await md.persistDef(store, defn, o);
+    assert.equal(row.version, 1);
+    assert.equal(md.sameDefn(row.defn, defn), true); // 落库 defn 与入参同形
+  });
+});
+
 // ─── workflow 定义持久化（kind=workflow，落 __workflowDef；审计 §8 N1）───────
 
 test('workflow：persist 同名同形幂等 + 异形 version+1 + list version desc', async () => {

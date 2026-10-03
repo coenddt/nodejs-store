@@ -107,6 +107,29 @@ class MetaDefError extends Error {
 
 // ─── 纯逻辑（双端逐字节等价；parity 锚） ───────────────────────
 
+/**
+ * 深度检查 defn 是否含函数值 —— 持久化定义 = 纯 JSON 契约（N3）。
+ *
+ * 必须先于 `_toCoreDefn` 调用：后者会把 `fn/asyncFn` 归一为 `true` 占位、把其余函数剔除，
+ * 使「含回调定义」静默降级为「无回调纯 JSON」入库，回滚/restore 即丢失回调（缺陷台账 D17）。
+ * 本函数在归一化**之前**显式拒绝（fail-fast），文案对齐 py `_assert_serializable`（逐字节一致）。
+ * @param {*} v 待检值
+ * @param {string} path 当前路径（空串为根；子路径以 `.` 连接）
+ */
+function _assertSerializable(v, path) {
+  if (typeof v === 'function') {
+    throw new MetaDefError(
+      `metadef: 定义含函数回调（${path}），不可持久化；`
+      + '回调类定义禁止经控制面发布（定义内改用 fnRef 字符串，实现由宿主 register 时注入）',
+    );
+  }
+  if (v === null || typeof v !== 'object') return;
+  const keys = Array.isArray(v) ? v.map((_, i) => String(i)) : Object.keys(v);
+  for (const k of keys) {
+    _assertSerializable(v[k], path ? `${path}.${k}` : k);
+  }
+}
+
 /** 稳定序列化（键序无关）：与 py `stable_stringify` 逐字节等价 */
 function _stableStringify(v) {
   if (v === null || typeof v !== 'object') return JSON.stringify(v);
@@ -196,6 +219,7 @@ async function persistDef(store, defn, opts) {
   }
   const o = opts || {};
   const { table } = _kindOf(o);
+  _assertSerializable(defn, '');              // ← 新增：回调类定义不可持久化（先于 IO 与归一化）
   const rows = await listDefs(store, { tenant: o.tenant, env: o.env, name: defn.name, kind: o.kind });
   const latest = rows.length ? rows[0] : null;
   const coreDefn = _toCoreDefn(defn); // 函数值剔除（纯 JSON 入库，A3 前提）
@@ -271,6 +295,7 @@ module.exports = {
   rollbackTo,
   // parity 锚与内部件（下划线内部语义）
   _stableStringify,
+  _assertSerializable,
   _runInternal,
   _SCHEMA_DEF_MODEL,
   _WORKFLOW_DEF_MODEL,
