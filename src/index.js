@@ -30,6 +30,7 @@ const executors = require('./executors');
 const feedback = require('./feedback');
 const introspect = require('./introspect');
 const llm = require('./llm');
+const metadef = require('./metadef');
 const permission = require('./permission');
 const { text2query } = require('./profile');
 const schema = require('./schema');
@@ -210,6 +211,32 @@ class Store {
   /** 从已注册 schema def 生成指定后端 DDL 文本（纯函数，不连库、不回写；铁律 6） */
   generateDdl(backend, names) {
     return ddl.generate(backend, names);
+  }
+
+  // ── meta-store 定义控制面（定义持久化与版本化；见 metadef.js）──
+  /** 持久化定义（同名同形幂等，异形 version+1；A1/A2） */
+  async persistDef(defn, opts) {
+    return metadef.persistDef(this, defn, opts);
+  }
+
+  /** 列定义行（按 version desc；name 缺省列全部） */
+  async listDefs(opts) {
+    return metadef.listDefs(this, opts);
+  }
+
+  /** 各 name 的最新 active 行 */
+  async loadDefs(opts) {
+    return metadef.loadDefs(this, opts);
+  }
+
+  /** 回滚到历史版本（重新 register 该版本 defn） */
+  async rollbackTo(opts) {
+    return metadef.rollbackTo(this, opts);
+  }
+
+  /** 自举内建定义表 __schemaDef/__workflowDef（幂等） */
+  ensureBuiltins() {
+    return metadef.ensureBuiltins();
   }
 
   // ── 工作流编排（首批：线性 + when 守卫 + fail-fast；见 workflow.js 与设计文档）──
@@ -480,6 +507,9 @@ module.exports = {
   syncSchema,
   workflow,
   WorkflowError: workflow.WorkflowError,
+  // ── meta-store 定义控制面（定义持久化与版本化；对齐 py-store metadef）──
+  metadef,
+  MetaDefError: metadef.MetaDefError,
   // ── AI 问数（L1）：编排器 + schema 摘要 + LLM 插拔注册表（对齐 py-store ask/llm）──
   ask: ask.ask,
   describeForAi: ask.describeForAi,
