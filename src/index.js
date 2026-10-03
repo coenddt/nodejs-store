@@ -22,6 +22,7 @@
  */
 
 const ask = require('./ask');
+const cache = require('./cache');
 const crud = require('./crud');
 const datasource = require('./datasource');
 const { Session, NonAtomicWriteError } = require('./datasource');
@@ -277,6 +278,17 @@ class Store {
   /** 注入进程级 ns 标签（tenant/env），供落库事件附加（进程级隔离下天然单 ns） */
   setFeedbackMeta(meta) {
     return feedback.setMeta(meta);
+  }
+
+  // ── 缓存状态注记（B6；见 cache.js）──
+  /** 注册缓存状态 provider：`x-cache` 注记位唯一取值来源；未注册恒 BYPASS（本轮不实现缓存） */
+  setCacheStatus(fn) {
+    return cache.setCacheStatus(fn);
+  }
+
+  /** 当前响应的缓存状态注记（恒为 HIT|MISS|BYPASS 之一） */
+  cacheStatus(ctx) {
+    return cache.cacheStatus(ctx ?? permission.getContext() ?? null);
   }
 
   // ── 工作流编排（首批：线性 + when 守卫 + fail-fast；见 workflow.js 与设计文档）──
@@ -548,6 +560,7 @@ module.exports = {
   crud,
   executors,
   feedback,
+  cache,
   introspect,
   syncSchema,
   workflow,
