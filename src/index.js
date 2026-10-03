@@ -37,6 +37,7 @@ const { text2query } = require('./profile');
 const schema = require('./schema');
 const { syncSchema } = require('./sync');
 const workflow = require('./workflow');
+const { createApp } = require('./bootstrap');
 
 class Store {
   // ── Schema 管理 ──
@@ -550,6 +551,7 @@ module.exports = {
   init,
   store,
   Store,
+  createApp,
   text2query,
   Session,
   NonAtomicWriteError,
