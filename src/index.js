@@ -39,8 +39,9 @@ const workflow = require('./workflow');
 
 class Store {
   // ── Schema 管理 ──
-  register(defn) {
-    return schema.register(defn);
+  /** 注册 schema（可选 `ctx` 过定义层门禁，见 setMetaPolicy；默认 Open） */
+  register(defn, ctx) {
+    return schema.register(defn, ctx);
   }
 
   get(name) {
@@ -383,6 +384,11 @@ class Store {
 
   setUnconfiguredPolicy(policy) {
     return permission.setUnconfiguredPolicy(policy);
+  }
+
+  /** 定义层门禁策略（判决唯一在 core）：closed 时仅 internal/白名单可注册或覆盖 */
+  setMetaPolicy(closed, roles) {
+    return schema.setMetaPolicy(closed, roles);
   }
 }
 

@@ -33,9 +33,15 @@ function _toCoreDefn(defn) {
   }));
 }
 
-/** 注册一个 schema（自动派生 `<Name>Deleted` 归档表镜像），返回 Host 侧元数据 */
-function register(defn) {
-  core.register(_toCoreDefn(defn));
+/**
+ * 注册一个 schema（自动派生 `<Name>Deleted` 归档表镜像），返回 Host 侧元数据。
+ *
+ * `ctx`：可选定义层门禁上下文（`{userId, roles, ...}` 或 `{internal: true}`）。
+ * 门禁策略由 `setMetaPolicy` 配置，默认 Open（全放行，保既有兼容）。
+ * 判决唯一在 core（拒绝抛 `ERR_PERMISSION:` 前缀错误，定义不变）。
+ */
+function register(defn, ctx) {
+  core.registerWithCtx(_toCoreDefn(defn), ctx ?? null);
 
   // 计算列回调：fn → core 回调桥；asyncFn → Host 侧映射
   const computes = {};
@@ -92,7 +98,7 @@ function register(defn) {
       // 归档表与原表同 (source, namespace)
       datasource: defn.datasource || null,
       namespace: defn.namespace || null,
-    });
+    }, ctx);
   }
 
   return _schemas[defn.name];
@@ -142,6 +148,14 @@ function setUnconfiguredPolicy(policy) {
   core.setUnconfiguredPolicy(policy);
 }
 
+/**
+ * 定义层门禁策略：`closed=true` 时仅 internal 或 `roles` 白名单可注册/覆盖。
+ * 判决唯一在 core；默认 Open（`register` 无 ctx 亦放行，保既有兼容）。
+ */
+function setMetaPolicy(closed, roles) {
+  core.setMetaPolicy(Boolean(closed), roles);
+}
+
 /** 「上下文强制」开关当前值（对齐 py_store.schema.require_context） */
 function requireContext() {
   return core.requireContext();
@@ -178,6 +192,7 @@ module.exports = {
   setExemptRoles,
   setDenyWriteRoles,
   setUnconfiguredPolicy,
+  setMetaPolicy,
   setProfile,
   getProfile,
   getAsyncFn,
