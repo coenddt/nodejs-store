@@ -58,6 +58,11 @@ class Store {
     return schema.list();
   }
 
+  /** 公开回调注入：`fnRef → impl(item, ctx)`（对齐 py-store store.set_fn） */
+  setFn(fnRef, impl) {
+    return schema.setFn(fnRef, impl);
+  }
+
   // ── CRUD ──
   /**
    * GQL 查询。`routeOverride`（可选）：`{ source?, namespace? }` 多租户路由，

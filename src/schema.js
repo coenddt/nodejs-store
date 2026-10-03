@@ -26,6 +26,9 @@ const _schemas = Object.create(null);
 // asyncFn 计算列回调映射（fnRef → 原生异步函数）
 const _asyncFns = Object.create(null);
 
+// 已注入实现的 fnRef 集合（A3：启动期缺实现校验用；进程级状态）
+const _fnRefs = new Set();
+
 /** 生成可跨 FFI 的 schema 定义：fn/asyncFn → true 占位；函数型值剔除 */
 function _toCoreDefn(defn) {
   return JSON.parse(JSON.stringify(defn, (key, value) => {
@@ -221,6 +224,20 @@ function getAsyncFn(fnRef) {
   return _asyncFns[fnRef];
 }
 
+/**
+ * 公开回调注入：`fnRef → impl(item, ctx)`（对齐 py_store.schema.set_fn）。
+ * 与 register 内 `core.setFn` 同语义：impl 返回值 `undefined` 归一为 `null`（FFI 契约）。
+ */
+function setFn(fnRef, impl) {
+  if (typeof fnRef !== 'string' || !fnRef) throw new Error('ERR_FN_REF:fnRef 须为非空字符串');
+  if (typeof impl !== 'function') throw new Error('ERR_FN_IMPL:impl 须为函数');
+  core.setFn(fnRef, (item, ctx) => {
+    const r = impl(item, ctx);
+    return r === undefined ? null : r;
+  });
+  _fnRefs.add(fnRef);
+}
+
 module.exports = {
   core,
   register,
@@ -236,6 +253,7 @@ module.exports = {
   setProfile,
   getProfile,
   getAsyncFn,
+  setFn,
   // 内建定义持久化（metadef.js）复用：与 py_store.schema._to_core_defn 同构（函数值剔除）
   _toCoreDefn,
 };
