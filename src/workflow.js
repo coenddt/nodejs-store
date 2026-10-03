@@ -293,6 +293,63 @@ function validateDefn(defn) {
 }
 
 /**
+ * 注册期「只校验不绑参」可规划性校验 → 错误列表（空 = 通过）。纯内存、无 IO、无参数值绑定。
+ *
+ * ① 结构性可规划：对每个 query 步骤的 gql，调用 core 规划门面 `_core.buildPipeline(gql, {}, null)`
+ *    （params 传 {} = 不绑参；ctx 传 null = 不引入调用点上下文）。parse / model / 关系 /
+ *    `$pipeline` / 递归深度任一不可规划 → core 抛错，此处汇聚成注册期错误。
+ * ② 参数键完整：返回体 `ast` 暴露 `params`（槽位→@key，含嵌套关系，见 core `pipeline/ast.rs`）；
+ *    gql 引用的每个 `@key` 须在 step.params 顶层存在——缺键在运行期会被静默丢弃（条件失效）。
+ *
+ * 与 `validateDefn`（纯函数、只做结构白名单）分职：本函数需要 core 注册表，故独立、不入 validateDefn。
+ */
+function _collectParamKeys(v, out = new Set()) {
+  if (Array.isArray(v)) {
+    v.forEach((x) => _collectParamKeys(x, out));
+    return out;
+  }
+  if (v && typeof v === 'object') {
+    const p = v.params;
+    if (p && typeof p === 'object' && !Array.isArray(p)) {
+      // core `ast.params` 的值为 `@key` 形态（含前导 @，实测 core parse.rs 保留 ref 原值）；
+      // 归一化去掉前导 @，使错误文案为 `@c0` 而非 `@@c0`。
+      for (const k of Object.values(p)) {
+        if (typeof k === 'string' && k) out.add(k.startsWith('@') ? k.slice(1) : k);
+      }
+    }
+    Object.values(v).forEach((x) => _collectParamKeys(x, out));
+  }
+  return out;
+}
+
+function validatePlanable(defn) {
+  const errors = [];
+  const steps = defn && Array.isArray(defn.steps) ? defn.steps : null;
+  if (!steps) return errors;
+  steps.forEach((step, i) => {
+    if (!step || step.op !== 'query' || typeof step.gql !== 'string') return;
+    const where = `steps[${i}]`;
+    let built;
+    try {
+      built = _core.buildPipeline(step.gql, {}, null);
+    } catch (e) {
+      errors.push(`${where}: gql 不可规划: ${e && e.message ? e.message : String(e)}`);
+      return;
+    }
+    const p = step.params;
+    const provided = new Set(
+      p && typeof p === 'object' && !Array.isArray(p) ? Object.keys(p) : [],
+    );
+    for (const key of [..._collectParamKeys(built && built.ast)].sort()) {
+      if (!provided.has(key)) {
+        errors.push(`${where}: gql 引用了未提供的参数 @${key}（params 须提供该键）`);
+      }
+    }
+  });
+  return errors;
+}
+
+/**
  * when → {op, paramKey}；无歧义文法：含 exists 键即 op=exists（is 作参数键），
  * 其余算子的右值键统一 than（is 键已被 exists 参数占用；is/eq 算子同用 than）
  */
@@ -345,6 +402,11 @@ function register(defn, ctx) {
   }
   const errors = validateDefn(defn);
   if (errors.length) throw new WorkflowError(`WORKFLOW_UNSUPPORTED: ${errors.join('；')}`);
+  // B1：注册期「只校验不绑参」可规划性（结构 + 参数键完整）；独立于纯函数 validateDefn
+  const planErrors = validatePlanable(defn);
+  if (planErrors.length) {
+    throw new WorkflowError(`WORKFLOW_UNSUPPORTED: ${planErrors.join('；')}`);
+  }
   const name = defn.name;
   if (_workflows.has(name)) {
     if (_workflows.get(name) === defn) return defn;
@@ -730,6 +792,7 @@ module.exports = {
   WorkflowError,
   ensureBuiltin,
   validateDefn,
+  validatePlanable,
   register,
   get,
   list,
