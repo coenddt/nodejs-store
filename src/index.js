@@ -280,9 +280,9 @@ class Store {
   }
 
   // ── 工作流编排（首批：线性 + when 守卫 + fail-fast；见 workflow.js 与设计文档）──
-  /** 注册工作流定义（注册即静态校验，白名单外显式 Err 含 WORKFLOW_UNSUPPORTED） */
-  registerWorkflow(defn) {
-    return workflow.register(defn);
+  /** 注册工作流定义（可选 `ctx` 过定义层门禁；默认 Open。白名单外显式 Err 含 WORKFLOW_UNSUPPORTED） */
+  registerWorkflow(defn, ctx) {
+    return workflow.register(defn, ctx);
   }
 
   /** 全部可见工作流名（read 白名单过滤） */
