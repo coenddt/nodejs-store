@@ -330,10 +330,19 @@ const _workflows = new Map();
 
 /** 注册工作流定义（注册即静态校验，白名单外显式 Err；name 全局唯一）。
  *
+ * `ctx`：可选定义层门禁上下文（`{internal: true}` / `{roles: [...]}`）。判决唯一在 core
+ * （`_core.canRegister`，与 schema.register 同一 MetaPolicy）；默认 Open → 全放行。
+ * Closed 且 ctx 不过 → 抛 `ERR_PERMISSION:`（定义不写入）。
+ *
  * 同名同形重复注册幂等通过（对齐 core schema.register 的复跑语义——场景 harness
  * 每后端复跑同一批用例时必须可重入）；同名异形显式 Err（禁止静默覆盖已注册定义）。
  */
-function register(defn) {
+function register(defn, ctx) {
+  // 定义层门禁：判决先于静态校验（拒绝即返回，零副作用；与 schema.register_with_ctx 同序）
+  if (!_core.canRegister(ctx ?? null)) {
+    const name = defn && defn.name ? defn.name : '';
+    throw new WorkflowError(`ERR_PERMISSION: 无权注册或覆盖工作流定义 ${name}`);
+  }
   const errors = validateDefn(defn);
   if (errors.length) throw new WorkflowError(`WORKFLOW_UNSUPPORTED: ${errors.join('；')}`);
   const name = defn.name;
