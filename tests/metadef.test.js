@@ -38,6 +38,11 @@ async function runWf(body) {
   const db = new Database(':memory:');
   db.exec(String(ddl.generate('sqlite', ['__workflowDef'])));
   await init({ default: executors.createConnection('sqlite', db) });
+  // B1 前置：wfDefn 默认 gql `Item(){ _id }` 引用 Item，注册期可规划性校验要求其已注册。
+  store.register({
+    name: 'Item', collection: 'items', idPrefix: 'it',
+    fields: { _id: { type: 'string' }, title: { type: 'string' } },
+  });
   try {
     return await body();
   } finally {
@@ -210,6 +215,11 @@ test('A3：宿主 restoreDefs 同时重建 schema 与 workflow 两类', async ()
   db.exec(String(ddl.generate('sqlite', ['__schemaDef', '__workflowDef'])));
   await init({ default: executors.createConnection('sqlite', db) });
   try {
+    // B1 前置：HostWf 的 gql `Item(){ _id }` 引用 Item，注册期可规划性校验要求其已注册。
+    store.register({
+      name: 'Item', collection: 'items', idPrefix: 'it',
+      fields: { _id: { type: 'string' }, title: { type: 'string' } },
+    });
     const o = { tenant: 't9', env: 'dev' };
     await store.persistDef({ name: 'HostItem', fields: { _id: { type: 'string' } } }, o);
     await store.persistWorkflowDef(wfDefn('HostWf'), o);
