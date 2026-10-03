@@ -24,6 +24,9 @@ let _meta = { tenant: '', env: '' };
 // 落库失败累计计数（进程级；>0 表示有事件未入表——可观测，不静默）
 let _failCount = 0;
 
+// 在途落库 Promise（进程级；graceful shutdown 前经 flush() 收口，消除 fire-and-forget 丢事件窗口 D8）
+const _pending = new Set();
+
 /** 注册反馈事件回调 `fn(event)`；传 null/非函数恢复默认 stderr 行为 */
 function setSink(fn) {
   _sink = typeof fn === 'function' ? fn : null;
@@ -63,11 +66,29 @@ function enableFeedbackTable(store) {
   const prev = getSink();
   setSink((event) => {
     const row = { ...(event || {}), tenant: _meta.tenant || '', env: _meta.env || '', now: Date.now() };
-    Promise.resolve(metadef._runInternal(() => store.insert('__feedback', row))).catch((e) => {
-      _fail(`__feedback 落库失败: ${e && e.message ? e.message : e}`);
-    });
+    // 在途跟踪：panic 前 flush() 可等待；失败仍走 stderr + 计数（不抛回 emit）
+    const p = Promise.resolve(metadef._runInternal(() => store.insert('__feedback', row)))
+      .catch((e) => {
+        _fail(`__feedback 落库失败: ${e && e.message ? e.message : e}`);
+      })
+      .finally(() => { _pending.delete(p); });
+    _pending.add(p);
   });
-  return () => setSink(prev);
+  // disposer：先恢复原 sink（后续 emit 不再入本库），再等待在途落库收口
+  return async () => {
+    setSink(prev);
+    await flush();
+  };
+}
+
+/**
+ * 等待全部在途 `__feedback` 落库完成（graceful shutdown 前调用）。
+ * 落库失败已由 sink 内 catch 计为 failCount（不抛回），故此处永不 reject。
+ */
+async function flush() {
+  while (_pending.size) {
+    await Promise.all([..._pending]);
+  }
 }
 
 /** 产出一条反馈事件：有 sink 回调之；否则打印 stderr（允许拦截，禁止静默） */
@@ -83,4 +104,4 @@ function emit(event) {
   );
 }
 
-module.exports = { setSink, getSink, emit, setMeta, enableFeedbackTable, failCount };
+module.exports = { setSink, getSink, emit, setMeta, enableFeedbackTable, failCount, flush };

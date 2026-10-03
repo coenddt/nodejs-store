@@ -280,6 +280,11 @@ class Store {
     return feedback.setMeta(meta);
   }
 
+  /** 等待全部在途 __feedback 落库完成（graceful shutdown 前调用；对齐 py store.flushFeedback） */
+  flushFeedback() {
+    return feedback.flush();
+  }
+
   // ── 缓存状态注记（B6；见 cache.js）──
   /** 注册缓存状态 provider：`x-cache` 注记位唯一取值来源；未注册恒 BYPASS（本轮不实现缓存） */
   setCacheStatus(fn) {
