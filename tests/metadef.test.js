@@ -33,6 +33,23 @@ async function run(body) {
   }
 }
 
+/** 建内存库 + 建内建 `__workflowDef` 表 → init → 执行 body（workflow 定义用） */
+async function runWf(body) {
+  const db = new Database(':memory:');
+  db.exec(String(ddl.generate('sqlite', ['__workflowDef'])));
+  await init({ default: executors.createConnection('sqlite', db) });
+  try {
+    return await body();
+  } finally {
+    db.close();
+  }
+}
+
+/** 最小合法 workflow defn（注册期白名单通过；gql 内容不参与注册期校验） */
+function wfDefn(name, gql = 'Item(){ _id }') {
+  return { name, steps: [{ op: 'query', as: 'a', gql }] };
+}
+
 test('defId：自然键 (tenant,env,name,version)（对齐 py def_id）', () => {
   assert.equal(md.defId('t1', 'dev', 'Item', 2), `t1${_US}dev${_US}Item${_US}2`);
   assert.equal(md.defId(null, null, 'Item', 1), `${_US}${_US}Item${_US}1`);
@@ -122,4 +139,88 @@ test('D21：rollback 以历史 defn 追加新版本 → restoreDefs 按历史 de
     assert.equal(out.applied, 1);
     assert.equal('price' in store.get('RbItem').fields, false); // 协议面按历史 defn 装配
   });
+});
+
+// ─── workflow 定义持久化（kind=workflow，落 __workflowDef；审计 §8 N1）───────
+
+test('workflow：persist 同名同形幂等 + 异形 version+1 + list version desc', async () => {
+  await runWf(async () => {
+    const o = { tenant: 't6', env: 'dev', kind: 'workflow' };
+    const w1 = wfDefn('WfPersist');
+    const w2 = wfDefn('WfPersist', 'Item(){ _id title }');
+    const r1 = await md.persistDef(store, w1, o);
+    assert.equal(r1.version, 1);
+    const again = await md.persistDef(store, w1, o);
+    assert.equal(again.version, 1); // 同名同形 → 幂等不新增
+    const r2 = await md.persistDef(store, w2, o);
+    assert.equal(r2.version, 2); // 异形 → version+1
+
+    const rows = await md.listDefs(store, { tenant: 't6', env: 'dev', name: 'WfPersist', kind: 'workflow' });
+    assert.deepEqual(rows.map((r) => r.version), [2, 1]); // version desc
+    assert.equal(rows[0]._id, md.defId('t6', 'dev', 'WfPersist', 2)); // 自然键
+  });
+});
+
+test('workflow：loadDefs 取各 name 最新 active', async () => {
+  await runWf(async () => {
+    const o = { tenant: 't7', env: 'dev', kind: 'workflow' };
+    await md.persistDef(store, wfDefn('WfLoad'), o);
+    await md.persistDef(store, wfDefn('WfLoad', 'Item(){ _id title }'), o);
+    await md.persistDef(store, { name: 'WfOther', steps: [{ op: 'fail', message: 'x' }] }, o);
+    const rows = await md.loadDefs(store, o);
+    const byName = Object.fromEntries(rows.map((r) => [r.name, r.version]));
+    assert.deepEqual(byName, { WfLoad: 2, WfOther: 1 });
+  });
+});
+
+test('workflow：restoreDefs(kind=workflow) 重建 workflow 注册表（幂等）', async () => {
+  await runWf(async () => {
+    const o = { tenant: 't8', env: 'dev' };
+    await md.persistDef(store, wfDefn('WfRestore'), { ...o, kind: 'workflow' });
+    assert.equal(store.workflows().includes('WfRestore'), false); // 落库未注册
+
+    const out = await md.restoreDefs(store, { ...o, kind: 'workflow' });
+    assert.equal(out.applied, 1);
+    assert.equal(store.workflows().includes('WfRestore'), true); // 重建后可见
+
+    const out2 = await md.restoreDefs(store, { ...o, kind: 'workflow' });
+    assert.equal(out2.applied, 0); // 同版本幂等
+  });
+});
+
+test('workflow：rollbackTo 追加式 → loadDefs 按历史 defn，本进程重注册', async () => {
+  await runWf(async () => {
+    const o = { tenant: 't10', env: 'dev', kind: 'workflow' };
+    const v1 = wfDefn('WfRb');
+    const v2 = wfDefn('WfRb', 'Item(){ _id title }');
+    await md.persistDef(store, v1, o);
+    await md.persistDef(store, v2, o);
+    const rb = await md.rollbackTo(store, { tenant: 't10', env: 'dev', name: 'WfRb', version: 1, kind: 'workflow' });
+    assert.equal(rb.version, 3); // 追加式：回滚 = 以 v1 defn 追加 v3
+    assert.deepEqual(rb.defn, v1);
+    const latest = await md.loadDefs(store, o);
+    assert.equal(latest[0].version, 3);
+    assert.deepEqual(latest[0].defn, v1);
+    assert.equal(store.getWorkflow('WfRb').steps[0].gql, 'Item(){ _id }'); // 本进程重注册为 v1
+  });
+});
+
+test('A3：宿主 restoreDefs 同时重建 schema 与 workflow 两类', async () => {
+  const db = new Database(':memory:');
+  db.exec(String(ddl.generate('sqlite', ['__schemaDef', '__workflowDef'])));
+  await init({ default: executors.createConnection('sqlite', db) });
+  try {
+    const o = { tenant: 't9', env: 'dev' };
+    await store.persistDef({ name: 'HostItem', fields: { _id: { type: 'string' } } }, o);
+    await store.persistWorkflowDef(wfDefn('HostWf'), o);
+    assert.equal(store.has('HostItem'), false);
+    assert.equal(store.workflows().includes('HostWf'), false);
+
+    const out = await store.restoreDefs(o);
+    assert.equal(out.applied, 2); // 一次调用重建两类
+    assert.equal(store.has('HostItem'), true);
+    assert.equal(store.workflows().includes('HostWf'), true);
+  } finally {
+    db.close();
+  }
 });
