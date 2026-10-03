@@ -93,3 +93,33 @@ test('D1：版本变化时 restoreDefs 以新 defn 覆盖注册', async () => {
     assert.equal(new Set(names).size, names.length); // 去重：不出现重复名（否则协议皮路由重复）
   });
 });
+
+test('D21：rollback 以历史 defn 追加新版本 → restoreDefs 按历史 defn 装配（跨进程闭环）', async () => {
+  await run(async () => {
+    const v1 = { name: 'RbItem', fields: { _id: { type: 'string' }, title: { type: 'string' } } };
+    const v2 = {
+      name: 'RbItem',
+      fields: { _id: { type: 'string' }, title: { type: 'string' }, price: { type: 'number' } },
+    };
+    const o = { tenant: 't5', env: 'dev' };
+    await md.persistDef(store, v1, o);
+    await md.restoreDefs(store, o); // 网关首次 hydrate → v1
+    await md.persistDef(store, v2, o);
+    await md.restoreDefs(store, o); // 网关再次 hydrate → v2
+    assert.equal('price' in store.get('RbItem').fields, true);
+
+    // 控制面回滚到 v1 → 追加式落新版本行
+    const rb = await md.rollbackTo(store, { tenant: 't5', env: 'dev', name: 'RbItem', version: 1 });
+    assert.equal(rb.version, 3); // 追加式：回滚 = 以 v1 defn 追加 v3
+    assert.deepEqual(rb.defn, v1);
+
+    // 网关新一次 reload：loadDefs 返回回滚后的最新行（defn=v1），新自然键 → applied
+    const latest = await md.loadDefs(store, o);
+    assert.equal(latest.length, 1);
+    assert.equal(latest[0].version, 3);
+    assert.deepEqual(latest[0].defn, v1);
+    const out = await md.restoreDefs(store, o);
+    assert.equal(out.applied, 1);
+    assert.equal('price' in store.get('RbItem').fields, false); // 协议面按历史 defn 装配
+  });
+});
