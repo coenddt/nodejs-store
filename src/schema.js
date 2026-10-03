@@ -238,6 +238,26 @@ function setFn(fnRef, impl) {
   _fnRefs.add(fnRef);
 }
 
+/**
+ * 启动期校验：纯 JSON 定义里声明的 fnRef 必须都有实现；缺则显式抛错（不静默）。
+ * 关系聚合（`val.agg`）由框架处理，无需回调，跳过。
+ */
+function assertFnsCovered(defns) {
+  const missing = [];
+  for (const defn of defns || []) {
+    for (const [key, val] of Object.entries((defn && defn.computes) || {})) {
+      if (val && val.agg) continue;                 // 关系聚合由框架处理，无需回调
+      const ref = (val && val.fnRef) || key;
+      if (!_fnRefs.has(ref)) missing.push(ref);
+    }
+  }
+  if (missing.length) {
+    const err = new Error(`ERR_FN_MISSING:未注入回调实现 ${missing.join(', ')}`);
+    err.code = 'ERR_FN_MISSING';
+    throw err;
+  }
+}
+
 module.exports = {
   core,
   register,
@@ -254,6 +274,7 @@ module.exports = {
   getProfile,
   getAsyncFn,
   setFn,
+  assertFnsCovered,
   // 内建定义持久化（metadef.js）复用：与 py_store.schema._to_core_defn 同构（函数值剔除）
   _toCoreDefn,
 };

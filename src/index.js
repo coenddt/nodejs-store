@@ -35,6 +35,7 @@ const metadef = require('./metadef');
 const permission = require('./permission');
 const { text2query } = require('./profile');
 const schema = require('./schema');
+const { setFn, assertFnsCovered } = schema;
 const { syncSchema } = require('./sync');
 const workflow = require('./workflow');
 const { createApp } = require('./bootstrap');
@@ -61,6 +62,11 @@ class Store {
   /** 公开回调注入：`fnRef → impl(item, ctx)`（对齐 py-store store.set_fn） */
   setFn(fnRef, impl) {
     return schema.setFn(fnRef, impl);
+  }
+
+  /** 启动期校验：定义声明的 fnRef 必须都有实现，缺则抛 `ERR_FN_MISSING`（对齐 py-store store.assert_fns_covered） */
+  assertFnsCovered(defns) {
+    return schema.assertFnsCovered(defns);
   }
 
   // ── CRUD ──
@@ -557,6 +563,8 @@ module.exports = {
   store,
   Store,
   createApp,
+  setFn,
+  assertFnsCovered,
   text2query,
   Session,
   NonAtomicWriteError,
