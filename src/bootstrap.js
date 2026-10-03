@@ -14,6 +14,7 @@ async function createApp(cfg) {
   const {
     datasource,          // 必填：传给 init 的数据源（Mongo db 实例或 {default: ...} 配置）
     schemas = [],        // 定义数组（纯 JSON；每项即 register 的入参）
+    fns = {},            // 可选：回调实现 `{ fnRef: impl(item, ctx) }`
     ctx = null,          // 可选：定义层门禁上下文
     skins = null,        // 可选：store-gateway-node 的 opts（null 则不起协议面）
     reload = null,       // 可选：{ tenant, env }，透传给 gateway
@@ -22,6 +23,8 @@ async function createApp(cfg) {
 
   await init(datasource);
   for (const defn of schemas) store.register(defn, ctx);
+  for (const [ref, impl] of Object.entries(fns)) store.setFn(ref, impl);
+  store.assertFnsCovered(schemas);        // A3：缺实现即抛，进程不启动
 
   let gateway = null;
   if (skins) {
