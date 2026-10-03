@@ -21,7 +21,12 @@ const _WORKFLOW_DEF = '__workflowDef';
 // 读取投影（双端一致；对拍比较用）
 const _DEF_FIELDS = '_id, tenant, env, name, version, defn, status, createdBy';
 
-/** 内建定义表 schema（write 显式空名单：普通角色禁写，防篡改定义审计） */
+/**
+ * 内建定义表 schema（write 显式空名单：普通角色禁写，防篡改定义审计）
+ *
+ * `(tenant, env, name, version)` 唯一索引：并发写同版本由存储层显式报冲突
+ * （§4.4；禁静默覆盖，不重试）。
+ */
 function _defModel(name, idPrefix) {
   return {
     name,
@@ -39,6 +44,9 @@ function _defModel(name, idPrefix) {
       status: { type: 'string' },
       createdBy: { type: 'string' },
     },
+    indexes: [
+      { keys: { tenant: 1, env: 1, name: 1, version: 1 }, unique: true },
+    ],
   };
 }
 
