@@ -181,4 +181,6 @@ module.exports = {
   setProfile,
   getProfile,
   getAsyncFn,
+  // 内建定义持久化（metadef.js）复用：与 py_store.schema._to_core_defn 同构（函数值剔除）
+  _toCoreDefn,
 };
