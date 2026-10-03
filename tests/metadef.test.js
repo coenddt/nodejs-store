@@ -224,3 +224,38 @@ test('A3：宿主 restoreDefs 同时重建 schema 与 workflow 两类', async ()
     db.close();
   }
 });
+
+test('workflow：Closed 门禁下 restoreDefs 仍走 internal 重建', async () => {
+  await runWf(async () => {
+    const o = { tenant: 't11', env: 'dev', kind: 'workflow' };
+    await md.persistDef(store, wfDefn('WfRestoreGate'), o);
+
+    store.setMetaPolicy(true, []);
+    try {
+      const out = await md.restoreDefs(store, { ...o });
+      assert.equal(out.applied, 1);
+      assert.equal(store.workflows().includes('WfRestoreGate'), true); // Closed 下仍重建（internal）
+    } finally {
+      store.setMetaPolicy(false, []);
+      require('../src/workflow')._workflows.delete('WfRestoreGate');
+    }
+  });
+});
+
+test('workflow：Closed 门禁下 rollbackTo 仍走 internal 重建', async () => {
+  await runWf(async () => {
+    const o = { tenant: 't11', env: 'dev', kind: 'workflow' };
+    await md.persistDef(store, wfDefn('WfRbGate'), o);
+    await md.persistDef(store, wfDefn('WfRbGate', 'Item(){ _id title }'), o);
+
+    store.setMetaPolicy(true, []);
+    try {
+      const rb = await md.rollbackTo(store, { tenant: 't11', env: 'dev', name: 'WfRbGate', version: 1, kind: 'workflow' });
+      assert.equal(rb.version, 3); // 追加式
+      assert.equal(store.getWorkflow('WfRbGate').steps[0].gql, 'Item(){ _id }'); // Closed 下仍重建（internal）
+    } finally {
+      store.setMetaPolicy(false, []);
+      require('../src/workflow')._workflows.delete('WfRbGate');
+    }
+  });
+});

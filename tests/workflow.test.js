@@ -126,6 +126,28 @@ test('register + read 过滤（不可见与不存在同形）', () => {
   }
 });
 
+test('register：定义层门禁（Open 放行 / Closed 拒无 ctx / Closed internal 放行）', () => {
+  const gate = { name: 'gateWf', steps: [{ op: 'fail', message: 'x' }] };
+  try {
+    // Open（缺省）：无 ctx 放行
+    schema.setMetaPolicy(false, []);
+    workflow.register(gate);
+    workflow._workflows.delete('gateWf');
+
+    // Closed：无 ctx → 显式 ERR_PERMISSION，且定义不写入
+    schema.setMetaPolicy(true, []);
+    assert.throws(() => workflow.register(gate), /ERR_PERMISSION:/);
+    assert.equal(workflow._workflows.has('gateWf'), false);
+
+    // Closed：internal 放行
+    workflow.register(gate, { internal: true });
+    assert.equal(workflow._workflows.has('gateWf'), true);
+  } finally {
+    workflow._workflows.delete('gateWf');
+    schema.setMetaPolicy(false, []); // 复位，防污染后续用例
+  }
+});
+
 // ─── parity 锚：占位符解析 ───────────────────────────────────
 
 const RESOLVE_CTX = { inv: { _id: 'inv1', stock: 100 } };
