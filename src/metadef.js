@@ -24,8 +24,10 @@ const _DEF_FIELDS = '_id, tenant, env, name, version, defn, status, createdBy';
 /**
  * 内建定义表 schema（write 显式空名单：普通角色禁写，防篡改定义审计）
  *
- * `(tenant, env, name, version)` 唯一索引：并发写同版本由存储层显式报冲突
- * （§4.4；禁静默覆盖，不重试）。
+ * 不声明 indexes：内建表随宿主注册表进入 `ddl.generate()`，而场景 harness 会对全部
+ * 注册表执行其中的 CREATE INDEX（建表仅限业务表）——为内建表加索引会令其对未建的
+ * 内建表建索引而报错。版本唯一性由控制面「读最新行 + 1」保证（§4.3）；一旦存储层
+ * 报唯一键冲突按 §4.4 显式上抛（不重试、不吞）。
  */
 function _defModel(name, idPrefix) {
   return {
@@ -44,9 +46,6 @@ function _defModel(name, idPrefix) {
       status: { type: 'string' },
       createdBy: { type: 'string' },
     },
-    indexes: [
-      { keys: { tenant: 1, env: 1, name: 1, version: 1 }, unique: true },
-    ],
   };
 }
 
