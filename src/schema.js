@@ -23,11 +23,26 @@ const _dupSignatures = new Set();
 // Host 侧元数据镜像
 const _schemas = Object.create(null);
 
-// asyncFn 计算列回调映射（fnRef → 原生异步函数）
+// asyncFn 计算列回调映射（coreKey → 原生异步函数）
 const _asyncFns = Object.create(null);
 
-// 已注入实现的 fnRef 集合（A3：启动期缺实现校验用；进程级状态）
-const _fnRefs = new Set();
+// L2 实现池：归一 key → { name, impl }（§8.2 匹配靠归一；禁静默覆盖）
+const _fnImpls = new Map();
+
+/** 归一 key：两侧都归一到 token 序列后 join（用 core 透出算法，禁宿主自实现） */
+function _normKey(name) {
+  return native.canonical(String(name)).join('');
+}
+
+/** 逻辑 fnRef（默认 `<schema.name>.<计算列key>`，§6.5） */
+function _logicalFnRef(schemaName, key, comp) {
+  return (comp && comp.fnRef) || `${schemaName}.${key}`;
+}
+
+/** core 侧回调查找键（保持 core 既有语义：显式 fnRef 优先，否则 key；cache.rs:47） */
+function _coreFnKey(key, comp) {
+  return (comp && comp.fnRef) || key;
+}
 
 /** 生成可跨 FFI 的 schema 定义：fn/asyncFn → true 占位；函数型值剔除 */
 function _toCoreDefn(defn) {
@@ -53,18 +68,20 @@ function register(defn, ctx) {
   // 计算列回调：fn → core 回调桥；asyncFn → Host 侧映射
   const computes = {};
   for (const [key, val] of Object.entries(defn.computes || {})) {
-    const fnRef = val.fnRef || key;
-    if (val.fn) {
+    const coreKey = _coreFnKey(key, val);          // core 查找键（本步不改 core 语义）
+    // 注2：仅「函数」才走内嵌绑定；纯 JSON `"fn": true`（boolean）不在此绑定，
+    //      由 assertFnsCovered 从 L2 实现池解析绑定（否则会绑定出坏回调）。
+    if (typeof val.fn === 'function') {
       const userFn = val.fn;
       // FFI 边界契约：JS `undefined` 无法表示为 JSON 值（core 回调桥 SyncFnBridge
       // 对 fn 返回值做 serde 序列化，undefined 即 InvalidArg）；归一为 null——
       // 与 py 侧 lambda 返回 None → null 同语义，非错误兜底
-      core.setFn(fnRef, (item, ctx) => {
+      core.setFn(coreKey, (item, ctx) => {
         const r = userFn(item, ctx);
         return r === undefined ? null : r;
       });
     }
-    if (val.asyncFn) _asyncFns[fnRef] = val.asyncFn;
+    if (typeof val.asyncFn === 'function') _asyncFns[coreKey] = val.asyncFn;
     // 镜像保留声明元数据（对齐 py_store.schema.register）：agg 形态与 read 白名单
     // 供 AI 摘要（ask.describeForAi）等消费者读取；可执行物（fn/asyncFn）不入镜像
     // （执行判决唯一在 core 规划 + Host 尾处理）
@@ -72,7 +89,7 @@ function register(defn, ctx) {
     for (const k of ['type', 'depends', 'agg', 'read']) {
       if (k in val) meta[k] = val[k];
     }
-    meta.fnRef = fnRef;
+    meta.fnRef = _logicalFnRef(defn.name, key, val);   // 逻辑 ref（默认 <name>.<key>）
     computes[key] = meta;
   }
 
@@ -223,36 +240,54 @@ function getProfile() {
   return core.profile();
 }
 
-/** 取 asyncFn 计算列实现（fnRef 缺省 = 计算列 key 名） */
+/** 取 asyncFn 计算列实现（入参为 core 侧 fnRefs 查找键，即 coreKey） */
 function getAsyncFn(fnRef) {
   return _asyncFns[fnRef];
 }
 
 /**
- * 公开回调注入：`fnRef → impl(item, ctx)`（对齐 py_store.schema.set_fn）。
- * 与 register 内 `core.setFn` 同语义：impl 返回值 `undefined` 归一为 `null`（FFI 契约）。
+ * 公开回调注入：`implName → impl(item, ctx)`（来自 L2 包扁平字典）。
+ * 实现名与 schema 逻辑 fnRef 由 `_normKey` 归一后匹配（§6.5）；
+ * 归一后重复 ⇒ 显式报错（禁静默覆盖）。绑定 core 由 `assertFnsCovered` 统一完成。
  */
-function setFn(fnRef, impl) {
-  if (typeof fnRef !== 'string' || !fnRef) throw new Error('ERR_FN_REF:fnRef 须为非空字符串');
+function setFn(implName, impl) {
+  if (typeof implName !== 'string' || !implName) throw new Error('ERR_FN_REF:implName 须为非空字符串');
   if (typeof impl !== 'function') throw new Error('ERR_FN_IMPL:impl 须为函数');
-  core.setFn(fnRef, (item, ctx) => {
-    const r = impl(item, ctx);
-    return r === undefined ? null : r;
-  });
-  _fnRefs.add(fnRef);
+  const k = _normKey(implName);
+  const prev = _fnImpls.get(k);
+  if (prev && prev.name !== implName) {
+    throw new Error(`ERR_FN_CONFLICT:实现名 "${implName}" 与 "${prev.name}" 归一后相同（${k}）`);
+  }
+  _fnImpls.set(k, { name: implName, impl });
 }
 
 /**
- * 启动期校验：纯 JSON 定义里声明的 fnRef 必须都有实现；缺则显式抛错（不静默）。
+ * 启动期：解析每个回调计算列的实现并绑定 core；缺实现 ⇒ 显式抛 `ERR_FN_MISSING`（不静默）。
  * 关系聚合（`val.agg`）由框架处理，无需回调，跳过。
  */
+function _bindOne(schemaName, key, comp) {
+  const embedded = comp && (comp.fn || comp.asyncFn);
+  const impl = (typeof embedded === 'function')
+    ? embedded
+    : (_fnImpls.get(_normKey(_logicalFnRef(schemaName, key, comp))) || {}).impl;
+  if (typeof impl !== 'function') return false;
+  const coreKey = _coreFnKey(key, comp);
+  if (comp.fn) {
+    core.setFn(coreKey, (item, ctx) => {
+      const r = impl(item, ctx);
+      return r === undefined ? null : r;
+    });
+  }
+  if (comp.asyncFn) _asyncFns[coreKey] = impl;
+  return true;
+}
+
 function assertFnsCovered(defns) {
   const missing = [];
   for (const defn of defns || []) {
     for (const [key, val] of Object.entries((defn && defn.computes) || {})) {
       if (val && val.agg) continue;                 // 关系聚合由框架处理，无需回调
-      const ref = (val && val.fnRef) || key;
-      if (!_fnRefs.has(ref)) missing.push(ref);
+      if (!_bindOne(defn.name, key, val)) missing.push(_logicalFnRef(defn.name, key, val));
     }
   }
   if (missing.length) {
