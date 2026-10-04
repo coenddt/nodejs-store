@@ -44,6 +44,22 @@ function _coreFnKey(key, comp) {
   return (comp && comp.fnRef) || key;
 }
 
+/**
+ * 单条 defn 的落点注入（Location）。
+ *
+ * 发布契约是「定义零落点」；但**既有** defn 仍可能带 `datasource`/`database`/`schema`
+ * （多源路由的历史写法）。01 起 core 不再解析定义内落点字段 ⇒ 本层把它们**显式**注入
+ * `Location`（与 06 装载器 / 07 federation 夹具的落点注入同构），否则 `source` 恒为
+ * `default`、多源路由失效。缺省（无 `datasource`）⇒ `default`。
+ */
+function _locOf(defn) {
+  return {
+    source: (defn && defn.datasource) || null,
+    database: (defn && defn.database) || null,
+    schema: (defn && defn.schema) || null,
+  };
+}
+
 /** 生成可跨 FFI 的 schema 定义：fn/asyncFn → true 占位；函数型值剔除 */
 function _toCoreDefn(defn) {
   return JSON.parse(JSON.stringify(defn, (key, value) => {
@@ -63,7 +79,7 @@ function _toCoreDefn(defn) {
  * 判决唯一在 core（拒绝抛 `ERR_PERMISSION:` 前缀错误，定义不变）。
  */
 function register(defn, ctx) {
-  core.registerWithCtx(_toCoreDefn(defn), ctx ?? null);
+  core.registerBatch([{ defn: _toCoreDefn(defn), location: _locOf(defn) }], ctx ?? null);
   return _mirror(defn);
 }
 

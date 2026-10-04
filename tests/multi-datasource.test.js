@@ -142,8 +142,8 @@ test('B1: 两个 Mongo db 实例 source，同名集合 users，各查各库无�
 
 test('B2: 单 MongoClient source，两个 schema 不同 database，各查各库', async () => {
   const client = new FakeClient();
-  client.dbs.tenant_a = new FakeDb({ b2_docs: [{ _id: 't1', tag: 'T-A' }] });
-  client.dbs.tenant_b = new FakeDb({ b2_docs: [{ _id: 't2', tag: 'T-B' }] });
+  client.dbs.tenant_a = new FakeDb({ b2Docs: [{ _id: 't1', tag: 'T-A' }] });
+  client.dbs.tenant_b = new FakeDb({ b2Docs: [{ _id: 't2', tag: 'T-B' }] });
 
   // 同 collection 名，仅靠 database 区分（四元组唯一性由 database 维度保证）
   _sc.register({
@@ -253,7 +253,7 @@ test('B4: 同连接双 database（attached db），各自命中不串表', async
 // ─── B9：旧用法零变更（default source + null database） ─────
 
 test('B9: init(db) + schema 无 datasource/database → source=default、database=null', async () => {
-  const db = new FakeDb({ b9_legacy: [{ _id: 'l1', name: 'legacy' }] });
+  const db = new FakeDb({ b9Legacy: [{ _id: 'l1', name: 'legacy' }] });
   _sc.register({
     name: 'B9Legacy',
     collection: 'b9_legacy',

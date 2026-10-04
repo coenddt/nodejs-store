@@ -124,8 +124,8 @@ async function migrate_widen(h) {
     // 直连 SQL 插 float 行（绕过 core 契约：stock 在 schema 里仍是 int）
     const floatRow = 'VALUES (\'invT4\', \'p1\', \'w9\', 3.5, 1, \'u1\', \',_id,productId,warehouse,stock,warnLine,\')';
     const cols = h.backend === 'mysql'
-      ? '(_id, `productId`, `warehouse`, stock, `warnLine`, `createdBy`, __present)'
-      : '(_id, "productId", "warehouse", stock, "warnLine", "createdBy", __present)';
+      ? '(_id, `product_id`, `warehouse`, stock, `warn_line`, `created_by`, __present)'
+      : '(_id, "product_id", "warehouse", stock, "warn_line", "created_by", __present)';
     const sql = `INSERT INTO inventories ${cols} ${floatRow}`;
     if (h.backend === 'mysql' || h.backend === 'postgres') await h.driver.query(sql);
     else h.driver.exec(sql);

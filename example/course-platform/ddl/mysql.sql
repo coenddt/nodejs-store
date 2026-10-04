@@ -26,9 +26,9 @@ CREATE TABLE users (
   role VARCHAR(255),
   avatar VARCHAR(255),
   profile JSON,
-  createdBy VARCHAR(64),
-  createdAt BIGINT,
-  updatedAt BIGINT,
+  created_by VARCHAR(64),
+  created_at BIGINT,
+  updated_at BIGINT,
   __present VARCHAR(255),
   PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -39,10 +39,10 @@ CREATE TABLE users_deleted (
   role VARCHAR(255),
   avatar VARCHAR(255),
   profile JSON,
-  createdBy VARCHAR(64),
-  createdAt BIGINT,
-  updatedAt BIGINT,
-  deletedAt BIGINT,
+  created_by VARCHAR(64),
+  created_at BIGINT,
+  updated_at BIGINT,
+  deleted_at BIGINT,
   __present VARCHAR(255),
   PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -50,19 +50,19 @@ CREATE TABLE users_deleted (
 CREATE TABLE categories (
   _id VARCHAR(64) NOT NULL,
   name VARCHAR(255),
-  parentId VARCHAR(64),
+  parent_id VARCHAR(64),
   sort INT,
-  createdBy VARCHAR(64),
+  created_by VARCHAR(64),
   __present VARCHAR(255),
   PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE categories_deleted (
   _id VARCHAR(64) NOT NULL,
   name VARCHAR(255),
-  parentId VARCHAR(64),
+  parent_id VARCHAR(64),
   sort INT,
-  createdBy VARCHAR(64),
-  deletedAt BIGINT,
+  created_by VARCHAR(64),
+  deleted_at BIGINT,
   __present VARCHAR(255),
   PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -73,15 +73,15 @@ CREATE TABLE courses (
   summary VARCHAR(255),
   status VARCHAR(64),
   price DOUBLE,
-  enrolledCount INT,
+  enrolled_count INT,
   rating DOUBLE,
   secret VARCHAR(255),
   tags JSON,
   meta JSON,
-  categoryId VARCHAR(64),
-  createdBy VARCHAR(64),
-  createdAt BIGINT,
-  updatedAt BIGINT,
+  category_id VARCHAR(64),
+  created_by VARCHAR(64),
+  created_at BIGINT,
+  updated_at BIGINT,
   __present VARCHAR(255),
   PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -91,108 +91,108 @@ CREATE TABLE courses_deleted (
   summary VARCHAR(255),
   status VARCHAR(64),
   price DOUBLE,
-  enrolledCount INT,
+  enrolled_count INT,
   rating DOUBLE,
   secret VARCHAR(255),
   tags JSON,
   meta JSON,
-  categoryId VARCHAR(64),
-  createdBy VARCHAR(64),
-  createdAt BIGINT,
-  updatedAt BIGINT,
-  deletedAt BIGINT,
+  category_id VARCHAR(64),
+  created_by VARCHAR(64),
+  created_at BIGINT,
+  updated_at BIGINT,
+  deleted_at BIGINT,
   __present VARCHAR(255),
   PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE lessons (
   _id VARCHAR(64) NOT NULL,
-  courseId VARCHAR(64),
-  parentId VARCHAR(64),
+  course_id VARCHAR(64),
+  parent_id VARCHAR(64),
   title VARCHAR(255),
   seq INT,
   duration INT,
-  videoUrl VARCHAR(255),
+  video_url VARCHAR(255),
   free TINYINT(1),
-  createdBy VARCHAR(64),
-  createdAt BIGINT,
-  updatedAt BIGINT,
+  created_by VARCHAR(64),
+  created_at BIGINT,
+  updated_at BIGINT,
   __present VARCHAR(255),
   PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE lessons_deleted (
   _id VARCHAR(64) NOT NULL,
-  courseId VARCHAR(64),
-  parentId VARCHAR(64),
+  course_id VARCHAR(64),
+  parent_id VARCHAR(64),
   title VARCHAR(255),
   seq INT,
   duration INT,
-  videoUrl VARCHAR(255),
+  video_url VARCHAR(255),
   free TINYINT(1),
-  createdBy VARCHAR(64),
-  createdAt BIGINT,
-  updatedAt BIGINT,
-  deletedAt BIGINT,
+  created_by VARCHAR(64),
+  created_at BIGINT,
+  updated_at BIGINT,
+  deleted_at BIGINT,
   __present VARCHAR(255),
   PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE enrollments (
   _id VARCHAR(64) NOT NULL,
-  userId VARCHAR(64),
-  courseId VARCHAR(64),
+  user_id VARCHAR(64),
+  course_id VARCHAR(64),
   amount DOUBLE,
   paid TINYINT(1),
-  paidAt BIGINT,
+  paid_at BIGINT,
   status VARCHAR(64),
   coupon JSON,
-  createdBy VARCHAR(64),
-  createdAt BIGINT,
-  updatedAt BIGINT,
+  created_by VARCHAR(64),
+  created_at BIGINT,
+  updated_at BIGINT,
   __present VARCHAR(255),
   PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE enrollments_deleted (
   _id VARCHAR(64) NOT NULL,
-  userId VARCHAR(64),
-  courseId VARCHAR(64),
+  user_id VARCHAR(64),
+  course_id VARCHAR(64),
   amount DOUBLE,
   paid TINYINT(1),
-  paidAt BIGINT,
+  paid_at BIGINT,
   status VARCHAR(64),
   coupon JSON,
-  createdBy VARCHAR(64),
-  createdAt BIGINT,
-  updatedAt BIGINT,
-  deletedAt BIGINT,
+  created_by VARCHAR(64),
+  created_at BIGINT,
+  updated_at BIGINT,
+  deleted_at BIGINT,
   __present VARCHAR(255),
   PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE reviews (
   _id VARCHAR(64) NOT NULL,
-  courseId VARCHAR(64),
-  userId VARCHAR(64),
+  course_id VARCHAR(64),
+  user_id VARCHAR(64),
   score INT,
   content VARCHAR(255),
   tags JSON,
-  createdBy VARCHAR(64),
-  createdAt BIGINT,
-  updatedAt BIGINT,
+  created_by VARCHAR(64),
+  created_at BIGINT,
+  updated_at BIGINT,
   __present VARCHAR(255),
   PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE reviews_deleted (
   _id VARCHAR(64) NOT NULL,
-  courseId VARCHAR(64),
-  userId VARCHAR(64),
+  course_id VARCHAR(64),
+  user_id VARCHAR(64),
   score INT,
   content VARCHAR(255),
   tags JSON,
-  createdBy VARCHAR(64),
-  createdAt BIGINT,
-  updatedAt BIGINT,
-  deletedAt BIGINT,
+  created_by VARCHAR(64),
+  created_at BIGINT,
+  updated_at BIGINT,
+  deleted_at BIGINT,
   __present VARCHAR(255),
   PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -201,12 +201,12 @@ CREATE TABLE study_notes (
   _id VARCHAR(64) NOT NULL,
   title VARCHAR(255),
   content VARCHAR(255),
-  courseId VARCHAR(64),
+  course_id VARCHAR(64),
   tags JSON,
   meta JSON,
-  createdBy VARCHAR(64),
-  createdAt BIGINT,
-  updatedAt BIGINT,
+  created_by VARCHAR(64),
+  created_at BIGINT,
+  updated_at BIGINT,
   __present VARCHAR(255),
   PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -214,20 +214,20 @@ CREATE TABLE study_notes_deleted (
   _id VARCHAR(64) NOT NULL,
   title VARCHAR(255),
   content VARCHAR(255),
-  courseId VARCHAR(64),
+  course_id VARCHAR(64),
   tags JSON,
   meta JSON,
-  createdBy VARCHAR(64),
-  createdAt BIGINT,
-  updatedAt BIGINT,
-  deletedAt BIGINT,
+  created_by VARCHAR(64),
+  created_at BIGINT,
+  updated_at BIGINT,
+  deleted_at BIGINT,
   __present VARCHAR(255),
   PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE audit_logs (
   _id VARCHAR(64) NOT NULL,
-  actorId VARCHAR(64),
+  actor_id VARCHAR(64),
   action VARCHAR(64),
   target VARCHAR(64),
   at BIGINT,
@@ -237,12 +237,12 @@ CREATE TABLE audit_logs (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE audit_logs_deleted (
   _id VARCHAR(64) NOT NULL,
-  actorId VARCHAR(64),
+  actor_id VARCHAR(64),
   action VARCHAR(64),
   target VARCHAR(64),
   at BIGINT,
   detail JSON,
-  deletedAt BIGINT,
+  deleted_at BIGINT,
   __present VARCHAR(255),
   PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -254,17 +254,17 @@ DROP TABLE IF EXISTS probe_memos;
 DROP TABLE IF EXISTS probe_holders;
 DROP TABLE IF EXISTS probe_grades;
 CREATE TABLE probe_grades (
-  _id VARCHAR(64) NOT NULL, score INT, createdBy VARCHAR(64), __present VARCHAR(255), PRIMARY KEY (_id)
+  _id VARCHAR(64) NOT NULL, score INT, created_by VARCHAR(64), __present VARCHAR(255), PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE probe_holders (
-  _id VARCHAR(64) NOT NULL, label VARCHAR(255), gradeId VARCHAR(64), createdBy VARCHAR(64), __present VARCHAR(255), PRIMARY KEY (_id)
+  _id VARCHAR(64) NOT NULL, label VARCHAR(255), grade_id VARCHAR(64), created_by VARCHAR(64), __present VARCHAR(255), PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE probe_memos (
-  _id VARCHAR(64) NOT NULL, noteId VARCHAR(64), body VARCHAR(255), createdBy VARCHAR(64), __present VARCHAR(255), PRIMARY KEY (_id)
+  _id VARCHAR(64) NOT NULL, note_id VARCHAR(64), body VARCHAR(255), created_by VARCHAR(64), __present VARCHAR(255), PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE probe_notes (
-  _id VARCHAR(64) NOT NULL, label VARCHAR(255), createdBy VARCHAR(64), __present VARCHAR(255), PRIMARY KEY (_id)
+  _id VARCHAR(64) NOT NULL, label VARCHAR(255), created_by VARCHAR(64), __present VARCHAR(255), PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE probe_computes (
-  _id VARCHAR(64) NOT NULL, label VARCHAR(255), secret VARCHAR(255), createdBy VARCHAR(64), __present VARCHAR(255), PRIMARY KEY (_id)
+  _id VARCHAR(64) NOT NULL, label VARCHAR(255), secret VARCHAR(255), created_by VARCHAR(64), __present VARCHAR(255), PRIMARY KEY (_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

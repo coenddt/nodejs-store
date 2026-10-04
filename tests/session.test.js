@@ -351,7 +351,7 @@ test('#9 update 探针与写同一事务；写失败整体回滚（A7）', async
 // ─── #10 Mongo 源直通（不告警） ──────────────────────────────
 
 test('#10 Mongo 源直通：不告警 session_not_atomic', async () => {
-  const db = new FakeDb({ sess_mongo: [{ _id: 'm1', v: 'x' }] });
+  const db = new FakeDb({ sessMongo: [{ _id: 'm1', v: 'x' }] });
   _sc.register({
     name: 'SessMongoNode', collection: 'sess_mongo', timestamps: false,
     fields: { v: { type: 'string' } }, relations: {}, datasource: 'sess_mongo',

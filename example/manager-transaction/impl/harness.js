@@ -17,6 +17,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { init, store, permission, feedback, schema: sc, executors, workflow, ddl } = require('../../../src');
+const naming = require('../../../src/naming');
 const { CHECKS } = require('./checks');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -139,7 +140,8 @@ async function setupBackend(kind) {
 async function reset(kind, driver) {
   const tables = [...ARCHIVE_TABLES, ...MAIN_TABLES];
   if (kind === 'mongodb') {
-    for (const t of tables) await driver.collection(t).deleteMany({});
+    // Mongo 落库用物理集合名（core::naming camelCase）：按单点翻译后再清，否则旧物理集合残留
+    for (const t of tables) await driver.collection(naming.physical(t)).deleteMany({});
     return;
   }
   if (kind === 'mysql' || kind === 'postgres') {

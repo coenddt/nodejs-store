@@ -27,7 +27,7 @@ function createDb() {
       _id TEXT PRIMARY KEY, title TEXT, status TEXT, views INTEGER, __present TEXT
     );
     CREATE TABLE posts_deleted (
-      _id TEXT PRIMARY KEY, title TEXT, status TEXT, views INTEGER, deletedAt INTEGER, __present TEXT
+      _id TEXT PRIMARY KEY, title TEXT, status TEXT, views INTEGER, deleted_at INTEGER, __present TEXT
     );
   `);
   return db;
@@ -177,13 +177,15 @@ test('sqlite sync: introspect → schemaFromRows → register', async () => {
 
 // ─── 标识符安全（Phase 4 动作 7） ─────────────────────────────
 
-test('identifier safety: 恶意 field 名加引号后安全，且连接可复用', async () => {
+test('identifier safety: 恶意 field 名经物理名翻译中性化后安全，且连接可复用', async () => {
   const WEIRD = 'x"; DROP TABLE users; --';
+  const PHYS = 'x_drop_table_users'; // core::naming 对数据标识符的 snake_case 规范化结果
   const db = new Database(':memory:');
-  // posts 真的有一列名就是注入串（证明 core 只把它当标识符、按后端规则转义）
+  // core 命名层先把数据标识符翻译为物理名（引号/分号/空格被中性化），恶意字符在进入 SQL 前
+  // 即被消除；DDL 按物理名建列，证明查询命中规范化后的列
   db.exec('CREATE TABLE users (_id TEXT PRIMARY KEY, name TEXT)');
   db.exec('INSERT INTO users VALUES (\'u1\', \'alice\')');
-  db.exec(`CREATE TABLE evil (_id TEXT PRIMARY KEY, title TEXT, "${WEIRD.replace(/"/g, '""')}" TEXT, __present TEXT)`);
+  db.exec(`CREATE TABLE evil (_id TEXT PRIMARY KEY, title TEXT, "${PHYS}" TEXT, __present TEXT)`);
   db.exec('INSERT INTO evil VALUES (\'e1\', \'t\', \'v\', NULL)');
 
   _sc.register({
@@ -206,10 +208,12 @@ test('identifier safety: 恶意 field 名加引号后安全，且连接可复用
   };
   const plan = _sc.core.dialectTranslate('sqlite', cmd);
   const sqlText = plan.stmts.map((s) => s.text).join('\n');
-  assert.ok(sqlText.includes('"";'), '标识符内的双引号应被转义为 ""');
+  // 注入串被物理名翻译中性化：原始 `";` 与 `DROP TABLE` 语句不得原样出现在 SQL 中
+  assert.ok(sqlText.includes(PHYS), '应按物理名规范化后使用标识符');
+  assert.ok(!sqlText.includes('"";') && !/drop\s+table/i.test(sqlText), '注入串不得原样进入 SQL');
 
   const out = await db.prepare(plan.stmts[0].text).all(...plan.stmts[0].params);
-  assert.equal(out.length, 1, '转义后应能正常命中该列');
+  assert.equal(out.length, 1, '规范化后的标识符应能正常命中该列');
 
   // 注入未生效 + 连接可复用
   const stillThere = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").all();

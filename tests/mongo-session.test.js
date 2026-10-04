@@ -15,6 +15,7 @@ const { test, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { store, feedback, datasource, schema: _sc } = require('../src');
+const naming = require('../src/naming');
 const { runAtomic } = require('../src/crud/exec');
 const mongo = require('../src/executors/mongo');
 
@@ -273,7 +274,8 @@ test('#A10 真实本机 rs0：会话事务提交后全部可见', async (t) => {
   const r = await realRsDbOrSkip(t);
   if (!r) return;
   const { client, db } = r;
-  await db.collection('mx_real_n').drop().catch(() => {});
+  const coll = naming.physical('mx_real_n');
+  await db.collection(coll).drop().catch(() => {});
   registerMongo('MxRealNode', 'mx_real_n', 'mx_real_n');
   datasource.setConnections({ mx_real_n: db });
   try {
@@ -281,9 +283,9 @@ test('#A10 真实本机 rs0：会话事务提交后全部可见', async (t) => {
       await s.insert('MxRealNode', { v: 'a' });
       await s.insert('MxRealNode', { v: 'b' });
     });
-    assert.equal(await db.collection('mx_real_n').countDocuments({}), 2);
+    assert.equal(await db.collection(coll).countDocuments({}), 2);
   } finally {
-    await db.collection('mx_real_n').drop().catch(() => {});
+    await db.collection(coll).drop().catch(() => {});
     await client.close();
   }
 });
@@ -292,7 +294,8 @@ test('#A10b 真实本机 rs0：会话异常 → abort，全部不可见', async 
   const r = await realRsDbOrSkip(t);
   if (!r) return;
   const { client, db } = r;
-  await db.collection('mx_real_nb').drop().catch(() => {});
+  const coll = naming.physical('mx_real_nb');
+  await db.collection(coll).drop().catch(() => {});
   registerMongo('MxRealNodeB', 'mx_real_n', 'mx_real_nb');
   datasource.setConnections({ mx_real_n: db });
   try {
@@ -303,9 +306,9 @@ test('#A10b 真实本机 rs0：会话异常 → abort，全部不可见', async 
       }),
       /boom/,
     );
-    assert.equal(await db.collection('mx_real_nb').countDocuments({}), 0);
+    assert.equal(await db.collection(coll).countDocuments({}), 0);
   } finally {
-    await db.collection('mx_real_nb').drop().catch(() => {});
+    await db.collection(coll).drop().catch(() => {});
     await client.close();
   }
 });

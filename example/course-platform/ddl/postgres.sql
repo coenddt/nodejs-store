@@ -22,108 +22,108 @@ DROP TABLE IF EXISTS users CASCADE;
 CREATE TABLE users (
   _id TEXT PRIMARY KEY,
   name TEXT, email TEXT, role TEXT, avatar TEXT, profile jsonb,
-  "createdBy" TEXT, "createdAt" BIGINT, "updatedAt" BIGINT,
+  "created_by" TEXT, "created_at" BIGINT, "updated_at" BIGINT,
   __present TEXT
 );
 CREATE TABLE users_deleted (
   _id TEXT PRIMARY KEY,
   name TEXT, email TEXT, role TEXT, avatar TEXT, profile jsonb,
-  "createdBy" TEXT, "createdAt" BIGINT, "updatedAt" BIGINT, "deletedAt" BIGINT,
+  "created_by" TEXT, "created_at" BIGINT, "updated_at" BIGINT, "deleted_at" BIGINT,
   __present TEXT
 );
 
 CREATE TABLE categories (
   _id TEXT PRIMARY KEY,
-  name TEXT, "parentId" TEXT, sort INTEGER, "createdBy" TEXT,
+  name TEXT, "parent_id" TEXT, sort INTEGER, "created_by" TEXT,
   __present TEXT
 );
 CREATE TABLE categories_deleted (
   _id TEXT PRIMARY KEY,
-  name TEXT, "parentId" TEXT, sort INTEGER, "createdBy" TEXT,
-  "deletedAt" BIGINT, __present TEXT
+  name TEXT, "parent_id" TEXT, sort INTEGER, "created_by" TEXT,
+  "deleted_at" BIGINT, __present TEXT
 );
 
 CREATE TABLE courses (
   _id TEXT PRIMARY KEY,
   title TEXT, summary TEXT, status TEXT, price DOUBLE PRECISION,
-  "enrolledCount" INTEGER, rating DOUBLE PRECISION, secret TEXT,
+  "enrolled_count" INTEGER, rating DOUBLE PRECISION, secret TEXT,
   tags jsonb, meta jsonb,
-  "categoryId" TEXT, "createdBy" TEXT, "createdAt" BIGINT, "updatedAt" BIGINT,
+  "category_id" TEXT, "created_by" TEXT, "created_at" BIGINT, "updated_at" BIGINT,
   __present TEXT
 );
 CREATE TABLE courses_deleted (
   _id TEXT PRIMARY KEY,
   title TEXT, summary TEXT, status TEXT, price DOUBLE PRECISION,
-  "enrolledCount" INTEGER, rating DOUBLE PRECISION, secret TEXT,
+  "enrolled_count" INTEGER, rating DOUBLE PRECISION, secret TEXT,
   tags jsonb, meta jsonb,
-  "categoryId" TEXT, "createdBy" TEXT, "createdAt" BIGINT, "updatedAt" BIGINT, "deletedAt" BIGINT,
+  "category_id" TEXT, "created_by" TEXT, "created_at" BIGINT, "updated_at" BIGINT, "deleted_at" BIGINT,
   __present TEXT
 );
 
 CREATE TABLE lessons (
   _id TEXT PRIMARY KEY,
-  "courseId" TEXT, "parentId" TEXT, title TEXT, seq INTEGER,
-  duration INTEGER, "videoUrl" TEXT, free BOOLEAN, "createdBy" TEXT,
-  "createdAt" BIGINT, "updatedAt" BIGINT,
+  "course_id" TEXT, "parent_id" TEXT, title TEXT, seq INTEGER,
+  duration INTEGER, "video_url" TEXT, free BOOLEAN, "created_by" TEXT,
+  "created_at" BIGINT, "updated_at" BIGINT,
   __present TEXT
 );
 CREATE TABLE lessons_deleted (
   _id TEXT PRIMARY KEY,
-  "courseId" TEXT, "parentId" TEXT, title TEXT, seq INTEGER,
-  duration INTEGER, "videoUrl" TEXT, free BOOLEAN, "createdBy" TEXT,
-  "createdAt" BIGINT, "updatedAt" BIGINT, "deletedAt" BIGINT,
+  "course_id" TEXT, "parent_id" TEXT, title TEXT, seq INTEGER,
+  duration INTEGER, "video_url" TEXT, free BOOLEAN, "created_by" TEXT,
+  "created_at" BIGINT, "updated_at" BIGINT, "deleted_at" BIGINT,
   __present TEXT
 );
 
 CREATE TABLE enrollments (
   _id TEXT PRIMARY KEY,
-  "userId" TEXT, "courseId" TEXT, amount DOUBLE PRECISION,
-  paid BOOLEAN, "paidAt" BIGINT, status TEXT, coupon jsonb, "createdBy" TEXT,
-  "createdAt" BIGINT, "updatedAt" BIGINT,
+  "user_id" TEXT, "course_id" TEXT, amount DOUBLE PRECISION,
+  paid BOOLEAN, "paid_at" BIGINT, status TEXT, coupon jsonb, "created_by" TEXT,
+  "created_at" BIGINT, "updated_at" BIGINT,
   __present TEXT
 );
 CREATE TABLE enrollments_deleted (
   _id TEXT PRIMARY KEY,
-  "userId" TEXT, "courseId" TEXT, amount DOUBLE PRECISION,
-  paid BOOLEAN, "paidAt" BIGINT, status TEXT, coupon jsonb, "createdBy" TEXT,
-  "createdAt" BIGINT, "updatedAt" BIGINT, "deletedAt" BIGINT,
+  "user_id" TEXT, "course_id" TEXT, amount DOUBLE PRECISION,
+  paid BOOLEAN, "paid_at" BIGINT, status TEXT, coupon jsonb, "created_by" TEXT,
+  "created_at" BIGINT, "updated_at" BIGINT, "deleted_at" BIGINT,
   __present TEXT
 );
 
 CREATE TABLE reviews (
   _id TEXT PRIMARY KEY,
-  "courseId" TEXT, "userId" TEXT, score INTEGER, content TEXT, tags jsonb, "createdBy" TEXT,
-  "createdAt" BIGINT, "updatedAt" BIGINT,
+  "course_id" TEXT, "user_id" TEXT, score INTEGER, content TEXT, tags jsonb, "created_by" TEXT,
+  "created_at" BIGINT, "updated_at" BIGINT,
   __present TEXT
 );
 CREATE TABLE reviews_deleted (
   _id TEXT PRIMARY KEY,
-  "courseId" TEXT, "userId" TEXT, score INTEGER, content TEXT, tags jsonb, "createdBy" TEXT,
-  "createdAt" BIGINT, "updatedAt" BIGINT, "deletedAt" BIGINT,
+  "course_id" TEXT, "user_id" TEXT, score INTEGER, content TEXT, tags jsonb, "created_by" TEXT,
+  "created_at" BIGINT, "updated_at" BIGINT, "deleted_at" BIGINT,
   __present TEXT
 );
 
 CREATE TABLE study_notes (
   _id TEXT PRIMARY KEY,
-  title TEXT, content TEXT, "courseId" TEXT, tags jsonb, meta jsonb, "createdBy" TEXT,
-  "createdAt" BIGINT, "updatedAt" BIGINT,
+  title TEXT, content TEXT, "course_id" TEXT, tags jsonb, meta jsonb, "created_by" TEXT,
+  "created_at" BIGINT, "updated_at" BIGINT,
   __present TEXT
 );
 CREATE TABLE study_notes_deleted (
   _id TEXT PRIMARY KEY,
-  title TEXT, content TEXT, "courseId" TEXT, tags jsonb, meta jsonb, "createdBy" TEXT,
-  "createdAt" BIGINT, "updatedAt" BIGINT, "deletedAt" BIGINT,
+  title TEXT, content TEXT, "course_id" TEXT, tags jsonb, meta jsonb, "created_by" TEXT,
+  "created_at" BIGINT, "updated_at" BIGINT, "deleted_at" BIGINT,
   __present TEXT
 );
 
 CREATE TABLE audit_logs (
   _id TEXT PRIMARY KEY,
-  "actorId" TEXT, action TEXT, target TEXT, at BIGINT, detail jsonb,
+  "actor_id" TEXT, action TEXT, target TEXT, at BIGINT, detail jsonb,
   __present TEXT
 );
 CREATE TABLE audit_logs_deleted (
   _id TEXT PRIMARY KEY,
-  "actorId" TEXT, action TEXT, target TEXT, at BIGINT, detail jsonb, "deletedAt" BIGINT,
+  "actor_id" TEXT, action TEXT, target TEXT, at BIGINT, detail jsonb, "deleted_at" BIGINT,
   __present TEXT
 );
 
@@ -134,17 +134,17 @@ DROP TABLE IF EXISTS probe_memos CASCADE;
 DROP TABLE IF EXISTS probe_holders CASCADE;
 DROP TABLE IF EXISTS probe_grades CASCADE;
 CREATE TABLE probe_grades (
-  _id TEXT PRIMARY KEY, score INTEGER, "createdBy" TEXT, __present TEXT
+  _id TEXT PRIMARY KEY, score INTEGER, "created_by" TEXT, __present TEXT
 );
 CREATE TABLE probe_holders (
-  _id TEXT PRIMARY KEY, label TEXT, "gradeId" TEXT, "createdBy" TEXT, __present TEXT
+  _id TEXT PRIMARY KEY, label TEXT, "grade_id" TEXT, "created_by" TEXT, __present TEXT
 );
 CREATE TABLE probe_memos (
-  _id TEXT PRIMARY KEY, "noteId" TEXT, body TEXT, "createdBy" TEXT, __present TEXT
+  _id TEXT PRIMARY KEY, "note_id" TEXT, body TEXT, "created_by" TEXT, __present TEXT
 );
 CREATE TABLE probe_notes (
-  _id TEXT PRIMARY KEY, label TEXT, "createdBy" TEXT, __present TEXT
+  _id TEXT PRIMARY KEY, label TEXT, "created_by" TEXT, __present TEXT
 );
 CREATE TABLE probe_computes (
-  _id TEXT PRIMARY KEY, label TEXT, secret TEXT, "createdBy" TEXT, __present TEXT
+  _id TEXT PRIMARY KEY, label TEXT, secret TEXT, "created_by" TEXT, __present TEXT
 );

@@ -28,6 +28,7 @@ const mysql = require('mysql2/promise');
 const { MongoClient } = require('mongodb');
 
 const { init, store, executors, permission, schema: _sc } = require('../src');
+const naming = require('../src/naming');
 
 // 独立库名（可整串用 MYSQL_URI / MONGO_URI 环境变量覆盖，便于 CI 复用外部实例）
 const MYSQL_URI =
@@ -40,7 +41,7 @@ const MYSQL_DDL = [
   'DROP TABLE IF EXISTS fed_orders',
   `CREATE TABLE fed_orders (
      _id VARCHAR(64) NOT NULL,
-     userId VARCHAR(64),
+     user_id VARCHAR(64),
      code VARCHAR(255),
      amount DOUBLE,
      __present VARCHAR(255),
@@ -61,7 +62,7 @@ async function setupMongo() {
     return null;
   }
   const db = client.db();
-  await db.collection('fed_users').deleteMany({});
+  await db.collection(naming.physical('fed_users')).deleteMany({});
   state.mongoClient = client;
   state.mongoReady = true;
   return db;

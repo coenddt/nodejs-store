@@ -21,108 +21,108 @@ DROP TABLE IF EXISTS users;
 CREATE TABLE users (
   _id TEXT PRIMARY KEY,
   name TEXT, email TEXT, role TEXT, avatar TEXT, profile TEXT,
-  createdBy TEXT, createdAt INTEGER, updatedAt INTEGER,
+  created_by TEXT, created_at INTEGER, updated_at INTEGER,
   __present TEXT
 );
 CREATE TABLE users_deleted (
   _id TEXT PRIMARY KEY,
   name TEXT, email TEXT, role TEXT, avatar TEXT, profile TEXT,
-  createdBy TEXT, createdAt INTEGER, updatedAt INTEGER, deletedAt INTEGER,
+  created_by TEXT, created_at INTEGER, updated_at INTEGER, deleted_at INTEGER,
   __present TEXT
 );
 
 CREATE TABLE categories (
   _id TEXT PRIMARY KEY,
-  name TEXT, parentId TEXT, sort INTEGER, createdBy TEXT,
+  name TEXT, parent_id TEXT, sort INTEGER, created_by TEXT,
   __present TEXT
 );
 CREATE TABLE categories_deleted (
   _id TEXT PRIMARY KEY,
-  name TEXT, parentId TEXT, sort INTEGER, createdBy TEXT,
-  deletedAt INTEGER, __present TEXT
+  name TEXT, parent_id TEXT, sort INTEGER, created_by TEXT,
+  deleted_at INTEGER, __present TEXT
 );
 
 CREATE TABLE courses (
   _id TEXT PRIMARY KEY,
   title TEXT, summary TEXT, status TEXT, price REAL,
-  enrolledCount INTEGER, rating REAL, secret TEXT,
+  enrolled_count INTEGER, rating REAL, secret TEXT,
   tags TEXT, meta TEXT,
-  categoryId TEXT, createdBy TEXT, createdAt INTEGER, updatedAt INTEGER,
+  category_id TEXT, created_by TEXT, created_at INTEGER, updated_at INTEGER,
   __present TEXT
 );
 CREATE TABLE courses_deleted (
   _id TEXT PRIMARY KEY,
   title TEXT, summary TEXT, status TEXT, price REAL,
-  enrolledCount INTEGER, rating REAL, secret TEXT,
+  enrolled_count INTEGER, rating REAL, secret TEXT,
   tags TEXT, meta TEXT,
-  categoryId TEXT, createdBy TEXT, createdAt INTEGER, updatedAt INTEGER, deletedAt INTEGER,
+  category_id TEXT, created_by TEXT, created_at INTEGER, updated_at INTEGER, deleted_at INTEGER,
   __present TEXT
 );
 
 CREATE TABLE lessons (
   _id TEXT PRIMARY KEY,
-  courseId TEXT, parentId TEXT, title TEXT, seq INTEGER,
-  duration INTEGER, videoUrl TEXT, free INTEGER, createdBy TEXT,
-  createdAt INTEGER, updatedAt INTEGER,
+  course_id TEXT, parent_id TEXT, title TEXT, seq INTEGER,
+  duration INTEGER, video_url TEXT, free INTEGER, created_by TEXT,
+  created_at INTEGER, updated_at INTEGER,
   __present TEXT
 );
 CREATE TABLE lessons_deleted (
   _id TEXT PRIMARY KEY,
-  courseId TEXT, parentId TEXT, title TEXT, seq INTEGER,
-  duration INTEGER, videoUrl TEXT, free INTEGER, createdBy TEXT,
-  createdAt INTEGER, updatedAt INTEGER, deletedAt INTEGER,
+  course_id TEXT, parent_id TEXT, title TEXT, seq INTEGER,
+  duration INTEGER, video_url TEXT, free INTEGER, created_by TEXT,
+  created_at INTEGER, updated_at INTEGER, deleted_at INTEGER,
   __present TEXT
 );
 
 CREATE TABLE enrollments (
   _id TEXT PRIMARY KEY,
-  userId TEXT, courseId TEXT, amount REAL,
-  paid INTEGER, paidAt INTEGER, status TEXT, coupon TEXT, createdBy TEXT,
-  createdAt INTEGER, updatedAt INTEGER,
+  user_id TEXT, course_id TEXT, amount REAL,
+  paid INTEGER, paid_at INTEGER, status TEXT, coupon TEXT, created_by TEXT,
+  created_at INTEGER, updated_at INTEGER,
   __present TEXT
 );
 CREATE TABLE enrollments_deleted (
   _id TEXT PRIMARY KEY,
-  userId TEXT, courseId TEXT, amount REAL,
-  paid INTEGER, paidAt INTEGER, status TEXT, coupon TEXT, createdBy TEXT,
-  createdAt INTEGER, updatedAt INTEGER, deletedAt INTEGER,
+  user_id TEXT, course_id TEXT, amount REAL,
+  paid INTEGER, paid_at INTEGER, status TEXT, coupon TEXT, created_by TEXT,
+  created_at INTEGER, updated_at INTEGER, deleted_at INTEGER,
   __present TEXT
 );
 
 CREATE TABLE reviews (
   _id TEXT PRIMARY KEY,
-  courseId TEXT, userId TEXT, score INTEGER, content TEXT, tags TEXT, createdBy TEXT,
-  createdAt INTEGER, updatedAt INTEGER,
+  course_id TEXT, user_id TEXT, score INTEGER, content TEXT, tags TEXT, created_by TEXT,
+  created_at INTEGER, updated_at INTEGER,
   __present TEXT
 );
 CREATE TABLE reviews_deleted (
   _id TEXT PRIMARY KEY,
-  courseId TEXT, userId TEXT, score INTEGER, content TEXT, tags TEXT, createdBy TEXT,
-  createdAt INTEGER, updatedAt INTEGER, deletedAt INTEGER,
+  course_id TEXT, user_id TEXT, score INTEGER, content TEXT, tags TEXT, created_by TEXT,
+  created_at INTEGER, updated_at INTEGER, deleted_at INTEGER,
   __present TEXT
 );
 
 CREATE TABLE study_notes (
   _id TEXT PRIMARY KEY,
-  title TEXT, content TEXT, courseId TEXT, tags TEXT, meta TEXT, createdBy TEXT,
-  createdAt INTEGER, updatedAt INTEGER,
+  title TEXT, content TEXT, course_id TEXT, tags TEXT, meta TEXT, created_by TEXT,
+  created_at INTEGER, updated_at INTEGER,
   __present TEXT
 );
 CREATE TABLE study_notes_deleted (
   _id TEXT PRIMARY KEY,
-  title TEXT, content TEXT, courseId TEXT, tags TEXT, meta TEXT, createdBy TEXT,
-  createdAt INTEGER, updatedAt INTEGER, deletedAt INTEGER,
+  title TEXT, content TEXT, course_id TEXT, tags TEXT, meta TEXT, created_by TEXT,
+  created_at INTEGER, updated_at INTEGER, deleted_at INTEGER,
   __present TEXT
 );
 
 CREATE TABLE audit_logs (
   _id TEXT PRIMARY KEY,
-  actorId TEXT, action TEXT, target TEXT, at INTEGER, detail TEXT,
+  actor_id TEXT, action TEXT, target TEXT, at INTEGER, detail TEXT,
   __present TEXT
 );
 CREATE TABLE audit_logs_deleted (
   _id TEXT PRIMARY KEY,
-  actorId TEXT, action TEXT, target TEXT, at INTEGER, detail TEXT, deletedAt INTEGER,
+  actor_id TEXT, action TEXT, target TEXT, at INTEGER, detail TEXT, deleted_at INTEGER,
   __present TEXT
 );
 
@@ -133,17 +133,17 @@ DROP TABLE IF EXISTS probe_memos;
 DROP TABLE IF EXISTS probe_holders;
 DROP TABLE IF EXISTS probe_grades;
 CREATE TABLE probe_grades (
-  _id TEXT PRIMARY KEY, score INTEGER, createdBy TEXT, __present TEXT
+  _id TEXT PRIMARY KEY, score INTEGER, created_by TEXT, __present TEXT
 );
 CREATE TABLE probe_holders (
-  _id TEXT PRIMARY KEY, label TEXT, gradeId TEXT, createdBy TEXT, __present TEXT
+  _id TEXT PRIMARY KEY, label TEXT, grade_id TEXT, created_by TEXT, __present TEXT
 );
 CREATE TABLE probe_memos (
-  _id TEXT PRIMARY KEY, noteId TEXT, body TEXT, createdBy TEXT, __present TEXT
+  _id TEXT PRIMARY KEY, note_id TEXT, body TEXT, created_by TEXT, __present TEXT
 );
 CREATE TABLE probe_notes (
-  _id TEXT PRIMARY KEY, label TEXT, createdBy TEXT, __present TEXT
+  _id TEXT PRIMARY KEY, label TEXT, created_by TEXT, __present TEXT
 );
 CREATE TABLE probe_computes (
-  _id TEXT PRIMARY KEY, label TEXT, secret TEXT, createdBy TEXT, __present TEXT
+  _id TEXT PRIMARY KEY, label TEXT, secret TEXT, created_by TEXT, __present TEXT
 );

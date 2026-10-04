@@ -119,7 +119,7 @@ class _FakeDb {
   }
 
   collection(name) {
-    if (!this._colls[name]) this._colls[name] = new _MemColl(name === 'hc_posts' ? this._docs : []);
+    if (!this._colls[name]) this._colls[name] = new _MemColl(name === 'hcPosts' ? this._docs : []);
     return this._colls[name];
   }
 }

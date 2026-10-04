@@ -107,3 +107,12 @@ test('loadDefs：真实目录 IO + registerBatch（落点注入 core）', async 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('门面 store.loadDefs 指向目录装载器（不被 metadef 同名方法遮蔽）', async () => {
+  const { Store, metadef } = require('../src');
+  const s = new Store();
+  // 定义控制面仍经导出的 metadef 模块可达
+  assert.equal(typeof metadef.loadDefs, 'function', 'metadef 模块应仍提供 loadDefs');
+  // 门面 loadDefs 必须是目录装载器语义（缺 config 抛 ERR:LOAD），而非 metadef
+  await assert.rejects(() => s.loadDefs({}), /ERR:LOAD loadDefs 缺 config/);
+});

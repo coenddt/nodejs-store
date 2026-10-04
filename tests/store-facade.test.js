@@ -26,7 +26,7 @@ function createDb() {
   const db = new Database(':memory:');
   db.exec(
     'CREATE TABLE facade_items (_id TEXT PRIMARY KEY, title TEXT, secret TEXT, '
-    + 'createdBy TEXT, locked TEXT, __present TEXT);',
+    + 'created_by TEXT, locked TEXT, __present TEXT);',
   );
   return db;
 }

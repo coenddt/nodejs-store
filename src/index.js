@@ -248,10 +248,9 @@ class Store {
     return metadef.listDefs(this, opts);
   }
 
-  /** 各 name 的最新 active 行 */
-  async loadDefs(opts) {
-    return metadef.loadDefs(this, opts);
-  }
+  // 注：定义控制面的「各 name 最新 active 行」经导出的 `metadef` 模块调用
+  // （`metadef.loadDefs`）；门面 `store.loadDefs` 归运行期目录装载器（见本类上文
+  // `loadDefs(opts)` 与 `bootstrap.js`），二者不得同名遮蔽。
 
   /** 从持久化定义重建注册表：schema + workflow 两类（网关 reload 重装配前调用） */
   async restoreDefs(opts) {

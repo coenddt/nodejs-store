@@ -31,6 +31,7 @@ const { Pool } = require('pg');
 const { MongoClient } = require('mongodb');
 
 const { init, store, executors, permission, schema: _sc } = require('../src');
+const naming = require('../src/naming');
 
 // 独立库名（可整串用 MYSQL_URI / PG_URI / MONGO_URI 环境变量覆盖，便于 CI 复用外部实例）
 const MYSQL_URI =
@@ -59,7 +60,7 @@ const MYSQL_DDL = [
      title VARCHAR(255),
      status VARCHAR(64),
      views INT,
-     deletedAt BIGINT,
+     deleted_at BIGINT,
      __present VARCHAR(255),
      PRIMARY KEY (_id)
    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
@@ -87,7 +88,7 @@ const PG_DDL = [
   'DROP TABLE IF EXISTS pg_posts CASCADE',
   'CREATE TABLE pg_posts (_id TEXT PRIMARY KEY, title TEXT, status TEXT, views INTEGER, __present TEXT)',
   `CREATE TABLE pg_posts_deleted (
-     _id TEXT PRIMARY KEY, title TEXT, status TEXT, views INTEGER, "deletedAt" BIGINT, __present TEXT
+     _id TEXT PRIMARY KEY, title TEXT, status TEXT, views INTEGER, deleted_at BIGINT, __present TEXT
    )`,
   'CREATE TABLE widgets (_id TEXT PRIMARY KEY, sku TEXT NOT NULL, price DOUBLE PRECISION, __present TEXT)',
   `CREATE TABLE gadgets (
@@ -203,8 +204,9 @@ async function setupMongo() {
   mongoCtx.driver = db;
   mongoCtx.conn = db;
   mongoCtx.reset = async () => {
-    await db.collection('mg_posts').deleteMany({});
-    await db.collection('mg_posts_deleted').deleteMany({});
+    // Mongo 落库用物理集合名（camelCase）：按单点翻译后再清
+    await db.collection(naming.physical('mg_posts')).deleteMany({});
+    await db.collection(naming.physical('mg_posts_deleted')).deleteMany({});
   };
   registerPost(mongoCtx);
   mongoCtx.ready = true;

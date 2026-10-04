@@ -268,7 +268,7 @@ test('parity run 文档形状（keys 与迹条目形状）', async () => {
     fields: { _id: { type: 'string' }, n: { type: 'int' } } });
   const db = new Database(':memory:');
   db.exec('CREATE TABLE shape_items (_id VARCHAR(64) PRIMARY KEY, n INTEGER, '
-    + 'createdAt BIGINT, updatedAt BIGINT, deletedAt BIGINT, __present TEXT)');
+    + 'created_at BIGINT, updated_at BIGINT, deleted_at BIGINT, __present TEXT)');
   for (const st of String(ddl.generate('sqlite', ['__workflowRun'])).split('\n\n')) {
     if (st.trim()) db.exec(st);
   }

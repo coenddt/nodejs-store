@@ -154,7 +154,7 @@ const POSTS = [
 
 function dbWithPosts ({ posts = POSTS, reversePhase2 = false } = {}) {
   const coll = new ScriptedColl(posts, { reversePhase2 });
-  return { db: new FakeDb({ hp_posts: coll }), coll };
+  return { db: new FakeDb({ hpPosts: coll }), coll };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -230,8 +230,8 @@ test('federated: 单源根单元 two_phase 同样还原排序', async () => {
 test('federated: 跨源子级 $limit 降级 → emit federation_degraded 且不阻断结果', async () => {
   resetGlobals();
   const db = new FakeDb({
-    hp_users: new ScriptedColl([{ _id: 'u1', name: 'A' }]),
-    hp_orders: new ScriptedColl([{ _id: 'o1', userId: 'u1', code: 'c1' }]),
+    hpUsers: new ScriptedColl([{ _id: 'u1', name: 'A' }]),
+    hpOrders: new ScriptedColl([{ _id: 'o1', userId: 'u1', code: 'c1' }]),
   });
   _crud.setConnections({ hp_mongo_a: db, hp_mongo_b: db });
   const events = [];
@@ -308,12 +308,12 @@ test('init: 幂等建索引（无同名索引则创建，已有同名则跳过�
   resetGlobals();
   const db = new IndexDb(() => new IndexColl());
   await init({ default: db });
-  assert.deepEqual(db.collection('hp_indexed').created, [[[['title', 1]], { unique: true }]],
+  assert.deepEqual(db.collection('hpIndexed').created, [[[['title', 1]], { unique: true }]],
     '应按 keys + inline 选项创建索引');
 
   const db2 = new IndexDb(() => new IndexColl({ existing: [{ name: 'title_1' }] }));
   await init({ default: db2 });
-  assert.deepEqual(db2.collection('hp_indexed').created, [], '同名索引已存在时不得重复创建');
+  assert.deepEqual(db2.collection('hpIndexed').created, [], '同名索引已存在时不得重复创建');
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -333,7 +333,7 @@ test('asyncFn: core 声明但 Host 未登记实现 → 显式报错', async () =
     relations: {},
   });
   const { db } = dbWithPosts();
-  db.colls.hp_async_only = new ScriptedColl([{ _id: '1', a: 1 }]);
+  db.colls.hpAsyncOnly = new ScriptedColl([{ _id: '1', a: 1 }]);
   _crud.setDb(db);
 
   await assert.rejects(() => _crud.query('HpAsyncOnly{ _id, total }'), /未注册实现/);
