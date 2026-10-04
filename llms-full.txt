@@ -263,35 +263,54 @@ always passes). `setRequireContext(false)` restores the default fail-open behavi
 
 ## 9. Multi-datasource and multi-tenant
 
-Every schema is located by the triple `(source, namespace, collection)`, which must be
-globally unique across the registry (duplicate registration throws instead of silently
-mis-routing).
+Every schema is located by `(source, database, schema, collection)` (`schema` applies to
+PostgreSQL sources only), which must be globally unique across the registry (duplicate
+registration throws instead of silently mis-routing).
 
 - `source` — connection key in `init({...})` (default `"default"`).
-- `namespace` — database/schema inside the connection: Mongo db name, PG schema, MySQL
-  database, SQLite attached db. Optional; `null` = connection default.
+- `database` — database inside the connection: Mongo db name, PG / MySQL database, SQLite
+  attached db.
+- `schema` — PostgreSQL schema (PG sources only); `null` on every other backend.
 - `collection` — table/collection name.
+
+Definitions carry no location fields: a definition file declares no `source` / `database` /
+`schema` (its `collection` is just the logical table/collection name). The location is
+resolved from the definition directory layout plus the connection config:
+
+<!-- SPEC:LOCATION:BEGIN -->
+### Location: directory semantics + connection config (definitions carry no location)
+
+A schema definition file contains no location fields (no `source` / `database` / `schema`; `namespace` is removed). Location is resolved from the definition directory layout plus the connection config:
+
+- Under the definitions root `<defs-root>/`: the first directory level is the `database`; PostgreSQL adds a second level for `schema` (Mongo / MySQL / SQLite have no such level); deeper levels are free-form and flattened at load time (no hierarchy semantics).
+- The connection config (`store.config.json`) declares `sources` (`kind` + `databases`) and `defs`; `kind` decides whether that database directory is read one level deeper for `schema`.
+- Location fields are `source` / `database` / `schema` (PG only) / `collection`; the word `namespace` is removed.
+- Same-named schemas: exactly one primary (no `replica`); the rest declare `{ "name": "...", "replica": true }`, add only a link, and must not repeat the structure. Zero or two-or-more primaries is an error.
+- A duplicated `name` within one load batch is an error and the service does not start; re-loading the same `name` across versions bumps its version by 1.
+- Writes are synchronized within a single connection, across the primary plus all links, in one transaction; a write spanning a cross-connection link is explicitly rejected or degraded with a feedback event (never silent).
+<!-- SPEC:LOCATION:END -->
 
 ```js
 await init({ mongo_main: db, pg_a: { kind: 'postgres', exec } });
 
 await init({ cluster: client });
-store.register({ name: 'User', collection: 'users', datasource: 'cluster', namespace: 'tenant_42', ... });
+store.register({ name: 'User', collection: 'users', datasource: 'cluster', database: 'tenant_42', ... });
 
-// SQL cross-namespace joins are pushed down natively; only Mongo cross-db relations
+// SQL cross-database joins are pushed down natively; only Mongo cross-db relations
 // fall back to in-memory federation.
 ```
 
 Multi-tenant route override — one schema definition, N tenants:
 
 ```js
-await store.query('User($condition:@c0){...}', params, { namespace: 'tenant_42' });
-await store.insert('Order', data, { source: 'pg_cluster', namespace: 'tenant_7' });
+await store.query('User($condition:@c0){...}', params, { database: 'tenant_42' });
+await store.insert('Order', data, { source: 'pg_cluster', database: 'tenant_7' });
 ```
 
 **Security note**: `routeOverride` is a trusted server-side parameter with no origin check.
 Forwarding user-controlled input into it lets a caller re-target another tenant's
-`source` / `namespace` (CWE-639 authorization-bypass surface). Never pass raw request data.
+`source` / `database` / `schema` (CWE-639 authorization-bypass surface). Never pass raw
+request data.
 
 ---
 
@@ -333,6 +352,35 @@ Boundary rules (all fail explicitly, never silently degrade):
 - Relation predicates support one level of relation only.
 - An unreadable relation is an error, not a silent `false`.
 
+<!-- SPEC:NAMING-STYLE:BEGIN -->
+### Naming: freeform definitions, system-directed translation
+
+Definitions (`collection`, fields, referenced relation fields, computed-column keys, `fnRef` values, index names) may use any style; the engine translates them to the target style. Contract keys (`fnRef`, `localField`, `foreignField`, `asyncFn`, `type`, ...) and the schema `name` are never translated.
+
+| Target | Style | Example (`orderTotal`) |
+|---|---|---|
+| MySQL / PostgreSQL / SQLite (physical) | snake_case | `order_total` |
+| MongoDB (physical) | camelCase | `orderTotal` |
+| Node.js / Java / C# / Rust (code; computed columns follow) | camelCase | `orderTotal` |
+| Go (code; computed columns follow) | PascalCase (must be exported) | `OrderTotal` |
+| Python (code; computed columns follow) | snake_case | `order_total` |
+
+Canonicalization (single implementation `core::naming`, re-exported by the bindings; hosts must not re-implement it): split on `_`, `-`, `.`, space and at lower/digit-to-upper boundaries; a trailing uppercase in a run followed by a lowercase starts the next token (`HTTPServer` -> `[http, server]`, `userID` -> `[user, id]`); digits stay inside a token (`order2Items` -> `[order2, items]`). Reassembly: snake = `t1_t2`, camel = `t1T2`, pascal = `T1T2`.
+
+Two logical names in one schema that canonicalize equal (`orderTotal` vs `order_total`), or a name that canonicalizes onto a reserved contract key (e.g. `fnref`), is an error `ERR_NAME_CONFLICT:` and the service does not start (never silently overwritten).
+<!-- SPEC:NAMING-STYLE:END -->
+
+<!-- SPEC:FNREF:BEGIN -->
+### Computed columns: `fnRef` binding by composite name + canonical match
+
+Computed columns live at the schema top level, `computes: { <key>: { type, fn | asyncFn | agg, fnRef?, depends?, read? } }` (`fn` / `asyncFn` / `agg` are mutually exclusive).
+
+- The logical `fnRef` defaults to `<schema.name>.<computed-column key>` (generated, never hand-written); since `name` is globally unique, the `fnRef` is globally unique too.
+- Host implementations bind by canonicalization: both the implementation's name in the host language style and the schema's logical `fnRef` are canonicalized to token sequences and compared. So Node's `orderAmountLabel` and Python's `order_amount_label` bind to the same logical computed column.
+- Reusing one implementation across schemas: write an explicit shared name (e.g. `"fnRef": "common.moneyLabel"`); naming goes from required to optional.
+- Every declared `fnRef` must have an implementation, otherwise the service fails to start with `ERR_FN_MISSING`.
+<!-- SPEC:FNREF:END -->
+
 ---
 
 ## 11. Advanced API
@@ -361,7 +409,7 @@ structure and never writes DDL back.
 | `introspectOptions` | object | passed through to introspection (e.g. PG `schema`) |
 | `overlay` | `Array` | local schemaJSON merged on top (permissions / computes / overrides) |
 | `datasource` | string | bind every merged def to this source |
-| `namespace` | string | bind every merged def to this namespace |
+| `database` | string | bind every merged def to this database |
 | `registerDefs` | boolean (default `true`) | `false` = return defs without registering |
 
 ### `store.setFeedbackSink(fn)`
@@ -425,7 +473,7 @@ Permission-filtered schema summary for LLM prompts — a compact JSON array with
 `{ name, fields, relations, computes }` entry per model. Without a context only model
 and field names are exposed (no types). With a context everything is filtered by the
 caller's role (`canRead` / `readableFields` / `readableRelations` / `readableComputes`);
-archive tables (`*Deleted`) and ops details (indexes / datasource / namespace) never
+archive tables (`*Deleted`) and ops details (indexes / datasource / location) never
 enter the prompt. Bindings lacking the `readableComputes` verdict conservatively exclude
 `read`-whitelisted computed columns and emit `askSummaryComputeSkipped`.
 
@@ -512,8 +560,9 @@ Every registered model automatically gets a `<Model>Deleted` archive collection/
 upsert-by-`_id`, so re-creating the same `_id` does not collide.
 
 **Is it usable for multi-tenant applications?**
-Yes. Bind a schema to `(source, namespace, collection)` and pass a `{ source, namespace }`
-route override per request. Treat `routeOverride` as trusted server-side input only.
+Yes. Locate a schema by `(source, database, schema, collection)` and pass a
+`{ source, database, schema }` route override per request. Treat `routeOverride` as trusted
+server-side input only.
 
 **Does it run migrations?**
 No. `syncSchema()` only *reads* physical structure via introspection. Schema changes / DDL
@@ -561,8 +610,8 @@ and computed columns built in.
 Step-by-step use cases live in
 [`doc/use-cases/`](https://github.com/coenddt/nodejs-store/tree/main/doc/use-cases):
 
-1. **Multi-tenant SaaS** — bind a schema to `(source, namespace, collection)` and re-target each
-   request with a trusted `{ source, namespace }` route override.
+1. **Multi-tenant SaaS** — locate a schema by `(source, database, schema, collection)` and
+   re-target each request with a trusted `{ source, database, schema }` route override.
 2. **AI data-QA agent** — compile and validate a GQL plan with `buildPipeline()` before
    executing it, and capture degraded / non-pushdownable paths with `setFeedbackSink()`.
 3. **MongoDB → PostgreSQL migration** — same schema, same GQL, only the `init()` datasource

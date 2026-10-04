@@ -82,13 +82,13 @@ MongoDB 是*主方言*：查询以 MongoDB 风格的 GQL 编写，三种关系�
 - **需要行级/字段级访问控制。** 按角色的白名单、`guest` 永不写、`creator` 依据 `doc.createdBy` 校验属主，属主条件会自动注入查询。
 - **正在构建 AI/自然语言数据问答层。** 本库在设计时就考虑了 AI 查询宿主：`buildPipeline()` 可在不执行的情况下暴露规划后的查询，降级/不可下推路径会发出结构化反馈事件而非静默失败。参见配套技能 [`text-to-query`](#相关项目)。
 - **正在 MongoDB 与 SQL 之间迁移**，并希望在迁移期保持一套查询语法。
-- **多租户 SaaS。** 一份 schema 定义，N 个租户：把 schema 绑定到 `(source, namespace, collection)`，并在执行时用 `{ source, namespace }` 覆盖把任意查询/写入重新定向到目标租户。
+- **多租户 SaaS。** 一份 schema 定义，N 个租户：把 schema 定位到 `(source, database, schema, collection)`，并在执行时用 `{ source, database, schema }` 覆盖把任意查询/写入重新定向到目标租户。
 
 典型的具体场景（完整演练见 [`doc/use-cases/`](doc/use-cases/)）：
 
 | 场景 | nodejs-store 为何合适 |
 | --- | --- |
-| 每租户独立 schema/数据库的多租户 SaaS | 每租户一个 `namespace` + 运行时路由覆盖，一套 schema |
+| 每租户独立 schema/数据库的多租户 SaaS | 每租户一个 `database` + 运行时路由覆盖，一套 schema |
 | 管理后台 / 内部工具 | schema 驱动 CRUD、软删除、计算列、RBAC |
 | 今天 MongoDB，明天 PostgreSQL | 同一 GQL + 同一 schema，只有数据源变化 |
 | AI 数据问答 / text-to-query 智能体 | 仅规划的 `buildPipeline`、确定性的命令 JSON、反馈事件 |
@@ -209,7 +209,7 @@ GQL 树查询会编译为每个后端一条原生查询 —— 再也不必手�
 - **智能持久化** —— `mutation()` 依据 `_id` + 唯一索引自动识别 upsert，并递归填充关系子文档。
 - **内置软删除** —— 每个 schema 自动注册一个 `<Model>Deleted` 归档集合/表；`remove()` 先归档再删除。
 - **权限上下文** —— 基于 `AsyncLocalStorage` 的角色（`super_admin`/`admin`/`guest`/`creator`...）、schema/字段级读写白名单、自动属主条件注入。
-- **多数据源 & 多租户** —— 通过 `(source, namespace, collection)` 定位 schema；按请求用路由覆盖重新定向。
+- **多数据源 & 多租户** —— 通过 `(source, database, schema, collection)` 定位 schema；按请求用路由覆盖重新定向。
 - **异步优先，Rust 核心** —— 基于 `mongodb` Node.js 驱动与共享的 Rust 核心（含 SQL 方言）。
 - **mutation 关系谓词** —— `update` / `remove` 按关联表字段过滤，下推到全部四个后端（此前 MongoDB 侧是静默 no-op）。
 - **自增主键** —— `_id` 声明 `{ type: 'int', strategy: 'autoincrement' }` 即用数据库自增整数 ID；做不到自增的场景显式报错。
@@ -359,41 +359,57 @@ sql     = store.generateDdl('postgres', ['Course', 'CourseDeleted']);
 
 ## 多数据源连接
 
-每个 schema 由三元组 `(source, namespace, collection)` 定位 —— 该三元组在 registry 内必须
-全局唯一（重复注册会抛错，而不是静默错路由）。
+每个 schema 由 `(source, database, schema, collection)` 定位 —— `schema` 仅适用于
+PostgreSQL 源；该落点在 registry 内必须全局唯一（重复注册会抛错，而不是静默错路由）。
 
 - `source` —— `init({...})` 中的连接键（默认 `"default"`）。
-- `namespace` —— 连接内的数据库/schema：Mongo 库名、PG schema、
-  MySQL database、SQLite 附加库。可选；`null` = 连接默认。
+- `database` —— 连接内的数据库：Mongo 库名、PG / MySQL database、SQLite 附加库。
+- `schema` —— PostgreSQL 的 schema（仅 PG 源）；其它后端为 `null`。
 - `collection` —— 表/集合名。
+
+定义**不携带落点字段**：schema 定义文件不声明 `source` / `database` / `schema`（其
+`collection` 只是逻辑表/集合名）。落点由「定义目录布局 + 连接配置」解析：
+
+<!-- SPEC:LOCATION:BEGIN -->
+### Location: directory semantics + connection config (definitions carry no location)
+
+A schema definition file contains no location fields (no `source` / `database` / `schema`; `namespace` is removed). Location is resolved from the definition directory layout plus the connection config:
+
+- Under the definitions root `<defs-root>/`: the first directory level is the `database`; PostgreSQL adds a second level for `schema` (Mongo / MySQL / SQLite have no such level); deeper levels are free-form and flattened at load time (no hierarchy semantics).
+- The connection config (`store.config.json`) declares `sources` (`kind` + `databases`) and `defs`; `kind` decides whether that database directory is read one level deeper for `schema`.
+- Location fields are `source` / `database` / `schema` (PG only) / `collection`; the word `namespace` is removed.
+- Same-named schemas: exactly one primary (no `replica`); the rest declare `{ "name": "...", "replica": true }`, add only a link, and must not repeat the structure. Zero or two-or-more primaries is an error.
+- A duplicated `name` within one load batch is an error and the service does not start; re-loading the same `name` across versions bumps its version by 1.
+- Writes are synchronized within a single connection, across the primary plus all links, in one transaction; a write spanning a cross-connection link is explicitly rejected or degraded with a feedback event (never silent).
+<!-- SPEC:LOCATION:END -->
 
 ```js
 // 多个 Mongo 服务器：每个连接一个 source
 await init({ mongo_main: db, pg_a: { kind: 'postgres', exec } });
 
-// 同一个 MongoClient 服务多个数据库：声明 namespace（库名）
+// 同一个 MongoClient 服务多个数据库：选择 database
 await init({ cluster: client });
-store.register({ name: 'User', collection: 'users', datasource: 'cluster', namespace: 'tenant_42', ... });
+store.register({ name: 'User', collection: 'users', datasource: 'cluster', database: 'tenant_42', ... });
 
-// SQL 跨 namespace 的 join 会原生下推（"ns_a"."t" JOIN "ns_b"."t"）；
+// SQL 跨 database 的 join 会原生下推（"db_a"."t" JOIN "db_b"."t"）；
 // 只有 Mongo 的跨库关系会退回内存联邦。
 ```
 
 **多租户路由覆盖** —— 一份 schema 定义，N 个租户。任意查询/写入都接受
-一个 `{ source, namespace }` 覆盖参数，在**执行时**把命令重新定向（权限
+一个 `{ source, database, schema }` 覆盖参数，在**执行时**把命令重新定向（权限
 与计算列仍按结构 schema 判定）：
 
 ```js
-await store.query('User($condition:@c0){...}', params, { namespace: 'tenant_42' });
-await store.insert('Order', data, { source: 'pg_cluster', namespace: 'tenant_7' });
+await store.query('User($condition:@c0){...}', params, { database: 'tenant_42' });
+await store.insert('Order', data, { source: 'pg_cluster', database: 'tenant_7' });
 ```
 
 **`routeOverride` 是受信的服务端参数** —— 它不做来源校验，因此把用户可控输入
-透传进来，会让调用者把命令重定向到其他租户的 `source`/`namespace`（CWE-639
+透传进来，会让调用者把命令重定向到其他租户的 `source`/`database`/`schema`（CWE-639
 授权绕过面）。绝不要把原始请求数据传到这里。
 
-传统的单库用法（`init(db)` + 不含 `datasource`/`namespace` 的 schema）保持不变：
-命令携带 `source: 'default'`、`namespace: null`。
+传统的单库用法（`init(db)` + 不含 `datasource`/`database` 的 schema）保持不变：
+命令携带 `source: 'default'`、`database: null`、`schema: null`。
 
 ## 权限上下文
 
@@ -466,6 +482,35 @@ await store.runAsInternal(() => store.remove('Post', { _id: pid }));
 - 关系谓词仅支持**一层**关系；形如 `orders.items.price` 的路径会被拒绝。
 - 不可读的关系是错误，而不是静默的 `false`。
 
+<!-- SPEC:NAMING-STYLE:BEGIN -->
+### Naming: freeform definitions, system-directed translation
+
+Definitions (`collection`, fields, referenced relation fields, computed-column keys, `fnRef` values, index names) may use any style; the engine translates them to the target style. Contract keys (`fnRef`, `localField`, `foreignField`, `asyncFn`, `type`, ...) and the schema `name` are never translated.
+
+| Target | Style | Example (`orderTotal`) |
+|---|---|---|
+| MySQL / PostgreSQL / SQLite (physical) | snake_case | `order_total` |
+| MongoDB (physical) | camelCase | `orderTotal` |
+| Node.js / Java / C# / Rust (code; computed columns follow) | camelCase | `orderTotal` |
+| Go (code; computed columns follow) | PascalCase (must be exported) | `OrderTotal` |
+| Python (code; computed columns follow) | snake_case | `order_total` |
+
+Canonicalization (single implementation `core::naming`, re-exported by the bindings; hosts must not re-implement it): split on `_`, `-`, `.`, space and at lower/digit-to-upper boundaries; a trailing uppercase in a run followed by a lowercase starts the next token (`HTTPServer` -> `[http, server]`, `userID` -> `[user, id]`); digits stay inside a token (`order2Items` -> `[order2, items]`). Reassembly: snake = `t1_t2`, camel = `t1T2`, pascal = `T1T2`.
+
+Two logical names in one schema that canonicalize equal (`orderTotal` vs `order_total`), or a name that canonicalizes onto a reserved contract key (e.g. `fnref`), is an error `ERR_NAME_CONFLICT:` and the service does not start (never silently overwritten).
+<!-- SPEC:NAMING-STYLE:END -->
+
+<!-- SPEC:FNREF:BEGIN -->
+### Computed columns: `fnRef` binding by composite name + canonical match
+
+Computed columns live at the schema top level, `computes: { <key>: { type, fn | asyncFn | agg, fnRef?, depends?, read? } }` (`fn` / `asyncFn` / `agg` are mutually exclusive).
+
+- The logical `fnRef` defaults to `<schema.name>.<computed-column key>` (generated, never hand-written); since `name` is globally unique, the `fnRef` is globally unique too.
+- Host implementations bind by canonicalization: both the implementation's name in the host language style and the schema's logical `fnRef` are canonicalized to token sequences and compared. So Node's `orderAmountLabel` and Python's `order_amount_label` bind to the same logical computed column.
+- Reusing one implementation across schemas: write an explicit shared name (e.g. `"fnRef": "common.moneyLabel"`); naming goes from required to optional.
+- Every declared `fnRef` must have an implementation, otherwise the service fails to start with `ERR_FN_MISSING`.
+<!-- SPEC:FNREF:END -->
+
 ## 高级 API
 
 以下所有内容都可从导出的 `store` 单例或其重导出的模块访问。以 `?` 为前缀的选项
@@ -496,7 +541,7 @@ console.log(plan.pipeline);
 | `introspectOptions` | object | 透传给 introspection（例如 PG 的 `schema`） |
 | `overlay` | `Array` | 叠加合并的本地 schemaJSON（权限 / 计算列 / 覆盖） |
 | `datasource` | string | 把所有合并后的 def 绑定到该 source |
-| `namespace` | string | 把所有合并后的 def 绑定到该 namespace |
+| `database` | string | 把所有合并后的 def 绑定到该 database |
 | `registerDefs` | boolean（默认 `true`） | `false` = 返回 defs 但不注册 |
 
 返回合并后的 `schemaJSON[]`。
@@ -574,7 +619,7 @@ console.log(result.attempts.at(-1).gql);  // 模型产出的 GQL
 `{ name, fields, relations, computes }`。无上下文时仅暴露模型名与字段名
 （不暴露类型细节，防探针）。有上下文时，模型/字段/关系/计算列按调用者角色过滤
 （`canRead` / `readableFields` / `readableRelations` / `readableComputes`），
-归档表（`*Deleted`）排除，运维细节（indexes / datasource / namespace）不进 prompt。
+归档表（`*Deleted`）排除，运维细节（indexes / datasource / location）不进 prompt。
 
 ```js
 const summary = store.describeForAi({ userId: 'u1', roles: ['viewer'] });
@@ -631,7 +676,7 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
 - `schema` / `permission` / `feedback` / `datasource` 暴露的是 `store`
   单例所委托的同一批函数（例如 `datasource.setConnections`、`datasource.hasConnection`、
   `datasource.isSql`、`datasource.runInTransaction`）。
-- **多租户路由覆盖** —— 把 `{ source, namespace }` 作为任意
+- **多租户路由覆盖** —— 把 `{ source, database, schema }` 作为任意
   查询/写入的最后一个参数传入，见 [多数据源连接](#多数据源连接)。
 
 ## 事务边界
@@ -750,7 +795,7 @@ const run = await store.runWorkflow('placeOrder', { productId: 'p1', warehouse: 
 每个已注册的模型都会自动获得一个 `<Model>Deleted` 归档集合/表。`store.remove()` 先归档文档，再删除它；重新创建同一个 `_id` 不会冲突，因为归档写入是按 `_id` upsert。
 
 **能用于多租户应用吗？**
-可以。把 schema 绑定到 `(source, namespace, collection)`，并按请求传入 `{ source, namespace }` 路由覆盖。仅把 `routeOverride` 当作受信的服务端输入。
+可以。把 schema 定位到 `(source, database, schema, collection)`，并按请求传入 `{ source, database, schema }` 路由覆盖。仅把 `routeOverride` 当作受信的服务端输入。
 
 **它会执行迁移吗？**
 不会。`syncSchema()` 只通过 introspection *读取*物理结构（introspect → 合并 overlay → 注册）。schema 变更 / DDL 是你所用迁移工具的职责。若想要一个起点，`store.generateDdl(backend)` 可从已注册 schema 渲染 `CREATE TABLE` 文本 —— 但它只是纯文本生成：绝不执行、也不写入 DDL。

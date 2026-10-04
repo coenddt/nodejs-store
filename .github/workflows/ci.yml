@@ -93,5 +93,7 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Lint
         run: npm run lint
+      - name: Check SPEC snippets
+        run: node scripts/check-spec-snippets.js
       - name: Test + coverage gate
         run: npm run test:coverage

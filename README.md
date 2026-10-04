@@ -83,13 +83,13 @@ Reach for `nodejs-store` when any of these describe your situation:
 - **You need row-level / field-level access control.** Whitelists per role, `guest` can never write, `creator` ownership is checked against `doc.createdBy`, and owner conditions are injected automatically into queries.
 - **You are building an AI / natural-language data-QA layer.** The library was designed with AI query hosts in mind: `buildPipeline()` exposes the planned query without executing it, and degraded / non-pushdownable paths emit structured feedback events instead of failing silently. See the companion skill [`text-to-query`](#related-projects).
 - **You are migrating between MongoDB and SQL** and want to keep one query syntax during the transition.
-- **Multi-tenant SaaS.** One schema definition, N tenants: bind a schema to `(source, namespace, collection)` and re-target any query or write at execution time with a `{ source, namespace }` override.
+- **Multi-tenant SaaS.** One schema definition, N tenants: locate a schema by `(source, database, schema, collection)` and re-target any query or write at execution time with a `{ source, database, schema }` override.
 
 Typical concrete scenarios (see [`doc/use-cases/`](doc/use-cases/) for full walkthroughs):
 
 | Scenario | Why nodejs-store fits |
 | --- | --- |
-| Multi-tenant SaaS with per-tenant schema/database | `namespace` per tenant + runtime route override, one schema |
+| Multi-tenant SaaS with per-tenant schema/database | `database` per tenant + runtime route override, one schema |
 | Admin dashboard / internal tool | Schema-driven CRUD, soft-delete, computed columns, RBAC |
 | MongoDB today, PostgreSQL tomorrow | Same GQL + same schema, only the datasource changes |
 | AI data-QA / text-to-query agent | Plan-only `buildPipeline`, deterministic command JSON, feedback events |
@@ -210,7 +210,7 @@ GQL tree queries compile to a single native query per backend — never hand-wri
 - **Smart mutation** — `mutation()` auto-detects upsert by `_id` + unique index and recursively fills relation children.
 - **Soft-delete built in** — every schema auto-registers a `<Model>Deleted` archive collection/table; `remove()` archives before deleting.
 - **Permission context** — `AsyncLocalStorage`-based roles (`super_admin`/`admin`/`guest`/`creator`...), schema/field-level read/write whitelists, automatic owner-condition injection.
-- **Multi-datasource & multi-tenant** — locate a schema by `(source, namespace, collection)`; re-target per request with a route override.
+- **Multi-datasource & multi-tenant** — locate a schema by `(source, database, schema, collection)`; re-target per request with a route override.
 - **Async-first, Rust core** — built on the `mongodb` Node.js driver and a shared Rust core with SQL dialects.
 - **Relation predicates in mutations** — filter `update` / `remove` by related-table fields, pushed down to all four backends (previously a silent no-op on MongoDB).
 - **Autoincrement primary keys** — declare `_id` as `{ type: 'int', strategy: 'autoincrement' }` for database-assigned integer IDs, with explicit errors where autoincrement is impossible.
@@ -324,7 +324,7 @@ await store.transaction('default', transfer);
 - `store.transaction(source, fn)` opens a transaction scope on one source: every `executeRaw` / CRUD call inside `fn` lands on that source's transaction connection, with `commit` / `rollback` as one unit (reuses the internal `runInTransaction`). Mongo sources are probed at runtime (replica set / sharded) and wrapped in a session transaction; on standalone or probe failure `fn` runs as-is and emits `mongo_transaction_unsupported` (`deployment: standalone|unknown`) — it never pretends to be atomic. Executors without `withTransaction` also run `fn` as-is and emit a `transaction_not_atomic` feedback event (degradation is allowed, silent pretence is not). A nested same-source transaction opens a savepoint (an inner failure rolls back only that scope); without savepoint primitives it degrades by joining the outer transaction and emits `nested_savepoint_unsupported`.
 - `store.executeRaw(source, sql, params = null, isWrite = null)` runs raw SQL, compiled by the core `rawStmtCompile`. Two styles selected by the `params` type: **positional** (array/null) passes the SQL through as-is with native placeholders (`?` for MySQL / SQLite, `$1..$n` for PostgreSQL); **named** (object) compiles `:name` tokens in the SQL into dialect placeholders (same-name reuse, `::` casts / quotes / comments kept intact; missing or unused names throw `RawSqlError`). SQL sources only — a Mongo source throws `RawSqlError` (`store.RawSqlError`).
 - When `isWrite` is omitted it is inferred from the SQL's first word (SELECT / WITH / EXPLAIN / SHOW / PRAGMA / TABLE count as reads, everything else as a write — defaulting to write is the safe direction); passing it explicitly overrides the inference. Returns `{ rows, affectedRows }`: rows for reads, the affected-row count for writes.
-- `store.executeNative(source, collection, pipeline = [], options = null)` runs a native aggregation pipeline on a Mongo source (the Mongo counterpart of the SQL-side `executeRaw` escape hatch): `pipeline` is a native aggregation pipeline, `options` uses driver-native keys (`allowDiskUse` / `batchSize` / `hint` / `maxTimeMS`..., no host-side whitelist). Inside a transaction / session the session is injected automatically (owned by the transaction; `options.session` cannot override it); resolution always follows the read path, so `$merge` / `$out` write stages require you to open a transaction yourself. Mongo sources only — a SQL source throws `NativeCommandError` pointing to `executeRaw`; the MongoClient form requires a schema-declared namespace. Returns `{ rows }`.
+- `store.executeNative(source, collection, pipeline = [], options = null)` runs a native aggregation pipeline on a Mongo source (the Mongo counterpart of the SQL-side `executeRaw` escape hatch): `pipeline` is a native aggregation pipeline, `options` uses driver-native keys (`allowDiskUse` / `batchSize` / `hint` / `maxTimeMS`..., no host-side whitelist). Inside a transaction / session the session is injected automatically (owned by the transaction; `options.session` cannot override it); resolution always follows the read path, so `$merge` / `$out` write stages require you to open a transaction yourself. Mongo sources only — a SQL source throws `NativeCommandError` pointing to `executeRaw`; the MongoClient form requires a schema-declared database. Returns `{ rows }`.
 
 ### Session (Unit of Work)
 
@@ -358,42 +358,61 @@ sql     = store.generateDdl('postgres', ['Course', 'CourseDeleted']);
 
 ## Multi-datasource connections
 
-Every schema is located by the triple `(source, namespace, collection)` — the triple must be
-globally unique across the registry (duplicate registration throws instead of silently
-mis-routing).
+Every schema is located by `(source, database, schema, collection)` — `schema` applies to
+PostgreSQL sources only; the location must be globally unique across the registry (duplicate
+registration throws instead of silently mis-routing).
 
 - `source` — connection key in `init({...})` (default `"default"`).
-- `namespace` — database/schema inside the connection: Mongo db name, PG schema,
-  MySQL database, SQLite attached db. Optional; `null` = connection default.
+- `database` — the database inside the connection: Mongo db name, PG / MySQL database,
+  SQLite attached db.
+- `schema` — the PostgreSQL schema (PG sources only); `null` on every other backend.
 - `collection` — table/collection name.
+
+Definitions carry **no location fields**: a definition file declares no `source` /
+`database` / `schema` (its `collection` is just the logical table/collection name). The
+location is resolved from the definition directory layout plus the connection config:
+
+<!-- SPEC:LOCATION:BEGIN -->
+### Location: directory semantics + connection config (definitions carry no location)
+
+A schema definition file contains no location fields (no `source` / `database` / `schema`; `namespace` is removed). Location is resolved from the definition directory layout plus the connection config:
+
+- Under the definitions root `<defs-root>/`: the first directory level is the `database`; PostgreSQL adds a second level for `schema` (Mongo / MySQL / SQLite have no such level); deeper levels are free-form and flattened at load time (no hierarchy semantics).
+- The connection config (`store.config.json`) declares `sources` (`kind` + `databases`) and `defs`; `kind` decides whether that database directory is read one level deeper for `schema`.
+- Location fields are `source` / `database` / `schema` (PG only) / `collection`; the word `namespace` is removed.
+- Same-named schemas: exactly one primary (no `replica`); the rest declare `{ "name": "...", "replica": true }`, add only a link, and must not repeat the structure. Zero or two-or-more primaries is an error.
+- A duplicated `name` within one load batch is an error and the service does not start; re-loading the same `name` across versions bumps its version by 1.
+- Writes are synchronized within a single connection, across the primary plus all links, in one transaction; a write spanning a cross-connection link is explicitly rejected or degraded with a feedback event (never silent).
+<!-- SPEC:LOCATION:END -->
 
 ```js
 // Multiple Mongo servers: one source per connection
 await init({ mongo_main: db, pg_a: { kind: 'postgres', exec } });
 
-// Same MongoClient serving multiple databases: declare namespace (db name)
+// Same MongoClient serving multiple databases: choose the database
 await init({ cluster: client });
-store.register({ name: 'User', collection: 'users', datasource: 'cluster', namespace: 'tenant_42', ... });
+store.register({ name: 'User', collection: 'users', datasource: 'cluster', database: 'tenant_42', ... });
 
-// SQL cross-namespace joins are pushed down natively ("ns_a"."t" JOIN "ns_b"."t");
+// SQL cross-database joins are pushed down natively ("db_a"."t" JOIN "db_b"."t");
 // only Mongo cross-db relations fall back to in-memory federation.
 ```
 
 **Multi-tenant route override** — one schema definition, N tenants. Any query/write accepts
-a `{ source, namespace }` override that re-targets commands at execution time (permissions
-and computed columns still follow the structural schema):
+a `{ source, database, schema }` override that re-targets commands at execution time
+(permissions and computed columns still follow the structural schema):
 
 ```js
-await store.query('User($condition:@c0){...}', params, { namespace: 'tenant_42' });
-await store.insert('Order', data, { source: 'pg_cluster', namespace: 'tenant_7' });
+await store.query('User($condition:@c0){...}', params, { database: 'tenant_42' });
+await store.insert('Order', data, { source: 'pg_cluster', database: 'tenant_7' });
 ```
 
 **`routeOverride` is a trusted server-side parameter** — it carries no origin check, so
 forwarding user-controlled input into it lets a caller re-target another tenant's
-`source`/`namespace` (CWE-639 authorization-bypass surface). Never pass raw request data here.
+`source`/`database`/`schema` (CWE-639 authorization-bypass surface). Never pass raw request
+data here.
 
-Legacy single-db usage (`init(db)` + schema without `datasource`/`namespace`) is unchanged:
-commands carry `source: 'default'`, `namespace: null`.
+Legacy single-db usage (`init(db)` + schema without `datasource`/`database`) is unchanged:
+commands carry `source: 'default'`, `database: null`, `schema: null`.
 
 ## Permission context
 
@@ -466,6 +485,35 @@ Boundary rules worth knowing up front (all **fail explicitly**, never silently d
 - Relation predicates support **one level** of relation; paths like `orders.items.price` are rejected.
 - An unreadable relation is an error, not a silent `false`.
 
+<!-- SPEC:NAMING-STYLE:BEGIN -->
+### Naming: freeform definitions, system-directed translation
+
+Definitions (`collection`, fields, referenced relation fields, computed-column keys, `fnRef` values, index names) may use any style; the engine translates them to the target style. Contract keys (`fnRef`, `localField`, `foreignField`, `asyncFn`, `type`, ...) and the schema `name` are never translated.
+
+| Target | Style | Example (`orderTotal`) |
+|---|---|---|
+| MySQL / PostgreSQL / SQLite (physical) | snake_case | `order_total` |
+| MongoDB (physical) | camelCase | `orderTotal` |
+| Node.js / Java / C# / Rust (code; computed columns follow) | camelCase | `orderTotal` |
+| Go (code; computed columns follow) | PascalCase (must be exported) | `OrderTotal` |
+| Python (code; computed columns follow) | snake_case | `order_total` |
+
+Canonicalization (single implementation `core::naming`, re-exported by the bindings; hosts must not re-implement it): split on `_`, `-`, `.`, space and at lower/digit-to-upper boundaries; a trailing uppercase in a run followed by a lowercase starts the next token (`HTTPServer` -> `[http, server]`, `userID` -> `[user, id]`); digits stay inside a token (`order2Items` -> `[order2, items]`). Reassembly: snake = `t1_t2`, camel = `t1T2`, pascal = `T1T2`.
+
+Two logical names in one schema that canonicalize equal (`orderTotal` vs `order_total`), or a name that canonicalizes onto a reserved contract key (e.g. `fnref`), is an error `ERR_NAME_CONFLICT:` and the service does not start (never silently overwritten).
+<!-- SPEC:NAMING-STYLE:END -->
+
+<!-- SPEC:FNREF:BEGIN -->
+### Computed columns: `fnRef` binding by composite name + canonical match
+
+Computed columns live at the schema top level, `computes: { <key>: { type, fn | asyncFn | agg, fnRef?, depends?, read? } }` (`fn` / `asyncFn` / `agg` are mutually exclusive).
+
+- The logical `fnRef` defaults to `<schema.name>.<computed-column key>` (generated, never hand-written); since `name` is globally unique, the `fnRef` is globally unique too.
+- Host implementations bind by canonicalization: both the implementation's name in the host language style and the schema's logical `fnRef` are canonicalized to token sequences and compared. So Node's `orderAmountLabel` and Python's `order_amount_label` bind to the same logical computed column.
+- Reusing one implementation across schemas: write an explicit shared name (e.g. `"fnRef": "common.moneyLabel"`); naming goes from required to optional.
+- Every declared `fnRef` must have an implementation, otherwise the service fails to start with `ERR_FN_MISSING`.
+<!-- SPEC:FNREF:END -->
+
 ## Advanced API
 
 Everything below is reachable from the exported `store` singleton or the modules it
@@ -496,7 +544,7 @@ structure — it never writes DDL back to the database.
 | `introspectOptions` | object | passed through to introspection (e.g. PG `schema`) |
 | `overlay` | `Array` | local schemaJSON merged on top (permissions / computes / overrides) |
 | `datasource` | string | bind every merged def to this source |
-| `namespace` | string | bind every merged def to this namespace |
+| `database` | string | bind every merged def to this database |
 | `registerDefs` | boolean (default `true`) | `false` = return defs without registering |
 
 Returns the merged `schemaJSON[]`.
@@ -578,7 +626,7 @@ Permission-filtered schema summary for LLM prompts — a compact JSON array with
 and field *names* are exposed (no types — probe-resistant). With a context, models,
 fields, relations and computed columns are filtered by the caller's role
 (`canRead` / `readableFields` / `readableRelations` / `readableComputes`), archive
-tables (`*Deleted`) are dropped, and ops details (indexes / datasource / namespace)
+tables (`*Deleted`) are dropped, and ops details (indexes / datasource / location)
 never enter the prompt.
 
 ```js
@@ -638,7 +686,7 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
 - `schema` / `permission` / `feedback` / `datasource` expose the same functions the `store`
   singleton delegates to (e.g. `datasource.setConnections`, `datasource.hasConnection`,
   `datasource.isSql`, `datasource.runInTransaction`).
-- **Multi-tenant route override** — pass `{ source, namespace }` as the last argument of any
+- **Multi-tenant route override** — pass `{ source, database, schema }` as the last argument of any
   query/write, see [Multi-datasource connections](#multi-datasource-connections).
 
 ## Transaction boundary
@@ -757,7 +805,7 @@ Use `store.setContext({ userId, roles })` plus schema-level `read`/`write` white
 Every registered model automatically gets a `<Model>Deleted` archive collection/table. `store.remove()` archives the document first, then deletes it; re-creating the same `_id` does not collide because the archive write is upsert-by-`_id`.
 
 **Is it usable for multi-tenant applications?**
-Yes. Bind a schema to `(source, namespace, collection)` and pass a `{ source, namespace }` route override per request. Treat `routeOverride` as trusted server-side input only.
+Yes. Locate a schema by `(source, database, schema, collection)` and pass a `{ source, database, schema }` route override per request. Treat `routeOverride` as trusted server-side input only.
 
 **Does it run migrations?**
 No. `syncSchema()` only *reads* physical structure via introspection (introspect → merge overlay → register). Schema changes / DDL are your migration tool's job. If you want a starting point, `store.generateDdl(backend)` renders `CREATE TABLE` text from the registered schemas — but it is pure text generation: it never runs or writes DDL.

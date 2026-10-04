@@ -1,5 +1,46 @@
 # Changelog
 
+## 4.0.0 (2026-10-04)
+
+### Breaking（落点模型外置：`namespace` 删除 → `database`(+`schema` PG)、定义零落点）
+
+- **命令体形状改为 `{ source, database, schema, collection }`**：core 产出的每条 Command 携带
+  这四项定位（`source` 缺省 `"default"`；`schema` 仅 PG 源非 null）；旧 `namespace` 字段删除。
+- **定义零落点**：schema 定义文件不再声明任何定位字段（`source` / `database` / `schema` 一并
+  移除，`namespace` 删除）；落点由「定义目录布局 + 连接配置」解析 —— `<defs-root>/` 下一级目录 =
+  `database`，PostgreSQL 再加二级 = `schema`（Mongo / MySQL / SQLite 无此级），更深层级自由并在
+  装载时打平。
+- **`routeOverride` 键更名**：由 `{ source, namespace }` 改为 `{ source?, database?, schema? }`，
+  仍是受信服务端参数（CWE-639 面不变）。
+- **同批同名定义 ⇒ 报错、服务不启动**（原静默覆盖）；同名一律「一份主 + 若干 `replica` 从链路」，
+  从链路只加 link、不重复结构，零或 ≥2 个主同为错误。跨版本同名重载版本号 +1。
+- **数据标识符下沉翻译**：定义名（`collection`、字段、关系字段、计算列键、`fnRef` 值、索引名）可
+  任意风格，引擎按目标风格翻译（SQL 物理 snake_case、Mongo 物理 camelCase、Node/Java/C#/Rust 代码
+  camelCase、Go PascalCase、Python snake_case）；同 schema 内两个逻辑名归一后相等，或归一撞上保留
+  契约键（如 `fnref`）⇒ `ERR_NAME_CONFLICT`，服务不启动（**既有与保留键同名归一的字段名，如
+  `type` / `read` / `write`，将被拒绝**）。归一实现唯一在 core `core::naming`，宿主不得重写。
+- **计算列 `fnRef` 默认复合名 + 归一匹配**：逻辑 `fnRef` 默认 `<schema.name>.<计算列键>`（自动生成，
+  不必手写），宿主实现按归一 token 序列匹配（Node `orderAmountLabel` 与 Python `order_amount_label`
+  绑定同一逻辑计算列）；跨 schema 复用可显式写共享名（如 `"common.moneyLabel"`），命名由必填转可选；
+  声明的 `fnRef` 无实现 ⇒ `ERR_FN_MISSING`，服务不启动。
+- **Python 宿主删除驼峰别名**（仅蛇形）。
+
+### Migration
+
+1. 把定义 / 命令中的 `namespace` 替换为 `database`（PostgreSQL 另加 `schema`）。
+2. 删除 schema 定义文件里的定位字段（`source` / `database` / `schema`）。
+3. 按新语义重排目录：一级目录 = `database`，PostgreSQL 再加二级 = `schema`；更深层级自由打平。
+4. `routeOverride` 键改名 `{ source?, database?, schema? }`。
+5. 抬高绑定依赖下限：`rust-store-node` `^4.0.0`。
+6. 检查数据标识符与保留契约键的归一冲突（撞名 ⇒ `ERR_NAME_CONFLICT`，须改名）。
+
+### Docs
+
+- README（双语）/ `llms-full.txt` / `ask_knowledge.md` 新增三段规范（命名风格 / 落点目录约定 /
+  `fnRef` 绑定），并以 `scripts/check-spec-snippets.js` 在 CI 校验各载体归一后逐段一致。
+- 新增 `doc/transaction-capabilities.md` / `.zh-CN.md`（写同事务边界：单连接内跨 db / PG schema 可
+  同事务，Mongo 需副本集；跨连接无跨源事务 ⇒ 显式拒绝或降级并发反馈事件，绝不静默）。
+
 ## 3.0.0 (2026-10-02)
 
 ### Breaking（RBAC 内置角色清单化，设计 §11）
