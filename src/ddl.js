@@ -144,7 +144,7 @@ function indexStmts(defn, backend) {
     const unique = Boolean(idx.unique || (idx.options && idx.options.unique));
     const physKeys = Object.keys(keys).map((k) => pname(backend, k));
     const cols = Object.entries(keys)
-      .map(([k, v], i) => `${q(backend, physKeys[i])} ${v === -1 ? 'DESC' : 'ASC'}`)
+      .map(([, v], i) => `${q(backend, physKeys[i])} ${v === -1 ? 'DESC' : 'ASC'}`)
       .join(', ');
     const name = 'idx_' + table + '_' + physKeys.join('_');
     out.push(`CREATE ${unique ? 'UNIQUE ' : ''}INDEX ${q(backend, name)} ON ${q(backend, table)} (${cols})`);
