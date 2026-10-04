@@ -43,7 +43,7 @@ async function _mutationOne(schemaName, data, now, routeOverride = null) {
  * mutation — 智能持久化
  *
  * 自动判断 upsert/insert，支持父子文档关联填充。
- * `routeOverride` 可选：`{ source?, namespace? }` 多租户路由。
+ * `routeOverride` 可选：`{ source?, database?, schema? }` 多租户路由。
  */
 async function mutation(schemaName, data, routeOverride = null) {
   const isArray = Array.isArray(data);

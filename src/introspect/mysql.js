@@ -52,7 +52,7 @@ async function introspect(driver, { database = null } = {}) {
     throw new TypeError('mysql introspection 需要 mysql2/promise 的连接或连接池');
   }
   // 显式传 database（连接串不带库或跨库同步）→ 参数化 table_schema；
-  // 缺省用当前连接的 DATABASE()。显式库名会作为 namespace 透出到 def。
+  // 缺省用当前连接的 DATABASE()。显式库名会作为 database 透出到 def。
   const schemaFilter = database != null ? 'table_schema = ?' : 'table_schema = DATABASE()';
   const params = database != null ? [database] : [];
   const tablesSql = (base) => base.replace('table_schema = DATABASE()', schemaFilter);
@@ -69,9 +69,9 @@ async function introspect(driver, { database = null } = {}) {
   ]);
 
   return {
-    // 显式库名 → 行携带 namespace（core schemaFromRows 会写进 def）
+    // 显式库名 → 行携带 database（core schemaFromRows 会写进 def）
     tables: database != null
-      ? tables.map((t) => ({ ...t, namespace: database }))
+      ? tables.map((t) => ({ ...t, database }))
       : tables,
     columns: columns.map((c) => ({
       table: c.table,

@@ -30,6 +30,7 @@ const ddl = require('./ddl');
 const executors = require('./executors');
 const feedback = require('./feedback');
 const introspect = require('./introspect');
+const naming = require('./naming');
 const llm = require('./llm');
 const metadef = require('./metadef');
 const permission = require('./permission');
@@ -71,7 +72,7 @@ class Store {
 
   // ── CRUD ──
   /**
-   * GQL 查询。`routeOverride`（可选）：`{ source?, namespace? }` 多租户路由，
+   * GQL 查询。`routeOverride`（可选）：`{ source?, database?, schema? }` 多租户路由，
    * 覆盖命令定位（权限/计算列仍按结构 schema 判定）。下同。
    * 注意：`routeOverride` 为**受信服务端参数**，禁止透传用户输入（否则可被用于跨源路由，CWE-639）。
    */
@@ -486,13 +487,14 @@ async function _createIndexesIfNeeded() {
   for (const name of names) {
     const s = schema.get(name);
     // 索引创建是初始化的辅助动作（非命令路由）：schema 绑定的 source 暂未在
-    // 当前连接映射中时软跳过，不阻塞 init；其余配置错误（namespace 形态不匹配等）
+    // 当前连接映射中时软跳过，不阻塞 init；其余配置错误（database 形态不匹配等）
     // 按 fail-fast 由 dbOfSchema 上抛，不静默吞掉
     if (!datasource.hasConnection(datasource.sourceOfSchema(name))) continue;
-    const db = datasource.dbOfSchema(name); // Mongo 按 (datasource, namespace) 解析；SQL 源返回 null
+    const db = datasource.dbOfSchema(name); // Mongo 按 (datasource, database) 解析；SQL 源返回 null
     if (!db) continue; // SQL 后端不建索引
 
-    const coll = db.collection(s.collection);
+    // 物理集合名：与命令执行路径同源（core::naming 的 camelCase 翻译，单点）
+    const coll = db.collection(naming.physical(s.collection));
 
     let existingIndexes;
     try {
@@ -517,11 +519,12 @@ async function _createIndexesIfNeeded() {
         }
         Object.assign(finalOptions, explicitOptions);
 
-        // 检查是否已有同 key 模式的索引（忽略选项差异）
-        const nameFromKeys = Object.entries(keys).map(([k, v]) => `${k}_${v}`).join('_');
+        // 检查是否已有同 key 模式的索引（忽略选项差异）；键按目标介质翻译为物理名
+        const physKeys = Object.entries(keys).map(([k, v]) => [naming.physical(k), v]);
+        const nameFromKeys = physKeys.map(([k, v]) => `${k}_${v}`).join('_');
         if (existingIndexes.some((ei) => ei.name === nameFromKeys)) continue;
 
-        await coll.createIndex(Object.entries(keys), finalOptions);
+        await coll.createIndex(physKeys, finalOptions);
       } catch (e) {
         // 索引创建失败不阻塞 init（辅助动作），但必须走统一反馈通道：
         // 无 sink 时由 feedback 默认落 stderr（不双份打印），宿主可 setFeedbackSink 接管
@@ -544,7 +547,7 @@ async function _createIndexesIfNeeded() {
  *   - 单源简写：`init(db)` / `init(client)`（Mongo db 实例或 MongoClient，自动归一为
  *     `{ default: 连接 }`）
  *
- * 连接按命令的 `source` 路由、`namespace` 定位库（schema 声明）；缺省绑定回落 `default`。
+ * 连接按命令的 `source` 路由、`database`（PG 另加 `schema`）定位库（schema 声明）；缺省绑定回落 `default`。
  */
 async function init(connections) {
   if (!connections || typeof connections !== 'object') {

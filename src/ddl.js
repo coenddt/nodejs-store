@@ -19,6 +19,7 @@
  */
 
 const { emit: _emitFeedback } = require('./feedback');
+const { translateName } = require('./core');
 const schema = require('./schema');
 
 const BACKENDS = ['mysql', 'postgres', 'sqlite'];
@@ -58,6 +59,21 @@ function q(backend, ident) {
   return '"' + ident.replace(/"/g, '""') + '"';
 }
 
+/**
+ * 逻辑名 → 本后端物理标识符（设计 §6）：SQL 后端恒 snake_case。
+ * 保留名（I3）：`_id` 物理主键、`__` 前缀哨兵列不翻译。唯一算法在 core::naming（禁自研）。
+ */
+function pname(backend, logical) {
+  if (typeof logical !== 'string' || logical === '') return logical;
+  if (logical === '_id' || logical.startsWith('__') || logical.startsWith('^__')) return logical;
+  return translateName(logical, backend);
+}
+
+/** 集合名 → 物理表名（按目标介质翻译） */
+function ptable(backend, defn) {
+  return pname(backend, defn.collection || defn.name);
+}
+
 function declaredType(fieldDef) {
   return fieldDef && typeof fieldDef === 'object' ? fieldDef.type : fieldDef;
 }
@@ -69,15 +85,16 @@ function columns(defn, backend) {
   const fields = defn.fields || {};
   for (const [name, fdef] of Object.entries(fields)) {
     const ftype = declaredType(fdef);
+    const col = pname(backend, name); // 列标识符按目标介质翻译（snake_case）
     if (name === '_id') {
       const strategy = fdef && typeof fdef === 'object' ? fdef.strategy : undefined;
-      cols.push([name, strategy === 'autoincrement' ? ID_AUTO_TYPE[i] : ID_TYPE[i], true,
+      cols.push([col, strategy === 'autoincrement' ? ID_AUTO_TYPE[i] : ID_TYPE[i], true,
         strategy === 'autoincrement']);
       continue;
     }
     if (NON_COLUMN.includes(ftype)) {
       // object/array → 单列 JSON 文本（同 core field_column_ref::Json）
-      cols.push([name, JSON_TYPE[i], false, false]);
+      cols.push([col, JSON_TYPE[i], false, false]);
       continue;
     }
     if (!Object.prototype.hasOwnProperty.call(TYPES, ftype)) {
@@ -85,14 +102,15 @@ function columns(defn, backend) {
         `DDL 生成：字段 "${defn.name}.${name}" 类型 ${JSON.stringify(ftype)} 未知，支持 ${Object.keys(TYPES).sort()}`,
       );
     }
-    cols.push([name, TYPES[ftype][i], false, false]);
+    cols.push([col, TYPES[ftype][i], false, false]);
   }
   if (!cols.some((c) => c[2])) {
     throw new Error(`DDL 生成：schema "${defn.name}" 缺少 _id 字段`);
   }
   if (defn.timestamps !== false) {
     for (const ts of TIMESTAMP_FIELDS) {
-      if (!cols.some((c) => c[0] === ts)) cols.push([ts, TYPES.number[i], false, false]);
+      const col = pname(backend, ts); // createdAt/updatedAt → created_at/updated_at
+      if (!cols.some((c) => c[0] === col)) cols.push([col, TYPES.number[i], false, false]);
     }
   }
   cols.push(['__present', PRESENT_TYPE[i], false, false]);
@@ -118,23 +136,24 @@ function warnPresentOverflow(defn, cols) {
  * 索引名 `idx_<collection>_<f1>_<f2>`（对齐 SQL 常规命名）；keys 值 1/-1 → ASC/DESC。 */
 function indexStmts(defn, backend) {
   const out = [];
-  const table = defn.collection || defn.name;
+  const table = ptable(backend, defn); // 物理表名（按目标介质翻译）
   for (const idx of defn.indexes || []) {
     if (!idx || typeof idx !== 'object') continue;
     const keys = idx.keys;
     if (!keys || typeof keys !== 'object' || !Object.keys(keys).length) continue;
     const unique = Boolean(idx.unique || (idx.options && idx.options.unique));
+    const physKeys = Object.keys(keys).map((k) => pname(backend, k));
     const cols = Object.entries(keys)
-      .map(([k, v]) => `${q(backend, k)} ${v === -1 ? 'DESC' : 'ASC'}`)
+      .map(([k, v], i) => `${q(backend, physKeys[i])} ${v === -1 ? 'DESC' : 'ASC'}`)
       .join(', ');
-    const name = 'idx_' + table + '_' + Object.keys(keys).join('_');
+    const name = 'idx_' + table + '_' + physKeys.join('_');
     out.push(`CREATE ${unique ? 'UNIQUE ' : ''}INDEX ${q(backend, name)} ON ${q(backend, table)} (${cols})`);
   }
   return out;
 }
 
 function createTable(defn, backend) {
-  const table = defn.collection || defn.name;
+  const table = ptable(backend, defn); // 物理表名（按目标介质翻译）
   const cols = columns(defn, backend);
   if (backend === 'mysql') warnPresentOverflow(defn, cols);
   const lines = [];
@@ -319,7 +338,7 @@ function generateMigration(backend, oldDefn, newDefn) {
       + '（首批白名单：加表/加列/类型放宽/加索引；破坏性变更请走显式数据迁移脚本）');
   }
 
-  const table = newDefn.collection || newDefn.name;
+  const table = ptable(backend, newDefn); // 物理表名（与 createTable 一致）
   const stmts = [];
   const order = { addColumn: 0, widenColumn: 1, addIndex: 2 };
   for (const ch of [...plan.changes].sort((a, b) => (order[a.op] ?? 9) - (order[b.op] ?? 9))) {
@@ -333,7 +352,8 @@ function generateMigration(backend, oldDefn, newDefn) {
       const ftype = declaredType(ch.field);
       const colType = fieldSqlType(backend, ch.field);
       const deflt = ch.field && typeof ch.field === 'object' ? ch.field.default : undefined;
-      let colSql = `${q(backend, ch.name)} ${colType}`;
+      const colName = pname(backend, ch.name); // 物理列名（与 createTable 一致）
+      let colSql = `${q(backend, colName)} ${colType}`;
       if (deflt !== undefined && deflt !== null) {
         if (NON_COLUMN.includes(ftype)) {
           throw new Error(
@@ -352,11 +372,11 @@ function generateMigration(backend, oldDefn, newDefn) {
           + `（${ch.from} → ${ch.to} 需重建表）；加列/加索引/加表已支持`);
       }
       if (backend === 'mysql') {
-        stmts.push(`ALTER TABLE ${q(backend, table)} MODIFY COLUMN ${q(backend, ch.name)} ${colType}`);
+        stmts.push(`ALTER TABLE ${q(backend, table)} MODIFY COLUMN ${q(backend, pname(backend, ch.name))} ${colType}`);
       } else {
         stmts.push(
-          `ALTER TABLE ${q(backend, table)} ALTER COLUMN ${q(backend, ch.name)} `
-          + `TYPE ${colType} USING ${q(backend, ch.name)}::${colType}`);
+          `ALTER TABLE ${q(backend, table)} ALTER COLUMN ${q(backend, pname(backend, ch.name))} `
+          + `TYPE ${colType} USING ${q(backend, pname(backend, ch.name))}::${colType}`);
       }
     } else if (ch.op === 'addIndex') {
       stmts.push(...indexStmts({ collection: table, indexes: [ch.index] }, backend));

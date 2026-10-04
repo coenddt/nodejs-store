@@ -3,16 +3,16 @@
 /**
  * 数据源路由（多后端）
  *
- * core 产出的 Command 携带 `source` / `namespace` / `collection` 三元组
+ * core 产出的 Command 携带 `source` / `database` / `schema` / `collection` 定位四元组
  * （见 rust-store/core 的 Command 契约），Host 只按 `source` 选连接、
- * 按 `namespace` 定位连接内的库/schema：
+ * 按 `database`（PG 另加 `schema`）定位连接内的库/schema：
  *   - Mongo 源：直接交原生驱动（`db.collection(...)`）
  *   - SQL 源（mysql / postgres / sqlite）：先经 core `dialectTranslate` 翻译为
  *     SQL 语句序列，再交该连接的 `exec` 执行器
  *
- * Mongo 连接支持两种形态（绝不猜，按命令的 namespace 严格校验）：
- *   - db 实例：命令 `namespace` 必须为 null（db 实例无法跨库，非 null 显式报错）
- *   - MongoClient：命令 `namespace` 必须非 null（db 名）→ `client.db(ns).collection(...)`
+ * Mongo 连接支持两种形态（绝不猜，按命令的 database 严格校验）：
+ *   - db 实例：命令 `database` 必须为 null（db 实例无法跨库，非 null 显式报错）
+ *   - MongoClient：命令 `database` 必须非 null（db 名）→ `client.db(db).collection(...)`
  *
  * 数据源名缺省为 `default`；`init` 传入单个 Mongo db 实例时自动归一为
  * `{ default: db }`，保证既有单库调用零变更。
@@ -323,29 +323,29 @@ async function runInTransaction(source, fn) {
 }
 
 /**
- * Mongo 源：按命令的 `namespace` 解析目标 db（两种形态，绝不猜）
+ * Mongo 源：按命令的 `database` 解析目标 db（两种形态，绝不猜）
  *
- *   - db 实例（`db.collection` 为函数）：namespace 必须为 null，非 null 显式报错；
- *   - MongoClient（`db` 为函数且无 `collection`）：namespace 必须非 null，
- *     返回 `client.db(namespace)`；
+ *   - db 实例（`db.collection` 为函数）：database 必须为 null，非 null 显式报错；
+ *   - MongoClient（`db` 为函数且无 `collection`）：database 必须非 null，
+ *     返回 `client.db(database)`；
  *   - 非 Mongo（SQL 描述符）返回 null，由调用方走 SQL 路径。
  */
-function mongoDb(connection, source, namespace) {
+function mongoDb(connection, source, database) {
   if (typeof connection.collection === 'function') {
-    if (namespace) {
+    if (database) {
       throw new Error(
-        `数据源 ${source} 是 Mongo db 实例，命令携带了 namespace="${namespace}"（db 实例不支持跨库；跨库请改传 MongoClient 并用 schema.namespace 声明库名）`,
+        `数据源 ${source} 是 Mongo db 实例，命令携带了 database="${database}"（db 实例不支持跨库；跨库请改传 MongoClient 并用 schema.database 声明库名）`,
       );
     }
     return connection;
   }
   if (typeof connection.db === 'function') {
-    if (!namespace) {
+    if (!database) {
       throw new Error(
-        `数据源 ${source} 是 MongoClient，命令缺少 namespace（ MongoClient 形态必须在 schema 声明 namespace 即 db 名）`,
+        `数据源 ${source} 是 MongoClient，命令缺少 database（ MongoClient 形态必须在 schema 声明 database 即 db 名）`,
       );
     }
-    return connection.db(namespace);
+    return connection.db(database);
   }
   return null;
 }
@@ -431,11 +431,11 @@ function connectionOfSchema(name) {
   return getConnection(sourceOfSchema(name));
 }
 
-/** 某 schema 的 Mongo db 句柄（按镜像的 datasource + namespace 解析；SQL 源返回 null） */
+/** 某 schema 的 Mongo db 句柄（按镜像的 datasource + database 解析；SQL 源返回 null） */
 function dbOfSchema(name) {
   const s = _getSchema(name);
   const source = s.datasource || DEFAULT_SOURCE;
-  return mongoDb(getConnection(source), source, s.namespace || null);
+  return mongoDb(getConnection(source), source, s.database || null);
 }
 
 /** Command.source → `{ source, connection }`（三元组中的 source 精确路由） */
@@ -544,7 +544,7 @@ class NativeCommandError extends Error {
  *     options.session 不可覆盖）；统一按读路径解析（isWrite=false），
  *     $merge/$out 写管道请自行开事务；
  *   - 仅支持 Mongo 源：SQL 源显式报错并指引 executeRaw（绝不静默）；
- *     MongoClient 形态须经 schema 声明 namespace（mongoDb 既有校验，缺名即报错）；
+ *     MongoClient 形态须经 schema 声明 database（mongoDb 既有校验，缺名即报错）；
  *   - 返回 `{ rows }`。
  *   对齐 py_store/datasource.py#execute_native。
  */

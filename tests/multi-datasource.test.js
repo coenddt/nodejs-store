@@ -5,13 +5,17 @@
  *
  * 对应 `multi-datasource-routing-plan.md` §九：
  *   - B1: 两个 Mongo db 实例 source，同名集合 users，各查各库无串源
- *   - B2: 单 MongoClient source，两个 schema 声明不同 namespace（db 名），各查各库
- *   - B3: (source, namespace, collection) 冲突注册 → 抛错（fail fast，非静默串源）
- *   - B4: 同 SQL 连接双 namespace（SQLite attached db 代演 PG schema）各自命中
- *   - B9: 旧用法 init(db) + schema 无 datasource/namespace → source="default"、
- *         namespace=null，行为零变更
- *   - B10: namespace 非空但 source 为 db 实例 / client 缺 namespace → 显式报错
- *   - B11: syncSchema({ namespace }) 回写 def 的 namespace，与手动声明等价
+ *   - B2: 单 MongoClient source，两个 schema 声明不同 database（db 名），各查各库
+ *   - B3: (source, database, collection) 冲突注册 → 抛错（fail fast，非静默串源）
+ *   - B4: 同 SQL 连接双 database（SQLite attached db 代演 PG schema）各自命中
+ *   - B9: 旧用法 init(db) + schema 无 datasource/database → source="default"、
+ *         database=null，行为零变更
+ *   - B10: database 非空但 source 为 db 实例 / client 缺 database → 显式报错
+ *   - B11: syncSchema({ database }) 回写 def 的 database，与手动声明等价
+ *
+ * 注：落点（source/database/schema）现由 core `register_batch` 的 `Location` 注入；
+ * 宿主 `register` 尚未接线（绑定暴露属 P6/06 号分步）——本文件的路由断言在该接线落地前
+ * 仍处「破坏窗口」（见 01 号分步 §8）。
  *
  * B5-B8（联邦下推 / routeOverride）在 core 侧：
  *   `rust-store/core/tests/pushdown_usecases.rs`。
@@ -84,7 +88,7 @@ class FakeDb {
   }
 }
 
-/** MongoClient 形态（db 为函数且无 collection）：按 namespace 动态取库 */
+/** MongoClient 形态（db 为函数且无 collection）：按 database 动态取库 */
 class FakeClient {
   constructor() {
     this.dbs = Object.create(null);
@@ -134,14 +138,14 @@ test('B1: 两个 Mongo db 实例 source，同名集合 users，各查各库无�
   assert.deepEqual(gotB, [{ _id: 'b1', side: 'B' }], 'B 源应命中 B 库数据');
 });
 
-// ─── B2：单 MongoClient，双 namespace（db 名） ───────────────
+// ─── B2：单 MongoClient，双 database（db 名） ───────────────
 
-test('B2: 单 MongoClient source，两个 schema 不同 namespace，各查各库', async () => {
+test('B2: 单 MongoClient source，两个 schema 不同 database，各查各库', async () => {
   const client = new FakeClient();
   client.dbs.tenant_a = new FakeDb({ b2_docs: [{ _id: 't1', tag: 'T-A' }] });
   client.dbs.tenant_b = new FakeDb({ b2_docs: [{ _id: 't2', tag: 'T-B' }] });
 
-  // 同 collection 名，仅靠 namespace 区分（三元组唯一性由 namespace 维度保证）
+  // 同 collection 名，仅靠 database 区分（四元组唯一性由 database 维度保证）
   _sc.register({
     name: 'B2DocA',
     collection: 'b2_docs',
@@ -149,7 +153,7 @@ test('B2: 单 MongoClient source，两个 schema 不同 namespace，各查各库
     fields: { tag: { type: 'string' } },
     relations: {},
     datasource: 'mongo_cluster',
-    namespace: 'tenant_a',
+    database: 'tenant_a',
   });
   _sc.register({
     name: 'B2DocB',
@@ -158,7 +162,7 @@ test('B2: 单 MongoClient source，两个 schema 不同 namespace，各查各库
     fields: { tag: { type: 'string' } },
     relations: {},
     datasource: 'mongo_cluster',
-    namespace: 'tenant_b',
+    database: 'tenant_b',
   });
 
   await init({ mongo_cluster: client });
@@ -168,13 +172,13 @@ test('B2: 单 MongoClient source，两个 schema 不同 namespace，各查各库
 
   assert.deepEqual(gotA, [{ _id: 't1', tag: 'T-A' }]);
   assert.deepEqual(gotB, [{ _id: 't2', tag: 'T-B' }]);
-  assert.ok(client.dbNames.includes('tenant_a'), '应按 namespace 取 client.db(tenant_a)');
-  assert.ok(client.dbNames.includes('tenant_b'), '应按 namespace 取 client.db(tenant_b)');
+  assert.ok(client.dbNames.includes('tenant_a'), '应按 database 取 client.db(tenant_a)');
+  assert.ok(client.dbNames.includes('tenant_b'), '应按 database 取 client.db(tenant_b)');
 });
 
-// ─── B3：三元组冲突注册 → 抛错 ───────────────────────────────
+// ─── B3：定位四元组冲突注册 → 抛错 ───────────────────────────────
 
-test('B3: (source, namespace, collection) 冲突注册应抛错而非静默串源', () => {
+test('B3: (source, database, collection) 冲突注册应抛错而非静默串源', () => {
   _sc.register({
     name: 'B3First',
     collection: 'b3_same',
@@ -182,7 +186,7 @@ test('B3: (source, namespace, collection) 冲突注册应抛错而非静默串�
     fields: { v: { type: 'string' } },
     relations: {},
     datasource: 'b3_src',
-    namespace: 'b3_ns',
+    database: 'b3_ns',
   });
   assert.throws(
     () =>
@@ -193,15 +197,15 @@ test('B3: (source, namespace, collection) 冲突注册应抛错而非静默串�
         fields: { v: { type: 'string' } },
         relations: {},
         datasource: 'b3_src',
-        namespace: 'b3_ns',
+        database: 'b3_ns',
       }),
-    /三元组|已注册|唯一|conflict/i,
+    /定位冲突|冲突|已占用|已注册|唯一|conflict/i,
   );
 });
 
-// ─── B4：同 SQL 连接双 namespace（SQLite attached 代演 PG schema） ──
+// ─── B4：同 SQL 连接双 database（SQLite attached 代演 PG schema） ──
 
-test('B4: 同连接双 namespace（attached db），各自命中不串表', async () => {
+test('B4: 同连接双 database（attached db），各自命中不串表', async () => {
   const db = new Database(':memory:');
   db.exec("ATTACH ':memory:' AS app_a");
   db.exec("ATTACH ':memory:' AS app_b");
@@ -216,7 +220,7 @@ test('B4: 同连接双 namespace（attached db），各自命中不串表', asyn
     fields: { tag: { type: 'string' } },
     relations: {},
     datasource: 'b4_sqlite',
-    namespace: 'app_a',
+    database: 'app_a',
   });
   _sc.register({
     name: 'B4RowB',
@@ -226,7 +230,7 @@ test('B4: 同连接双 namespace（attached db），各自命中不串表', asyn
     fields: { tag: { type: 'string' } },
     relations: {},
     datasource: 'b4_sqlite',
-    namespace: 'app_b',
+    database: 'app_b',
   });
 
   await init({ b4_sqlite: executors.createConnection('sqlite', db) });
@@ -239,16 +243,16 @@ test('B4: 同连接双 namespace（attached db），各自命中不串表', asyn
   assert.deepEqual(gotA.map((d) => d.tag), ['NS-A']);
   assert.deepEqual(gotB.map((d) => d.tag), ['NS-B']);
 
-  // 物理落库位置核对：namespace 即 attached db
+  // 物理落库位置核对：database 即 attached db
   const rawA = db.prepare('SELECT tag FROM app_a.b4_rows WHERE _id = ?').all(a._id);
   const rawB = db.prepare('SELECT tag FROM app_b.b4_rows WHERE _id = ?').all(b._id);
   assert.equal(rawA.length, 1, 'A 应物理落在 app_a');
   assert.equal(rawB.length, 1, 'B 应物理落在 app_b');
 });
 
-// ─── B9：旧用法零变更（default source + null namespace） ─────
+// ─── B9：旧用法零变更（default source + null database） ─────
 
-test('B9: init(db) + schema 无 datasource/namespace → source=default、namespace=null', async () => {
+test('B9: init(db) + schema 无 datasource/database → source=default、database=null', async () => {
   const db = new FakeDb({ b9_legacy: [{ _id: 'l1', name: 'legacy' }] });
   _sc.register({
     name: 'B9Legacy',
@@ -263,7 +267,7 @@ test('B9: init(db) + schema 无 datasource/namespace → source=default、namesp
   const plan = _sc.core.planQuery('B9Legacy{_id, name}', {});
   for (const c of plan.commands) {
     assert.equal(c.source, 'default');
-    assert.equal(c.namespace, null);
+    assert.equal(c.database, null);
   }
 
   const got = await store.query('B9Legacy{_id, name}');
@@ -272,20 +276,20 @@ test('B9: init(db) + schema 无 datasource/namespace → source=default、namesp
 
 // ─── B10：Mongo 双形态严格校验（不猜） ───────────────────────
 
-test('B10: namespace 非空但 source 为 db 实例 → 显式报错', () => {
+test('B10: database 非空但 source 为 db 实例 → 显式报错', () => {
   const fakeDb = new FakeDb({});
   assert.throws(
     () => datasource.mongoDb(fakeDb, 's', 'tenant_x'),
-    /namespace.*db 实例|db 实例/i,
+    /database.*db 实例|db 实例/i,
   );
 });
 
-test('B10: MongoClient 缺 namespace → 显式报错', () => {
+test('B10: MongoClient 缺 database → 显式报错', () => {
   const fakeClient = new FakeClient();
-  assert.throws(() => datasource.mongoDb(fakeClient, 's', null), /namespace/i);
+  assert.throws(() => datasource.mongoDb(fakeClient, 's', null), /database/i);
 });
 
-// ─── B8：routeOverride 同一 schema 落不同租户 namespace ──────
+// ─── B8：routeOverride 同一 schema 落不同租户 database ──────
 
 test('B8: routeOverride 多租户路由（insert/query/count 落租户库）', async () => {
   const db = new Database(':memory:');
@@ -306,19 +310,19 @@ test('B8: routeOverride 多租户路由（insert/query/count 落租户库）', a
   await init({ b8_sqlite: executors.createConnection('sqlite', db) });
 
   // 带 override 写入租户库
-  const doc = await store.insert('B8Row', { tag: 'T42' }, { namespace: 'tenant_42' });
+  const doc = await store.insert('B8Row', { tag: 'T42' }, { database: 'tenant_42' });
 
   // 带 override 读：命中租户库；不带 override 读：默认库为空
-  const gotTenant = await store.query('B8Row{_id, tag}', null, { namespace: 'tenant_42' });
+  const gotTenant = await store.query('B8Row{_id, tag}', null, { database: 'tenant_42' });
   assert.deepEqual(gotTenant.map((d) => d._id), [doc._id]);
   assert.deepEqual(await store.query('B8Row{_id, tag}'), []);
   assert.equal(await store.count('B8Row'), 0);
-  assert.equal(await store.count('B8Row', {}, { namespace: 'tenant_42' }), 1);
+  assert.equal(await store.count('B8Row', {}, { database: 'tenant_42' }), 1);
 });
 
-// ─── B11：syncSchema({ namespace }) 回写 def ─────────────────
+// ─── B11：syncSchema({ database }) 回写 def ─────────────────
 
-test('B11: syncSchema({ namespace }) 回写 def 的 namespace，与手动声明等价', async () => {
+test('B11: syncSchema({ database }) 回写 def 的 database，与手动声明等价', async () => {
   const db = new Database(':memory:');
   db.exec("ATTACH ':memory:' AS aux");
   db.exec('CREATE TABLE aux.b11_widgets (_id TEXT PRIMARY KEY, sku TEXT, __present TEXT)');
@@ -328,16 +332,16 @@ test('B11: syncSchema({ namespace }) 回写 def 的 namespace，与手动声明�
     driver: db,
     introspectOptions: { database: 'aux' },
     datasource: 'b11_sqlite',
-    namespace: 'aux',
+    database: 'aux',
     registerDefs: false,
   });
 
   const def = defs.find((d) => d.collection === 'b11_widgets');
   assert.ok(def, '应产出 b11_widgets 定义');
-  assert.equal(def.namespace, 'aux', 'namespace 应回写到 def');
+  assert.equal(def.database, 'aux', 'database 应回写到 def');
   assert.equal(def.datasource, 'b11_sqlite');
 
-  // 注册后路由与手动声明 namespace 的 schema 等价（同一 attached db 可查）
+  // 注册后路由与手动声明 database 的 schema 等价（同一 attached db 可查）
   const manual = _sc.register({
     name: 'B11Manual',
     collection: 'b11_widgets',
@@ -346,13 +350,13 @@ test('B11: syncSchema({ namespace }) 回写 def 的 namespace，与手动声明�
     fields: { sku: { type: 'string' } },
     relations: {},
     datasource: 'b11_sqlite',
-    namespace: 'aux',
+    database: 'aux',
   });
-  assert.equal(manual.namespace, 'aux');
-  // 等价性：syncSchema 产出的 def 与手动声明的定位三元组一致
+  assert.equal(manual.database, 'aux');
+  // 等价性：syncSchema 产出的 def 与手动声明的定位四元组一致
   assert.deepEqual(
-    { source: def.datasource, namespace: def.namespace, collection: def.collection },
-    { source: manual.datasource, namespace: manual.namespace, collection: manual.collection },
+    { source: def.datasource, database: def.database, collection: def.collection },
+    { source: manual.datasource, database: manual.database, collection: manual.collection },
   );
 
   await init({ b11_sqlite: executors.createConnection('sqlite', db) });

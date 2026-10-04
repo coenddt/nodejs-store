@@ -65,7 +65,7 @@ async function _finalize(plan, items) {
  * 支持的 params 键（通过 GQL 的 @key 引用）:
  *   $condition / $sort / $skip / $limit
  *
- * `routeOverride`（多租户路由，可选）：`{ source?, namespace? }`，覆盖命令定位，
+ * `routeOverride`（多租户路由，可选）：`{ source?, database?, schema? }`，覆盖命令定位，
  * 权限/计算列仍按结构 schema 判定（见 multi-datasource-routing-plan.md §6）。
  */
 async function query(gql, params = null, routeOverride = null) {

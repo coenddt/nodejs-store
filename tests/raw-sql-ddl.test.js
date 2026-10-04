@@ -367,7 +367,8 @@ test('ddl 标量列 + object/array JSON 列 + __present + 归档表', () => {
   assert.ok(sql.includes('CREATE TABLE `ddl_probes`'));
   assert.ok(sql.includes('CREATE TABLE `ddl_probes_deleted`'));
   assert.ok(sql.includes('`__present` VARCHAR(255)'));
-  assert.ok(sql.includes('`deletedAt` BIGINT'));
+  // 数据标识符按目标介质翻译（snake_case）：deletedAt → deleted_at
+  assert.ok(sql.includes('`deleted_at` BIGINT'));
   assert.ok(sql.includes('PRIMARY KEY (`_id`)'));
   // object / array 建 JSON 列（同 core field_column_ref::Json）
   assert.ok(sql.includes('`nested` JSON'));
@@ -383,8 +384,9 @@ test('ddl timestamps 且生成声明索引', () => {
 
   const sql = store.generateDdl('postgres', ['DdlTs']);
 
-  assert.ok(sql.includes('"createdAt" BIGINT'));
-  assert.ok(sql.includes('"updatedAt" BIGINT'));
+  // 数据标识符按目标介质翻译（snake_case）：createdAt/updatedAt → created_at/updated_at
+  assert.ok(sql.includes('"created_at" BIGINT'));
+  assert.ok(sql.includes('"updated_at" BIGINT'));
   assert.ok(sql.includes('"__present" TEXT'));
   // schema.indexes → CREATE INDEX（阶段 3 索引落地；原「仅元数据不建索引」铁律 6
   // 子项按用户裁决放开，见 ddl.js 头注释与事务型能力增补执行文档.md 附录 D）。

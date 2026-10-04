@@ -24,7 +24,7 @@ function introspect(db, { database = null } = {}) {
   const indexes = [];
 
   // attached db 过滤：PRAGMA database_list 校验库名存在（main/temp/ATTACH 的库名），
-  // 表清单改从 `<db>.sqlite_master` 读取；显式库名作为 namespace 透出到 def。
+  // 表清单改从 `<db>.sqlite_master` 读取；显式库名作为 database 透出到 def。
   let masterFrom = 'sqlite_master';
   if (database != null) {
     const known = db.prepare('PRAGMA database_list').all().some((r) => r.name === database);
@@ -40,7 +40,7 @@ function introspect(db, { database = null } = {}) {
     .all();
 
   for (const { name } of tableRows) {
-    tables.push(database != null ? { name, namespace: database } : { name });
+    tables.push(database != null ? { name, database } : { name });
 
     for (const c of db.prepare(`PRAGMA table_info(${_quote(name)})`).all()) {
       columns.push({

@@ -79,7 +79,10 @@ function register(defn, ctx) {
   _schemas[defn.name] = {
     name: defn.name,
     collection: defn.collection || defn.name,
-    namespace: defn.namespace || null,
+    // 落点定位（定义文件零落点；由装载器注入 defn）：database = 连接内库（Mongo/MySQL/SQLite/PG），
+    // schema = 仅 PG 的 schema 层
+    database: defn.database || null,
+    schema: defn.schema || null,
     idPrefix: defn.idPrefix || '',
     timestamps: defn.timestamps !== false,
     // 时间戳单位（'ms'/'s'/null=不维护）；值合法性由 core.register 校验
@@ -101,7 +104,8 @@ function register(defn, ctx) {
     _schemas[`${defn.name}Deleted`] = {
       name: `${defn.name}Deleted`,
       collection: `${defn.collection || defn.name}_deleted`,
-      namespace: defn.namespace || null,
+      database: defn.database || null,
+      schema: defn.schema || null,
       idPrefix: '',
       timestamps: true,
       timestampUnit: 'ms',
@@ -109,7 +113,7 @@ function register(defn, ctx) {
       relations: {},
       computes: {},
       indexes: defn.indexes || [],
-      // 归档表与原表同 (source, namespace)
+      // 归档表与原表同 (source, database, schema)
       datasource: defn.datasource || null,
       read: undefined,
       write: undefined,

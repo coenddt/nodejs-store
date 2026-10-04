@@ -7,9 +7,10 @@
  * 本模块只做 Host 三件事里最底层的一件：把 core 产出的 Command JSON
  * 路由到对应数据源连接并执行。不确定性输入由本层供给（now 时钟）。
  *
- * 路由规则见 `../datasource`：命令自带 `source` / `namespace` 三元组，按 `source`
- * 选连接、`namespace` 定位连接内的库（Mongo 双形态严格校验），
- * Mongo 走原生驱动，SQL 走 `translate → exec`。
+ * 路由规则见 `../datasource`：命令自带 `source` / `database` / `schema` / `collection`
+ * 定位四元组，按 `source` 选连接、`database`（PG 另加 `schema`）定位连接内的库/schema
+ * （Mongo 双形态严格校验），Mongo 走原生驱动（命令先经 `./naming` 翻译为物理名、
+ * 结果再回映射为逻辑名），SQL 走 `translate → exec`。
  */
 
 const { PermissionError, getContext } = require('../permission');
@@ -17,6 +18,7 @@ const datasource = require('../datasource');
 const { execMongo } = require('../executors/mongo');
 const { emit: _emitFeedback } = require('../feedback');
 const { get: _getSchema } = require('../schema');
+const { _toMongo, _toLogical } = require('../naming');
 
 const _PHASE1_IDS = /^\{\{phase1\.ids\}\}$/;
 const _STEP_PH = /^\{\{step\.(\d+)\._id\}\}$/;
@@ -117,13 +119,14 @@ function _call(fn) {
 async function _execOn(source, cmd) {
   const connection = await datasource.resolveConnection(source, datasource.isWriteCommand(cmd));
   if (connection && connection.kind === 'mongo') {
-    // Mongo 事务视图：db 按命令 namespace 解析，session 透传给驱动
-    const db = datasource.mongoDb(connection.conn, source, cmd.namespace ?? null);
-    return execMongo(db, cmd, connection.session);
+    // Mongo 事务视图：db 按命令 database 解析，session 透传给驱动
+    const db = datasource.mongoDb(connection.conn, source, cmd.database ?? null);
+    return _toLogical(await execMongo(db, _toMongo(cmd), connection.session), cmd);
   }
-  const db = datasource.mongoDb(connection, source, cmd.namespace ?? null);
+  const db = datasource.mongoDb(connection, source, cmd.database ?? null);
   if (db) {
-    return execMongo(db, cmd);
+    // Mongo 物理名翻译（逻辑 → camelCase）；执行后按 schema 逆表回映射（物理 → 逻辑）
+    return _toLogical(await execMongo(db, _toMongo(cmd)), cmd);
   }
   return datasource.execSql(source, connection, cmd);
 }

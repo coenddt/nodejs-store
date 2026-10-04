@@ -79,7 +79,9 @@ const _FEEDBACK_MODEL = {
   write: [],
   fields: {
     _id: { type: 'string' },
-    type: { type: 'string' },
+    // 事件类别（原字段名 `type` 与 field 级契约保留键冲突，命中 core §6.3 命名查重
+    // ERR_NAME_CONFLICT；此处更名为 `eventType`，落库时由 feedback 侧映射）
+    eventType: { type: 'string' },
     code: { type: 'string' },
     layer: { type: 'string' },
     message: { type: 'string' },

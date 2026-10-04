@@ -137,7 +137,8 @@ class _FakeDb {
   /** 按 collection 名分配独立 coll；未知名自动建空 _MemColl（供 queryOne 空结果等） */
   constructor(coll) {
     this._colls = {};
-    if (coll !== undefined) this._colls.commercial_ledger = coll;
+    // Mongo 物理集合名（core::naming camelCase）：commercial_ledger → commercialLedger
+    if (coll !== undefined) this._colls.commercialLedger = coll;
   }
 
   collection(name) {
@@ -320,7 +321,7 @@ test('datasource 多源路由 + 索引策略（Mongo 建索引 / SQL 不建）',
     _colls: {},
     collection(name) {
       if (!this._colls[name]) {
-        const coll = new _MemColl(name === 'ds_mongo_thing' ? [{ _id: '1', a: 7 }] : []);
+        const coll = new _MemColl(name === 'dsMongoThing' ? [{ _id: '1', a: 7 }] : []);
         coll.createIndex = async (keys, options) => {
           created.push({ coll: name, keys, options });
           return 'idx';
@@ -346,7 +347,7 @@ test('datasource 多源路由 + 索引策略（Mongo 建索引 / SQL 不建）',
   perm.setContext(undefined);
 
   // 索引策略：Mongo 建索引，SQL 不建（schema.indexes 仅元数据）
-  assert.ok(created.some((c) => c.coll === 'ds_mongo_thing'), 'Mongo 源应建索引');
+  assert.ok(created.some((c) => c.coll === 'dsMongoThing'), 'Mongo 源应按物理集合名建索引');
   assert.ok(!created.some((c) => c.coll === 'ds_sql_thing'), 'SQL 源不应建索引');
 
   // 路由：SQL schema → core translate → 连接 exec

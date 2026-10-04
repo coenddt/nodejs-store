@@ -18,7 +18,7 @@ async function _planWithProbe(planFn) {
   return out;
 }
 
-/** 插入一条（`routeOverride` 可选：`{ source?, namespace? }` 多租户路由） */
+/** 插入一条（`routeOverride` 可选：`{ source?, database?, schema? }` 多租户路由） */
 async function insert(schemaName, data, routeOverride = null) {
   const s = _getSchema(schemaName);
   const plan = _call(() =>
