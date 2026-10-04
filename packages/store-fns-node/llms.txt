@@ -1,0 +1,6 @@
+# store-fns-node
+
+L2 computed-column implementations (Node). Flat dictionary export:
+`{ implName: impl(item, ctx) }`. implName uses camelCase; the host matches it
+against the schema logical fnRef (default `<schema.name>.<key>`) via core::naming
+normalization. Zero runtime dependencies.

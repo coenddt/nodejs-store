@@ -1,0 +1,10 @@
+{
+  "name": "store-fns-node",
+  "version": "0.1.0",
+  "description": "L2 computed-column implementations (Node) — language-level shared layer; bound by host via core::naming normalization",
+  "main": "index.js",
+  "exports": { ".": "./index.js" },
+  "files": ["index.js", "README.md", "llms.txt", "llms-full.txt"],
+  "license": "MIT",
+  "engines": { "node": ">=18" }
+}

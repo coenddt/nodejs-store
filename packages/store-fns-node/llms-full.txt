@@ -1,0 +1,24 @@
+# store-fns-node — 计算列实现（L2 语言级共享层）
+
+## 导出契约
+
+唯一导出为扁平字典：`{ implName: impl(item, ctx) }`。
+
+```js
+module.exports = {
+  orderTotal: (item) => Number(item.qty || 0) * Number(item.price || 0),
+};
+```
+
+## 命名与匹配
+
+- `implName` 用 camelCase。
+- schema 侧逻辑 `fnRef` 默认机械生成 `<schema.name>.<计算列key>`；显式 `fnRef` 可覆盖共享名。
+- 宿主用 `core::naming` 归一算法把两侧名称归成 token 序列再比对，故
+  `Order.total`、`orderTotal`、`order_total` 归一后等价。
+- 归一后实现名重复 ⇒ 宿主显式抛 `ERR_FN_CONFLICT`（禁静默覆盖）。
+- 声明了回调计算列却无任何匹配实现 ⇒ 宿主启动期抛 `ERR_FN_MISSING`。
+
+## 依赖
+
+零运行时依赖：不 import core 或宿主。规范正文由 08 号分步回填。
