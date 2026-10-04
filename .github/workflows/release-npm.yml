@@ -44,3 +44,15 @@ jobs:
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # L2 计算列包（独立版本，首发 0.1.0，与主包版本解耦）：
+      # 版本已存在时跳过，避免重跑或后续 tag（版本未变）撞 npm「版本已存在」而变红。
+      - name: Publish store-fns-node (L2)
+        run: |
+          V=$(node -p "require('./packages/store-fns-node/package.json').version")
+          if npm view "store-fns-node@$V" version >/dev/null 2>&1; then
+            echo "store-fns-node@$V 已在 npm，跳过发布"
+          else
+            npm publish ./packages/store-fns-node --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
