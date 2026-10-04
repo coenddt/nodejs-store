@@ -64,7 +64,11 @@ function _toCoreDefn(defn) {
  */
 function register(defn, ctx) {
   core.registerWithCtx(_toCoreDefn(defn), ctx ?? null);
+  return _mirror(defn);
+}
 
+/** Host 侧元数据镜像 + 内嵌回调绑定（`register` 与 `registerBatch` 共用） */
+function _mirror(defn) {
   // 计算列回调：fn → core 回调桥；asyncFn → Host 侧映射
   const computes = {};
   for (const [key, val] of Object.entries(defn.computes || {})) {
@@ -297,9 +301,29 @@ function assertFnsCovered(defns) {
   }
 }
 
+/**
+ * 带定位批量注册（D13 批次唯一）：`items = [{ defn, location }]`。
+ *
+ * 判决唯一在 core（`core.registerBatch`：分组 / 主唯一 / 链路 / 版本）；本层只转发 +
+ * 对**主定义**做 Host 元数据镜像（从定义 `replica:true` 是链路声明，非独立结构，不入镜像）。
+ * 落点**不进 defn**（定义文件零落点）。
+ */
+function registerBatch(items, ctx) {
+  const list = items || [];
+  const coreItems = list.map(({ defn, location }) => ({
+    defn: _toCoreDefn(defn),
+    location,
+  }));
+  core.registerBatch(coreItems, ctx ?? null);
+  for (const { defn } of list) {
+    if (defn && !defn.replica) _mirror(defn);
+  }
+}
+
 module.exports = {
   core,
   register,
+  registerBatch,
   get,
   has,
   list,

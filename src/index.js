@@ -32,6 +32,7 @@ const feedback = require('./feedback');
 const introspect = require('./introspect');
 const naming = require('./naming');
 const llm = require('./llm');
+const load = require('./load');
 const metadef = require('./metadef');
 const permission = require('./permission');
 const { text2query } = require('./profile');
@@ -68,6 +69,14 @@ class Store {
   /** 启动期校验：定义声明的 fnRef 必须都有实现，缺则抛 `ERR_FN_MISSING`（对齐 py-store store.assert_fns_covered） */
   assertFnsCovered(defns) {
     return schema.assertFnsCovered(defns);
+  }
+
+  /**
+   * 运行期目录装载：读 `store.config.json` → 收集定义 → core 纯规划 → 带定位批量注册。
+   * `opts` = `{ config, ctx?, baseDir? }`（见 `./load`）。返回装载项（主在前、其后从）。
+   */
+  async loadDefs(opts) {
+    return load.loadDefs(opts);
   }
 
   // ── CRUD ──
@@ -578,6 +587,7 @@ module.exports = {
   NativeCommandError: datasource.NativeCommandError,
   datasource,
   ddl,
+  load,
   schema,
   permission,
   crud,

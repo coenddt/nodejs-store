@@ -16,6 +16,8 @@ async function createApp(cfg) {
     schemas = [],        // 定义数组（纯 JSON；每项即 register 的入参）
     fns = {},            // 可选：回调实现 `{ implName: impl(item, ctx) }`，来自 L2 包 store-fns-node（扁平字典）
     ctx = null,          // 可选：定义层门禁上下文
+    config = null,       // 可选：store.config.json 路径或对象；给定时以 store.loadDefs 取代 schemas 逐条 register
+    configBaseDir = null, // 可选：config 的相对基准目录（默认 = config 文件所在目录 / cwd）
     skins = null,        // 可选：store-gateway-node 的 opts（null 则不起协议面）
     reload = null,       // 可选：{ tenant, env }，透传给 gateway
     feedback = true,     // 可选：降级/拦截事件默认落 __feedback（A5）
@@ -24,10 +26,19 @@ async function createApp(cfg) {
   } = cfg || {};
   if (!datasource) throw new Error('ERR_BOOTSTRAP:缺 datasource');
 
-  await init(datasource);
-  for (const defn of schemas) store.register(defn, ctx);
+  // 装载/注册**先于** init —— 保证「注册先于建索引」（06 §8 待核实 3：init 内即建索引）
+  let defns;
+  if (config) {
+    const items = await store.loadDefs({ config, ctx, baseDir: configBaseDir });
+    defns = items.map((it) => it.defn);
+  } else {
+    defns = schemas;
+    for (const defn of defns) store.register(defn, ctx);
+  }
   for (const [ref, impl] of Object.entries(fns)) store.setFn(ref, impl);
-  store.assertFnsCovered(schemas);        // A3：缺实现即抛，进程不启动
+  store.assertFnsCovered(defns);        // A3：缺实现即抛，进程不启动
+
+  await init(datasource);
 
   if (feedback) {
     store.setFeedbackMeta({ tenant, env });  // node 侧签名：传对象
