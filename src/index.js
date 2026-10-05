@@ -409,6 +409,11 @@ class Store {
     return feedback.setSink(fn);
   }
 
+  /** 注册资源 provider 类型（转发模块级注册表；`mod` 须含 `create(options)`） */
+  registerProvider(kind, mod) {
+    return resource.registerProvider(kind, mod);
+  }
+
   configureResource(cfg) {
     return resource.configure(cfg);
   }
