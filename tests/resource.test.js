@@ -47,3 +47,77 @@ test('put fan-out + open degrade + url', async () => {
   assert.strictEqual(await resource.url(out.resourceId), `https://cdn/objects/${out.sha1.slice(0,2)}/${out.sha1}`);
   assert.strictEqual(await resource.url('https://x/y.png'), 'https://x/y.png');
 });
+
+test('A5 首个副本读失败 → 降级到下一副本 + resource_location_degraded 反馈', async () => {
+  const store = fakeStore();
+  const feedback = require('../src/feedback');
+  const events = [];
+  const prev = feedback.getSink();
+  feedback.setSink((e) => events.push(e));
+  try {
+    resource.registerProvider('badget', { create: () => ({
+      kind: 'badget',
+      async put() {},
+      async get() { throw new Error('disk boom'); },
+      async remove() {},
+      async exists() { return false; },
+    })});
+    resource.registerProvider('memory', { create: () => {
+      const w = new Map();
+      return {
+        kind: 'memory',
+        async put(k, b) { w.set(k, Buffer.from(b)); },
+        async get(k) { return w.get(k); },
+        async remove(k) { w.delete(k); },
+        async exists(k) { return w.has(k); },
+      };
+    }});
+    resource.configure({ store, providers: [{ kind: 'badget' }, { kind: 'memory' }], url: {} });
+
+    const out = await resource.put({ bytes: Buffer.from('hello') });
+    const got = await resource.open(out.resourceId);
+    assert.strictEqual(got.backend, 'memory');
+    assert.strictEqual(got.bytes.toString(), 'hello');
+    assert.ok(events.some((e) => e.code === 'resourceLocationDegraded'));
+  } finally {
+    feedback.setSink(prev);
+  }
+});
+
+test('A6 副本写失败 → status=failed + resource_location_write_failed 反馈；其余副本可用', async () => {
+  const store = fakeStore();
+  const feedback = require('../src/feedback');
+  const events = [];
+  const prev = feedback.getSink();
+  feedback.setSink((e) => events.push(e));
+  try {
+    resource.registerProvider('broken', { create: () => ({
+      kind: 'broken',
+      async put() { throw new Error('boom'); },
+      async get() { throw new Error('boom'); },
+      async remove() {},
+      async exists() { return false; },
+    })});
+    resource.registerProvider('memory', { create: () => {
+      const w = new Map();
+      return {
+        kind: 'memory',
+        async put(k, b) { w.set(k, Buffer.from(b)); },
+        async get(k) { return w.get(k); },
+        async remove(k) { w.delete(k); },
+        async exists(k) { return w.has(k); },
+      };
+    }});
+    resource.configure({ store, providers: [{ kind: 'memory' }, { kind: 'broken' }], url: {} });
+
+    const out = await resource.put({ bytes: Buffer.from('x') });
+    assert.strictEqual(out.locations.find((l) => l.backend === 'broken').status, 'failed');
+    assert.strictEqual(out.locations.find((l) => l.backend === 'memory').status, 'ok');
+    assert.ok(events.some((e) => e.code === 'resourceLocationWriteFailed'));
+
+    const got = await resource.open(out.resourceId);
+    assert.strictEqual(got.backend, 'memory');
+  } finally {
+    feedback.setSink(prev);
+  }
+});
