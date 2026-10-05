@@ -126,6 +126,7 @@ async function open(resourceId, opts = {}) {
 
   let lastErr = null;
   for (const loc of sorted) {
+    if (loc.status === 'failed') continue;
     const p = _pool.get(loc.backend);
     if (!p) {
       _emitFeedback({
