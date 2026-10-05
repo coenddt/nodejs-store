@@ -1,0 +1,68 @@
+[
+  {
+    "name": "Resource", "collection": "resources", "idPrefix": "", "timestamps": true,
+    "read": [], "write": [],
+    "fields": {
+      "_id":      { "type": "string" },
+      "sha1":     { "type": "string" },
+      "fileName": { "type": "string" },
+      "mime":     { "type": "string" },
+      "size":     { "type": "int" },
+      "kind":     { "type": "string" }
+    },
+    "relations": {},
+    "indexes": [
+      { "keys": { "sha1": 1 }, "options": { "unique": true } }
+    ]
+  },
+  {
+    "name": "ResourceLocation", "collection": "resource_locations", "idPrefix": "rl", "timestamps": true,
+    "read": [], "write": [],
+    "fields": {
+      "_id":        { "type": "string" },
+      "resourceId": { "type": "string" },
+      "backend":    { "type": "string" },
+      "key":        { "type": "string" },
+      "status":     { "type": "string" },
+      "priority":   { "type": "int" }
+    },
+    "relations": {
+      "resource": { "model": "Resource", "type": "one", "localField": "resourceId", "foreignField": "_id", "read": [] }
+    },
+    "indexes": [
+      { "keys": { "resourceId": 1, "backend": 1 }, "options": { "unique": true } }
+    ]
+  },
+  {
+    "name": "ResourceBinding", "collection": "resource_bindings", "idPrefix": "rb", "timestamps": true,
+    "read": [], "write": [],
+    "fields": {
+      "_id":           { "type": "string" },
+      "resourceId":    { "type": "string" },
+      "businessTable": { "type": "string" },
+      "businessId":    { "type": "string" },
+      "userId":        { "type": "string" }
+    },
+    "relations": {
+      "resource": { "model": "Resource", "type": "one", "localField": "resourceId", "foreignField": "_id", "read": [] }
+    },
+    "indexes": [
+      { "keys": { "resourceId": 1, "businessTable": 1, "businessId": 1 }, "options": { "unique": true } }
+    ]
+  },
+  {
+    "name": "Doc", "collection": "docs", "idPrefix": "doc", "timestamps": true,
+    "read": [], "write": [],
+    "fields": {
+      "_id":         { "type": "string" },
+      "title":       { "type": "string" },
+      "coverId":     { "type": "string" },
+      "attachmentId":{ "type": "string" },
+      "createdBy":   { "type": "string" }
+    },
+    "relations": {},
+    "computes": {
+      "coverUrl": { "type": "string", "fn": true, "fnRef": "cover_url", "depends": ["coverId"] }
+    }
+  }
+]
