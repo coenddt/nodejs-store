@@ -36,6 +36,7 @@ const load = require('./load');
 const metadef = require('./metadef');
 const permission = require('./permission');
 const { text2query } = require('./profile');
+const resource = require('./resource');
 const schema = require('./schema');
 const { setFn, assertFnsCovered } = schema;
 const { syncSchema } = require('./sync');
@@ -408,6 +409,26 @@ class Store {
     return feedback.setSink(fn);
   }
 
+  configureResource(cfg) {
+    return resource.configure(cfg);
+  }
+
+  async resourcePut(input) {
+    return resource.put(input);
+  }
+
+  async resourceOpen(id, opts) {
+    return resource.open(id, opts);
+  }
+
+  async resourceRemove(id) {
+    return resource.remove(id);
+  }
+
+  async resourceUrl(ref, opts) {
+    return resource.url(ref, opts);
+  }
+
   // ── 权限控制（AsyncLocalStorage 上下文） ──
   setContext(ctx) {
     return permission.setContext(ctx);
@@ -590,6 +611,7 @@ module.exports = {
   schema,
   permission,
   crud,
+  resource,
   executors,
   feedback,
   cache,
