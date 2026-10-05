@@ -121,3 +121,11 @@ test('A6 副本写失败 → status=failed + resource_location_write_failed 反�
     feedback.setSink(prev);
   }
 });
+
+test('Store 门面转发 registerProvider', () => {
+  const { store } = require('../src');
+  const providers = require('../src/resource/providers');
+  const mod = { create: () => ({ kind: 'stub-x' }) };
+  store.registerProvider('stub-x', mod);
+  assert.strictEqual(providers._REG.get('stub-x'), mod);
+});
