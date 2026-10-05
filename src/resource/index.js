@@ -101,7 +101,12 @@ async function put({ bytes, fileName, mime, kind, bind } = {}) {
       kind: kind || 'file',
     });
   }
-  if (locations.length) await crud.insertMany(_cfg.schema.location, locations);
+  if (locations.length) {
+    const existing = await crud.query(_LOC_GQL(_cfg.schema.location), { c0: { resourceId } });
+    const have = new Set(existing.map((r) => r.backend));
+    const fresh = locations.filter((l) => !have.has(l.backend));
+    if (fresh.length) await crud.insertMany(_cfg.schema.location, fresh);
+  }
   if (bind) {
     await crud.insert(_cfg.schema.binding, {
       resourceId,
