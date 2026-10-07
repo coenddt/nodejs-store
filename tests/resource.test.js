@@ -48,6 +48,59 @@ test('put fan-out + open degrade + url', async () => {
   assert.strictEqual(await resource.url('https://x/y.png'), 'https://x/y.png');
 });
 
+test('open：零副本行 → 抛 ERR_RESOURCE_NOT_FOUND: 前缀（spec/03 前缀层 → 适配器 404）', async () => {
+  const store = fakeStore();
+  resource.registerProvider('memmiss', { create: () => ({
+    kind: 'memmiss',
+    async put() {},
+    async get() { throw new Error('miss'); },
+    async remove() {},
+    async exists() { return false; },
+  })});
+  resource.configure({ store, providers: [{ kind: 'memmiss' }] });
+
+  const PREFIX = 'ERR_RESOURCE_NOT_FOUND:';
+  const id = '0'.repeat(40);
+  await assert.rejects(
+    () => resource.open(id),
+    (err) => {
+      assert.ok(err.message.startsWith(PREFIX), `message 应带稳定前缀，实际=${err.message}`);
+      assert.strictEqual(err.message.slice(PREFIX.length), `资源不存在或无可读副本: ${id}`);
+      assert.strictEqual(err.resourceId, id);
+      return true;
+    },
+  );
+});
+
+test('open：有副本行但 provider 读取失败 → 原样重抛、不带前缀（保持 500 语义）', async () => {
+  const store = fakeStore();
+  const feedback = require('../src/feedback');
+  const prev = feedback.getSink();
+  feedback.setSink(() => {});
+  try {
+    resource.registerProvider('iobad', { create: () => ({
+      kind: 'iobad',
+      async put() {},
+      async get() { throw new Error('io down'); },
+      async remove() {},
+      async exists() { return false; },
+    })});
+    resource.configure({ store, providers: [{ kind: 'iobad' }] });
+    store._rows.push({ _schema: 'ResourceLocation', resourceId: 'a'.repeat(40), backend: 'iobad', key: 'k', status: 'ok', priority: 0 });
+
+    await assert.rejects(
+      () => resource.open('a'.repeat(40)),
+      (err) => {
+        assert.strictEqual(err.message, 'io down');
+        assert.ok(!err.message.startsWith('ERR_RESOURCE_NOT_FOUND:'), '不得把 IO 失败伪装成「不存在」');
+        return true;
+      },
+    );
+  } finally {
+    feedback.setSink(prev);
+  }
+});
+
 test('A5 首个副本读失败 → 降级到下一副本 + resource_location_degraded 反馈', async () => {
   const store = fakeStore();
   const feedback = require('../src/feedback');

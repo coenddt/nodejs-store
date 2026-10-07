@@ -22,6 +22,11 @@ const DEFAULT_SCHEMA = {
   binding: 'ResourceBinding',
 };
 
+// core 稳定前缀（与 ERR_PERM_PREFIX / ERR_GQL_PARSE 同构）：适配层按前缀判定 → 404，
+// 禁按中文文案匹配。仅「按 resourceId 查到零 ResourceLocation 行」时抛出；
+// provider get 失败走 lastErr 原样重抛（属 IO/降级故障，仍 500）。
+const ERR_RESOURCE_NOT_FOUND = 'ERR_RESOURCE_NOT_FOUND:';
+
 let _cfg = { schema: { ...DEFAULT_SCHEMA }, store: null, providers: [], url: {}, sign: null };
 let _pool = new Map();
 
@@ -155,8 +160,10 @@ async function open(resourceId, opts = {}) {
       });
     }
   }
-  if (lastErr) throw lastErr;
-  throw new Error(`资源不存在或无可读副本: ${resourceId}`);
+  if (lastErr) throw lastErr; // 有副本行但读取失败：原样重抛（500 透传），禁改语义
+  const err = new Error(`${ERR_RESOURCE_NOT_FOUND}资源不存在或无可读副本: ${resourceId}`);
+  err.resourceId = resourceId;
+  throw err;
 }
 
 /** 删：逐副本清字节 + 删 location 行 + 删 Resource 行 */
