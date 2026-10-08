@@ -62,6 +62,13 @@ _sc.register({
       { name: 'aud_upd', onFields: ['amount'], into: 'TAudit', op: 'insert',
         data: { _id: '{{now}}', kind: 'upd', ref: '{{root._id}}', amount: '{{root.amount}}' } },
     ],
+    remove: [
+      // 命令式 op:"remove"：删 t_audit 中 ref = 被删文档 _id 的行
+      { name: 'aud_del', into: 'TAudit', op: 'remove', condition: { ref: '{{before._id}}' } },
+      // 回调式：before 占位符（被删文档删除前值）
+      { name: 'del_cb', fnRef: 'delRecorder',
+        args: { id: '{{before._id}}', amount: '{{before.amount}}' } },
+    ],
   },
 });
 
@@ -73,7 +80,11 @@ _sc.register({
 _sc.register({
   name: 'TBoom', collection: 'tBoom', idPrefix: 'b_', timestamps: false, datasource: SRC_A,
   fields: {},
-  triggers: { insert: [{ name: 'boom', fnRef: 'boom' }] },
+  triggers: {
+    insert: [{ name: 'boom', fnRef: 'boom' }],
+    // remove 触发回调失败 → 主删除整体回滚
+    remove: [{ name: 'boomDel', fnRef: 'boom' }],
+  },
 });
 
 _sc.register({
@@ -114,7 +125,12 @@ store.setTriggerFn('audRecorder', async (args, ctx, { store: s }) => {
   cbCalls.push(args);
   await s.insert('TAudit', { kind: 'cb', ref: args.ref, amount: 0 });
 });
+store.setTriggerFn('delRecorder', async (args) => {
+  delCalls.push(args);
+});
 store.setTriggerFn('boom', async () => { throw new Error('boom-err'); });
+
+let delCalls = [];
 
 // ─── 环境复位 ────────────────────────────────────────────────
 
@@ -125,6 +141,7 @@ let dbB = null;
 beforeEach(async () => {
   events = [];
   cbCalls = [];
+  delCalls = [];
   feedback.setSink((e) => events.push(e));
   permission.setContext(undefined);
   store.setProfile('standard');
@@ -242,4 +259,52 @@ test('占位符内嵌拼接：显式报 ERR_TRIGGER_PLACEHOLDER（禁静默漂�
     resolveTriggerPlaceholders('{{root.missing}}', { root: {}, before: null, now: 1 }),
     undefined,
   );
+});
+
+// ─── remove 触发链（总纲 A5） ─────────────────────────────────
+
+test('A5 remove 触发链：命令式 op:"remove" + 回调式执行，before = 删除前文档', async () => {
+  const doc = await store.insert('TOrder', { amount: 100, status: 'new', note: '' });
+  // 预置一条审计行（ref = 被删文档 _id）供命令式 remove 圈定删除
+  dbA.prepare("INSERT INTO t_audit (_id, kind, ref, amount) VALUES ('a_seed', 'seed', ?, 5)")
+    .run(doc._id);
+
+  const ret = await store.remove('TOrder', { _id: doc._id });
+  assert.equal(ret.deletedCount, 1);
+  assert.equal(ret.archivedCount, 1);
+  // 主删除 + 归档
+  assert.equal(dbA.prepare('SELECT COUNT(*) AS n FROM t_order').get().n, 0, '主表已删');
+  assert.equal(dbA.prepare('SELECT COUNT(*) AS n FROM t_order_deleted WHERE _id = ?').get(doc._id).n, 1,
+    '归档表有被删文档');
+  // 命令式：t_audit 中 ref = before._id 的行被删（deleteMany 路由生效）
+  assert.equal(dbA.prepare('SELECT COUNT(*) AS n FROM t_audit WHERE ref = ?').get(doc._id).n, 0,
+    '命令式 op:"remove" 触发删目标行');
+  // 回调式：{{before.*}} 取删除前值
+  assert.equal(delCalls.length, 1, 'remove 回调执行一次');
+  assert.equal(delCalls[0].id, doc._id, '{{before._id}}');
+  assert.equal(delCalls[0].amount, 100, '{{before.amount}} = 删除前值');
+});
+
+test('A5 remove 0 命中：不触发（与 update 0 行命中语义一致）', async () => {
+  const ret = await store.remove('TOrder', { _id: 'no_such_id' });
+  assert.equal(ret.deletedCount, 0);
+  assert.equal(ret.archivedCount, 0);
+  assert.equal(delCalls.length, 0, '未删到不触发');
+});
+
+test('A5 单源回滚：remove 触发回调失败 → 主删除整体回滚', async () => {
+  // 直接预置行（TBoom 的 insert 触发器本身抛错，不能走 store.insert）
+  dbA.prepare("INSERT INTO t_boom (_id) VALUES ('b_seed')").run();
+  await assert.rejects(() => store.remove('TBoom', { _id: 'b_seed' }), /boom-err/);
+  assert.equal(dbA.prepare('SELECT COUNT(*) AS n FROM t_boom WHERE _id = ?').get('b_seed').n, 1,
+    '主删除已回滚');
+});
+
+test('A5 未声明 remove 触发器：删+归档行为与改动前一致（零回归）', async () => {
+  const doc = await store.insert('TAudit', { kind: 'plain', ref: 'r1', amount: 1 });
+  const ret = await store.remove('TAudit', { _id: doc._id });
+  assert.equal(ret.deletedCount, 1);
+  assert.equal(ret.archivedCount, 1);
+  assert.equal(dbA.prepare('SELECT COUNT(*) AS n FROM t_audit WHERE _id = ?').get(doc._id).n, 0);
+  assert.equal(dbA.prepare('SELECT COUNT(*) AS n FROM t_audit_deleted WHERE _id = ?').get(doc._id).n, 1);
 });
