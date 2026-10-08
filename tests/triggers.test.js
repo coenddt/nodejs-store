@@ -14,7 +14,7 @@ const { test, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 
-const { init, store, executors, permission, feedback, schema: _sc } = require('../src');
+const { init, store, executors, permission, feedback, schema: _sc, NonAtomicWriteError } = require('../src');
 const { ProfileViolation } = require('../src/crud/exec');
 
 const SRC_A = 'trg_a';
@@ -191,6 +191,17 @@ test('A6 跨源触发链：发 non_atomic_write（含涉及源）并顺序执行
   assert.deepEqual(listed[0].sources, [SRC_A, SRC_B].sort(), '声明含全部涉及源');
   assert.equal(dbB.prepare('SELECT COUNT(*) AS n FROM t_x_audit WHERE ref = ?').get(doc._id).n, 1,
     '跨源触发写已落库（顺序执行，非原子）');
+});
+
+test('A6 会话内跨源触发 fail-closed：NonAtomicWriteError 且全部回滚', async () => {
+  await assert.rejects(
+    () => store.session(async (s) => {
+      await s.insert('TXOrder', { amount: 1 });
+    }),
+    NonAtomicWriteError,
+  );
+  assert.equal(dbA.prepare('SELECT COUNT(*) AS n FROM t_x_order').get().n, 0, '主写已回滚');
+  assert.equal(dbB.prepare('SELECT COUNT(*) AS n FROM t_x_audit').get().n, 0, '触发写已回滚');
 });
 
 test('A8 同事务去重：同名触发只执行一次（若不去重将主键冲突整体失败）', async () => {
