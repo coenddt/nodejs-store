@@ -24,6 +24,7 @@
 const ask = require('./ask');
 const cache = require('./cache');
 const crud = require('./crud');
+const triggerExec = require('./crud/triggers');
 const datasource = require('./datasource');
 const { Session, NonAtomicWriteError } = require('./datasource');
 const ddl = require('./ddl');
@@ -70,6 +71,16 @@ class Store {
   /** 启动期校验：定义声明的 fnRef 必须都有实现，缺则抛 `ERR_FN_MISSING`（对齐 py-store store.assert_fns_covered） */
   assertFnsCovered(defns) {
     return schema.assertFnsCovered(defns);
+  }
+
+  /** 触发器回调注入：`fnRef → impl(args, ctx, { store })`（可为 async；见 crud/triggers.js） */
+  setTriggerFn(fnRef, impl) {
+    return triggerExec.setTriggerFn(fnRef, impl);
+  }
+
+  /** 启动期校验：schema triggers 声明的 fnRef 必须都有实现，缺则抛 `ERR_TRIGGER_FN_MISSING` */
+  assertTriggerFnsCovered(defns) {
+    return triggerExec.assertTriggerFnsCovered(defns);
   }
 
   /**
@@ -510,6 +521,9 @@ Store.prototype.AskResult = ask.AskResult;
 
 const store = new Store();
 
+// 触发链执行器装配：回调经 store.* 写走既有权限/事务路径（避免 crud/* 反向 require 造成循环依赖）
+triggerExec.setStore(store);
+
 /**
  * 索引名对齐 MongoDB 自动命名（k1_v1_k2_v2），用于幂等创建。
  *
@@ -602,6 +616,8 @@ module.exports = {
   createApp,
   setFn,
   assertFnsCovered,
+  setTriggerFn: triggerExec.setTriggerFn,
+  assertTriggerFnsCovered: triggerExec.assertTriggerFnsCovered,
   text2query,
   Session,
   NonAtomicWriteError,
