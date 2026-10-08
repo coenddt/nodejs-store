@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 4.3.0 (2026-10-08)
 
 ### Added（触发器）
 
