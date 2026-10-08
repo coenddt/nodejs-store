@@ -34,6 +34,7 @@
 - [Schema 参考](#schema-参考)
 - [高级 API](#高级-api)
 - [事务边界](#事务边界)
+- [触发器](#触发器)
 - [事务型能力](#事务型能力)
 - [常见问题](#常见问题)
 - [相关项目](#相关项目)
@@ -689,6 +690,7 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
 | 无会话的跨源多写 | 非原子（无 2PC / Saga 支持），按数据源顺序执行，并经反馈通道声明 `nonAtomic`（事件 `non_atomic_write`，含涉及源） |
 | Mongo 多步写 | replica set / sharded：单 Mongo 源原子（session 事务）；standalone：非原子并显式声明 `mongo_transaction_unsupported` |
 | 工作流 run（`runWorkflow`） | 单源 run **跨步骤**整体原子（外层 `runAtomic` 包住步骤循环、内层 mutation 嵌套并入）；多源 / 源预扫失败按顺序执行并经反馈通道声明非原子 |
+| 触发链（schema `triggers`，insert / update 事件） | 与源写同一 `runAtomic` 包络：单源**真事务**（同事务回滚）；触及第二数据源按顺序执行并声明 `non_atomic_write`；`store.session()` 内对跨源写 fail-closed |
 
 - **Mongo 源**：会话内按运行时能力探测结果事务化；不可事务（standalone / 探测失败）按原样执行，
   并发出 `mongo_transaction_unsupported` 反馈（`deployment: standalone|unknown`）（允许降级，绝不静默假装已事务化）；
@@ -701,6 +703,28 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
 - **跨源写（非会话）**：一次写调用涉及 ≥2 个数据源时**无法原子**，按顺序执行，并发出一条
   `non_atomic_write` 反馈（`code: nonAtomic`，含涉及源列表）——允许降级、禁止静默。
   把写收敛到单源，或放入 `store.session()` 内（后者对跨源写直接 fail-closed）。
+
+## 触发器
+
+schema 声明式触发链：写事件（首批 `insert` / `update`）由 Rust 核心在规划期展开为有序副作用步骤（`plan.triggers`），宿主在源写同一原子包络内依次执行。声明形态（`triggers` 三类键 + T 字段表）与占位符语法以 rust-store README「触发器」章节为准；core 侧展开输出跨端逐字节一致（`rust-store/fixtures/triggers/cases.json` golden 守护）。
+
+**回调装配**（`src/crud/triggers.js`）：
+
+```js
+store.setTriggerFn('grantPoints', async (args, ctx, { store }) => {
+  await store.update('User', { _id: args.userId }, { $inc: { points: args.amount } });
+});
+store.assertTriggerFnsCovered(defns); // 启动期：schema 声明的 fnRef 缺实现 ⇒ ERR_TRIGGER_FN_MISSING
+```
+
+**执行语义**：
+
+- **命中判定** —— update 事件先判 `onFields 值真的变化`（结构深比较，no-op 抑制——值未变不触发）→ 再判 `when`（`eq/ne/gt/gte/lt/lte/in/and/or/not`）；insert 事件无 before，跳过字段级检查。系统字段（`createdAt` / `updatedAt` / `deletedAt`）不进触发器探针投影，其变化天然不触发。
+- **占位符** —— `{{root.*}}`（变化后值）/ `{{before.*}}`（变化前值）/ `{{now}}` 只做整值替换；内嵌拼接显式报 `ERR_TRIGGER_PLACEHOLDER`，禁静默漂移。
+- **去重** —— 同一次顶层调用内 `(step.name, _id)` 只执行一次。
+- **回调式** —— `impl(args, ctx, { store })`；回调内 `store.*` 落到当前事务连接 → 与主写同事务。
+
+**边界**：单源真事务 / 跨源 `nonAtomic` 声明 / `store.session()` 内跨源 fail-closed（见[事务边界](#事务边界)）；**不支持级联**（触发写不再触发任何触发器）；`updateMany` 不支持字段级触发（显式拒绝，禁静默降级）；`remove` 事件与命令式步骤 `op: "upsert"` 注册期 `Err`。
 
 ## 事务型能力
 

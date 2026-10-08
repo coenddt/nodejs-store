@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added（触发器）
+
+- **schema 声明式触发链**：schema 顶层 `triggers` 声明写事件（首批 `insert` / `update`）的副作用
+  步骤；Rust 核心规划期展开为 `plan.triggers`，宿主在源写同一 `runAtomic` 包络内依次执行
+  （`src/crud/triggers.js`）——单源**真事务**（同事务回滚）；触及第二数据源按顺序执行并声明
+  `non_atomic_write`；`store.session()` 内对跨源写 fail-closed（`NonAtomicWriteError`）。
+- **回调装配**：`store.setTriggerFn(fnRef, impl)`（`impl(args, ctx, { store })`，回调内 `store.*`
+  落到当前事务连接）+ `store.assertTriggerFnsCovered(defns)` 启动期校验（声明的 `fnRef` 缺实现 ⇒
+  `ERR_TRIGGER_FN_MISSING`，服务不启动）。
+- **判定与执行语义**：update 事件先判 `onFields 值真的变化`（结构深比较，no-op 抑制）→ 再判
+  `when`（`eq/ne/gt/gte/lt/lte/in/and/or/not`）；insert 事件跳过字段级检查。占位符
+  `{{root.*}}` / `{{before.*}}` / `{{now}}` 只做整值替换，内嵌拼接 ⇒ `ERR_TRIGGER_PLACEHOLDER`。
+  同一次顶层调用内 `(step.name, _id)` 去重。
+- **边界**：不支持级联（触发写不再触发触发器）；`updateMany` 不支持字段级触发（显式拒绝）；
+  `remove` 事件与命令式步骤 `op: "upsert"` 注册期 `Err`。
+- **对拍**：`scripts/parity-triggers.js` 读 `rust-store/fixtures/triggers/cases.json` 产出规划输出，
+  与 py-store 对拍输出逐字节一致。
+
 ## 4.0.0 (2026-10-04)
 
 ### Breaking（落点模型外置：`namespace` 删除 → `database`(+`schema` PG)、定义零落点）
