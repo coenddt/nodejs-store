@@ -65,7 +65,7 @@
     "mongodb": "^6.21.0",
     "mysql2": "^3.24.4",
     "pg": "^8.23.0",
-    "rust-store-node": "^4.1.0"
+    "rust-store-node": "^4.2.0"
   },
   "optionalDependencies": {
     "@aws-sdk/client-s3": "^3.1146.0"
