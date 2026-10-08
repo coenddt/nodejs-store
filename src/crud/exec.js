@@ -151,7 +151,27 @@ function sourcesOf(plan) {
     const cmd = (step || {}).command || {};
     if (cmd && Object.keys(cmd).length > 0) out.add(cmd.source || datasource.DEFAULT_SOURCE);
   }
+  // 触发链命令的源（plan_insert 直接产出 triggers；plan_update 二次规划才产出）
+  for (const t of (plan || {}).triggers || []) {
+    const cmd = (t || {}).command || {};
+    if (cmd && Object.keys(cmd).length > 0) out.add(cmd.source || datasource.DEFAULT_SOURCE);
+  }
   return out.size > 0 ? out : new Set([datasource.DEFAULT_SOURCE]);
+}
+
+/**
+ * 触发链触及源的原子性声明（update 专用：其 triggers 在事务内二次规划后才产出，
+ * 顶层 `sourcesOf` 已不及）——触发源超出已声明源集时发 `non_atomic_write`
+ * （含全部涉及源），此后顺序执行；会话内不发声明（跨源写由既有 fail-closed 拒绝）。
+ */
+function declareTriggerSources(baseSources, triggers) {
+  const uniq = new Set(baseSources);
+  for (const t of triggers || []) {
+    const cmd = (t || {}).command || {};
+    if (cmd && Object.keys(cmd).length > 0) uniq.add(cmd.source || datasource.DEFAULT_SOURCE);
+  }
+  if (uniq.size > 1 && datasource.currentSession() === null) warnMultiSource(uniq);
+  return uniq;
 }
 
 /** 多源写：无法原子 → 程序化声明 nonAtomic（允许顺序执行，禁止静默） */
@@ -239,6 +259,7 @@ module.exports = {
   _exec,
   _execOn,
   runAtomic,
+  declareTriggerSources,
   warnMultiSource,
   sourcesOf,
   _substitute,

@@ -5,8 +5,9 @@
  */
 
 const { core: _core, get: _getSchema } = require('../schema');
-const { _call, _ctx, _exec, _nowFor, runAtomic, sourcesOf } = require('./exec');
+const { _call, _ctx, _exec, _nowFor, runAtomic, sourcesOf, declareTriggerSources } = require('./exec');
 const { _generateId } = require('./id');
+const { runTriggers } = require('./triggers');
 
 /** creator 写权限探针：先规划，若 needsProbe 则执行探针命令后重入 */
 async function _planWithProbe(planFn) {
@@ -21,17 +22,31 @@ async function _planWithProbe(planFn) {
 /** 插入一条（`routeOverride` 可选：`{ source?, database?, schema? }` 多租户路由） */
 async function insert(schemaName, data, routeOverride = null) {
   const s = _getSchema(schemaName);
+  const now = _nowFor(schemaName);
   const plan = _call(() =>
-    _core.planInsert(schemaName, data ?? null, _nowFor(schemaName), s.idPrefix ? _generateId(s) : '', _ctx(),
+    _core.planInsert(schemaName, data ?? null, now, s.idPrefix ? _generateId(s) : '', _ctx(),
       routeOverride));
-  const result = await _exec(plan.command);
-  let returns = plan.returns;
-  // 阶段2：autoincrement 主键 —— 执行器已回读自增值，returns 补 `_id`
-  if (returns && typeof returns === 'object' && !returns._id
-      && result && typeof result === 'object' && result._id !== undefined && result._id !== null) {
-    returns = { ...returns, _id: result._id };
+
+  const finish = (result) => {
+    let returns = plan.returns;
+    // 阶段2：autoincrement 主键 —— 执行器已回读自增值，returns 补 `_id`
+    if (returns && typeof returns === 'object' && !returns._id
+        && result && typeof result === 'object' && result._id !== undefined && result._id !== null) {
+      returns = { ...returns, _id: result._id };
+    }
+    return returns;
+  };
+
+  // 无触发器：保持原路径（零回归）
+  if (!plan.triggers || !plan.triggers.length) {
+    return finish(await _exec(plan.command));
   }
-  return returns;
+  // 有触发器：主写 + 触发链同一原子作用域（单源真事务 / 跨源发 nonAtomic）
+  return runAtomic(sourcesOf(plan), async () => {
+    const result = await _exec(plan.command);
+    await runTriggers(plan.triggers, { root: result, before: null, now, ctx: _ctx(), executed: new Set() });
+    return finish(result);
+  });
 }
 
 /** 批量插入（带权限检查，自动生成 _id 和时间戳；空数组直接返回空） */
@@ -79,13 +94,20 @@ async function update(schemaName, condition, data, options = null, routeOverride
 
   const doRun = async () => {
     let out = first;
+    let before = null;
     if (out.needsProbe) {
-      const probeDoc = await _exec(out.needsProbe);
+      before = await _exec(out.needsProbe);            // 探针文档 = before（含 onFields 投影）
       out = _call(() =>
         _core.planUpdate(schemaName, condition ?? null, data ?? null, options ?? null, now, ctx,
-          probeDoc !== null && probeDoc !== undefined, probeDoc ?? null, routeOverride));
+          before !== null && before !== undefined, before ?? null, routeOverride));
     }
+    // 触发链触及源并入原子性声明（update 的 triggers 二次规划才产出；跨源 → non_atomic_write）
+    if (out.triggers && out.triggers.length) declareTriggerSources(sources, out.triggers);
     const result = await _exec(out.command);
+    // 主写有命中才触发（0 行命中 = 无 after，无从引用；配触发器的 update 由 core 强制发探针）
+    if (out.triggers && out.triggers.length && result) {
+      await runTriggers(out.triggers, { root: result, before, now, ctx, executed: new Set() });
+    }
     return result ? _call(() => _core.applyWriteDefaults(schemaName, result)) : null;
   };
 
