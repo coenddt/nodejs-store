@@ -16,6 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const native = require('../src/core');
+const { cronMatches } = require('../src/scheduler');
 
 const FIXTURE = path.resolve(__dirname, '../../rust-store/fixtures/triggers/cases.json');
 const fx = JSON.parse(fs.readFileSync(FIXTURE, 'utf8'));
@@ -37,6 +38,12 @@ fx.cases.forEach((c, i) => {
   } else {
     throw new Error(`未知 case.fn: ${c.fn}`);
   }
+});
+
+// cron 匹配器对拍（A6）：同一组（cron, 时刻分量）两宿主输出必须一致
+(fx.cronCases || []).forEach((c, i) => {
+  const a = c.at;
+  out[`cron${i}`] = cronMatches(c.cron, new Date(a.y, a.mo - 1, a.d, a.h, a.mi));
 });
 
 // 稳定序列化：键排序 + 紧凑分隔符（与 python json.dumps(sort_keys, separators) 对齐）
