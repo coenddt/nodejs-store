@@ -25,13 +25,15 @@ function setTriggerFn(fnRef, impl) {
   _fnRefs.add(fnRef);
 }
 
-/** 启动期校验：schema 的 triggers 里声明的 fnRef 必须都有实现（缺则显式抛错，不静默） */
+/** 启动期校验：schema 的 triggers 里声明的 fnRef 必须都有实现（缺则显式抛错，不静默）。
+ * 注意：声明形状的 fnRef 在顶层（规划展开后才包成 `callback:{fnRef,args}`），见 core schema/triggers.rs */
 function assertTriggerFnsCovered(defns) {
   const missing = [];
   for (const defn of defns || []) {
     for (const list of Object.values((defn && defn.triggers) || {})) {
       for (const t of list || []) {
-        if (t && typeof t.fnRef === 'string' && !_fnRefs.has(t.fnRef)) missing.push(t.fnRef);
+        const ref = t && typeof t.fnRef === 'string' ? t.fnRef : null;
+        if (ref && !_fnRefs.has(ref)) missing.push(ref);
       }
     }
   }
