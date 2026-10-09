@@ -15,6 +15,7 @@ const path = require('node:path');
 
 const { readSnapshot, writeCollections, withDirLock } = require('../src/local/store');
 const { createDb } = require('../src/local/handle');
+const { connect, LOCAL_KIND } = require('../src/local');
 
 const _dirs = [];
 
@@ -181,4 +182,52 @@ test('local/handle: 归档 upsertById 路径（replaceOne 逐条 upsert）', asy
   assert.deepEqual(box.snap.usersDeleted, [{ _id: 'u1', deletedAt: 200 }], '按 _id 覆盖，幂等不重复');
   // 非 upsert 调用被拒（只有 upsertById 路径才会走到 replaceOne）
   assert.throws(() => deleted.replaceOne({ _id: 'x' }, { _id: 'x' }), /仅支持 upsert 语义/);
+});
+
+// ─── 步骤 4：门面 ───────────────────────────────────────────
+
+test('local/index: connect 产描述符 + 直连读写', async () => {
+  const dir = tmpDir('facade');
+  writeCollections(dir, ['users'], { users: [{ _id: 'u1', name: 'Ada' }] });
+
+  const conn = connect({ dir });
+  assert.equal(conn.kind, LOCAL_KIND);
+  assert.equal(conn.kind, 'local');
+  assert.equal(conn.dir, path.resolve(dir));
+  assert.equal(typeof conn.handle.collection, 'function');
+  assert.equal(typeof conn.openTransaction, 'function');
+  assert.equal(typeof conn.withTransaction, 'function');
+
+  await conn.handle.collection('users').insertOne({ _id: 'u2', name: 'Bob' });
+  assert.equal(readSnapshot(dir).users.length, 2, '直连 ready 后即时落盘');
+});
+
+test('local/index: openTransaction 快照隔离（commit 可见 / rollback 丢弃）', async () => {
+  const dir = tmpDir('tx');
+  writeCollections(dir, ['users'], { users: [{ _id: 'u1' }] });
+  const conn = connect({ dir });
+
+  // commit：tx 内写先入内存快照，commit 才落盘
+  const tx = await conn.openTransaction();
+  await tx.handle.collection('users').insertOne({ _id: 'u2' });
+  assert.equal(tx.session.snapshot().users.length, 2, 'tx 内快照含新写');
+  assert.equal(readSnapshot(dir).users.length, 1, 'commit 前磁盘不可见（快照隔离）');
+  await tx.commit();
+  await tx.release();
+  assert.equal(readSnapshot(dir).users.length, 2, 'commit 后落盘可见');
+
+  // rollback：丢弃
+  const tx2 = await conn.openTransaction();
+  await tx2.handle.collection('users').insertOne({ _id: 'u3' });
+  await tx2.rollback();
+  await tx2.release();
+  assert.equal(readSnapshot(dir).users.length, 2, 'rollback 后丢弃');
+
+  // withTransaction 便捷包装
+  const out = await conn.withTransaction(async (_s, t) => {
+    await t.handle.collection('users').insertOne({ _id: 'u4' });
+    return 'ok';
+  });
+  assert.equal(out, 'ok');
+  assert.equal(readSnapshot(dir).users.length, 3);
 });
