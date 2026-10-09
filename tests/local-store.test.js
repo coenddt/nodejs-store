@@ -14,6 +14,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { readSnapshot, writeCollections, withDirLock } = require('../src/local/store');
+const { createDb } = require('../src/local/handle');
 
 const _dirs = [];
 
@@ -80,4 +81,104 @@ test('local/store: withDirLock 串行化并发写，互不覆盖', async () => {
   const onDisk = readSnapshot(dir);
   assert.equal(onDisk.users.length, 2, 'users 两次写应累加（串行、无丢失）');
   assert.equal(onDisk.posts.length, 1);
+});
+
+// ─── 步骤 3：Mongo 兼容手柄 ─────────────────────────────────
+
+/** 内存 io（驱动 handle，不经 store/落盘） */
+function memIo(initial = {}) {
+  const box = { snap: initial };
+  return {
+    box,
+    io: {
+      load: () => box.snap,
+      save: (_changed, collections) => { box.snap = collections; },
+    },
+  };
+}
+
+test('local/handle: 方法集逐一对应 execMongo（读用游标 / 写 await 落盘）', async () => {
+  const { box, io } = memIo({});
+  const db = createDb(io);
+  const users = db.collection('users');
+
+  // insertOne → result 为写入文档；save 已回写到快照
+  const ins = await users.insertOne({ _id: 'u1', name: 'Ada', age: 36 });
+  assert.deepEqual(ins, { _id: 'u1', name: 'Ada', age: 36 });
+  assert.deepEqual(box.snap.users, [{ _id: 'u1', name: 'Ada', age: 36 }]);
+
+  // insertMany（普通）
+  const many = await users.insertMany([{ _id: 'u2', name: 'Bob', age: 20 }]);
+  assert.deepEqual(many, { insertedCount: 1 });
+
+  // find → 游标
+  const rows = await users.find({ name: 'Ada' }).toArray();
+  assert.deepEqual(rows, [{ _id: 'u1', name: 'Ada', age: 36 }]);
+
+  // find + projection
+  assert.deepEqual(
+    await users.find({}, { projection: { name: 1, _id: 0 } }).toArray(),
+    [{ name: 'Ada' }, { name: 'Bob' }],
+  );
+
+  // findOne 命中 / 未命中
+  assert.equal((await users.findOne({ _id: 'u2' })).name, 'Bob');
+  assert.equal(await users.findOne({ _id: 'nope' }), null);
+
+  // countDocuments
+  assert.equal(await users.countDocuments({ age: { $gte: 20 } }), 2);
+
+  // execMongo 会把 `field: null` 归一为 `{$eq:null,$exists:true}`（mongo.js §_explicitNull）
+  const { io: io2 } = memIo({ docs: [{ _id: 1, x: null }, { _id: 2 }] });
+  assert.deepEqual(
+    await createDb(io2).collection('docs').find({ x: { $eq: null, $exists: true } }).toArray(),
+    [{ _id: 1, x: null }],
+  );
+
+  // updateMany / findOneAndUpdate
+  assert.deepEqual(await users.updateMany({ name: 'Ada' }, { $set: { seen: true } }), { modifiedCount: 1 });
+  assert.deepEqual(await users.findOneAndUpdate({ _id: 'u2' }, { $set: { seen: true } }), { _id: 'u2', name: 'Bob', age: 20, seen: true });
+
+  // aggregate（关系 $lookup）
+  const { io: io3 } = memIo({
+    probeUsers: [{ _id: 'pu1', name: 'Ada' }],
+    probePosts: [{ _id: 'pp1', title: 'P1', userId: 'pu1' }],
+  });
+  const posts = createDb(io3).collection('probePosts');
+  const agg = await posts.aggregate([
+    { $match: {} },
+    {
+      $lookup: {
+        as: 'author',
+        from: 'probeUsers',
+        let: { rel_userId: { $ifNull: ['$userId', null] } },
+        pipeline: [
+          { $match: { $expr: { $eq: ['$_id', '$$rel_userId'] } } },
+          { $project: { _id: 1, name: 1 } },
+        ],
+      },
+    },
+    { $unwind: { path: '$author', preserveNullAndEmptyArrays: true } },
+    { $project: { _id: 1, author: 1, title: 1 } },
+  ]).toArray();
+  assert.deepEqual(agg, [{ _id: 'pp1', author: { _id: 'pu1', name: 'Ada' }, title: 'P1' }]);
+
+  // deleteMany
+  assert.deepEqual(await users.deleteMany({ _id: 'u2' }), { deletedCount: 1 });
+  assert.equal(box.snap.users.length, 1);
+
+  // listIndexes（local v1 空）/ createIndex（no-op）
+  assert.deepEqual(await users.listIndexes().toArray(), []);
+  await users.createIndex({ name: 1 });
+});
+
+test('local/handle: 归档 upsertById 路径（replaceOne 逐条 upsert）', async () => {
+  const { box, io } = memIo({});
+  const deleted = createDb(io).collection('usersDeleted');
+  // 对应 execMongo 的 insertMany(upsertById) → 逐条 replaceOne(..., { upsert: true })
+  await deleted.replaceOne({ _id: 'u1' }, { _id: 'u1', deletedAt: 100 }, { upsert: true });
+  await deleted.replaceOne({ _id: 'u1' }, { _id: 'u1', deletedAt: 200 }, { upsert: true });
+  assert.deepEqual(box.snap.usersDeleted, [{ _id: 'u1', deletedAt: 200 }], '按 _id 覆盖，幂等不重复');
+  // 非 upsert 调用被拒（只有 upsertById 路径才会走到 replaceOne）
+  assert.throws(() => deleted.replaceOne({ _id: 'x' }, { _id: 'x' }), /仅支持 upsert 语义/);
 });
