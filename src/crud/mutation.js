@@ -4,7 +4,7 @@
  * Mutation / Upsert / 原生聚合 —— 规划步骤序列 → 依序执行 + 父子 _id 占位符回填
  */
 
-const { core: _core, get: _getSchema } = require('../schema');
+const { getCore, get: _getSchema } = require('../schema');
 const { emit: _emitFeedback } = require('../feedback');
 const { _call, _ctx, _exec, _nowFor, resolvePlaceholders, runAtomic, sourcesOf } = require('./exec');
 const { _generateId, _newIdPool } = require('./id');
@@ -12,7 +12,7 @@ const { _generateId, _newIdPool } = require('./id');
 /** mutation 单条：规划步骤序列 → 依序执行 + 父子 _id 占位符回填 */
 async function _mutationOne(schemaName, data, now, routeOverride = null) {
   const plan = _call(() =>
-    _core.planMutation(schemaName, data, now, _newIdPool(schemaName, data), _ctx(),
+    getCore().planMutation(schemaName, data, now, _newIdPool(schemaName, data), _ctx(),
       routeOverride));
 
   // §11.4 静默点收口：规划期降级（如关系不可读被跳过）走统一反馈通道，禁止静默失守
@@ -30,7 +30,7 @@ async function _mutationOne(schemaName, data, now, routeOverride = null) {
       if (i === 0) rootResult = result; // 首步即根写入
     }
 
-    return rootResult ? _call(() => _core.applyWriteDefaults(schemaName, rootResult)) : null;
+    return rootResult ? _call(() => getCore().applyWriteDefaults(schemaName, rootResult)) : null;
   };
 
   // 单一 SQL 源 → 步骤序列整体事务化（同连接同事务，任一步失败整体回滚）；
@@ -70,12 +70,12 @@ async function mutation(schemaName, data, routeOverride = null) {
  */
 async function upsert(schemaName, condition, data, options = null, routeOverride = null) {
   const s = _getSchema(schemaName);
-  const plan = _call(() => _core.planUpsert(
+  const plan = _call(() => getCore().planUpsert(
     schemaName, condition ?? null, data ?? null, options ?? null, _nowFor(schemaName),
     s.idPrefix ? _generateId(s) : '', _ctx(), routeOverride,
   ));
   const result = await _exec(plan.command);
-  return result ? _call(() => _core.applyWriteDefaults(schemaName, result)) : null;
+  return result ? _call(() => getCore().applyWriteDefaults(schemaName, result)) : null;
 }
 
 module.exports = { mutation, upsert };

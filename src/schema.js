@@ -93,7 +93,7 @@ function _toCoreDefn(defn) {
  * 判决唯一在 core（拒绝抛 `ERR_PERMISSION:` 前缀错误，定义不变）。
  */
 function register(defn, ctx) {
-  core.registerBatch([{ defn: _toCoreDefn(defn), location: _locOf(defn) }], ctx ?? null);
+  getCore().registerBatch([{ defn: _toCoreDefn(defn), location: _locOf(defn) }], ctx ?? null);
   return _mirror(defn);
 }
 
@@ -110,7 +110,7 @@ function _mirror(defn) {
       // FFI 边界契约：JS `undefined` 无法表示为 JSON 值（core 回调桥 SyncFnBridge
       // 对 fn 返回值做 serde 序列化，undefined 即 InvalidArg）；归一为 null——
       // 与 py 侧 lambda 返回 None → null 同语义，非错误兜底
-      core.setFn(coreKey, (item, ctx) => {
+      getCore().setFn(coreKey, (item, ctx) => {
         const r = userFn(item, ctx);
         return r === undefined ? null : r;
       });
@@ -185,7 +185,7 @@ function get(name) {
 
 /** 检查 schema 是否已注册（core 侧判定，含归档表） */
 function has(name) {
-  return core.has(name);
+  return getCore().has(name);
 }
 
 /**
@@ -196,7 +196,7 @@ function has(name) {
  * 装配路由（fastify 报错）。一旦检出重复即 emit 告警（同签名只告警一次），禁静默。
  */
 function list() {
-  const names = core.list();
+  const names = getCore().list();
   const seen = new Set();
   const out = [];
   for (const name of names) {
@@ -228,22 +228,22 @@ function list() {
  * 内部调用（索引创建、归档回填、后台任务等）须显式传 `{ internal: true }` 上下文。
  */
 function setRequireContext(needCtx = true) {
-  core.setRequireContext(Boolean(needCtx));
+  getCore().setRequireContext(Boolean(needCtx));
 }
 
 /** 豁免角色清单（命中者在一切判决环节直接放行）。默认空——无豁免（清单化语义） */
 function setExemptRoles(roles) {
-  core.setExemptRoles(roles);
+  getCore().setExemptRoles(roles);
 }
 
 /** 拒写角色清单（命中者一切写路径拒绝，读不受影响）。默认空——无拒写 */
 function setDenyWriteRoles(roles) {
-  core.setDenyWriteRoles(roles);
+  getCore().setDenyWriteRoles(roles);
 }
 
 /** schema 白名单缺失/为空时的默认姿态：'open'（默认，放行）| 'closed'（全拒） */
 function setUnconfiguredPolicy(policy) {
-  core.setUnconfiguredPolicy(policy);
+  getCore().setUnconfiguredPolicy(policy);
 }
 
 /**
@@ -251,12 +251,12 @@ function setUnconfiguredPolicy(policy) {
  * 判决唯一在 core；默认 Open（`register` 无 ctx 亦放行，保既有兼容）。
  */
 function setMetaPolicy(closed, roles) {
-  core.setMetaPolicy(Boolean(closed), roles);
+  getCore().setMetaPolicy(Boolean(closed), roles);
 }
 
 /** 「上下文强制」开关当前值（对齐 py_store.schema.require_context） */
 function requireContext() {
-  return core.requireContext();
+  return getCore().requireContext();
 }
 
 /**
@@ -266,12 +266,12 @@ function requireContext() {
  * 判决唯一在 core；未知档位由 core 抛错（禁静默回落到默认档）。
  */
 function setProfile(profile) {
-  core.setProfile(profile);
+  getCore().setProfile(profile);
 }
 
 /** 当前档位字符串（`'standard'` / `'text2query'`；对齐 py_store.schema.get_profile） */
 function getProfile() {
-  return core.profile();
+  return getCore().profile();
 }
 
 /** 取 asyncFn 计算列实现（入参为 core 侧 fnRefs 查找键，即 coreKey） */
@@ -307,7 +307,7 @@ function _bindOne(schemaName, key, comp) {
   if (typeof impl !== 'function') return false;
   const coreKey = _coreFnKey(key, comp);
   if (comp.fn) {
-    core.setFn(coreKey, (item, ctx) => {
+    getCore().setFn(coreKey, (item, ctx) => {
       const r = impl(item, ctx);
       return r === undefined ? null : r;
     });
@@ -344,7 +344,7 @@ function registerBatch(items, ctx) {
     defn: _toCoreDefn(defn),
     location,
   }));
-  core.registerBatch(coreItems, ctx ?? null);
+  getCore().registerBatch(coreItems, ctx ?? null);
   for (const { defn } of list) {
     if (defn && !defn.replica) _mirror(defn);
   }

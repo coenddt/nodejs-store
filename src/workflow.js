@@ -16,7 +16,7 @@
  */
 
 const {
-  core: _core,
+  getCore,
   has: _hasSchema,
   register: _registerSchema,
   requireContext: _requireContext,
@@ -295,7 +295,7 @@ function validateDefn(defn) {
 /**
  * 注册期「只校验不绑参」可规划性校验 → 错误列表（空 = 通过）。纯内存、无 IO、无参数值绑定。
  *
- * ① 结构性可规划：对每个 query 步骤的 gql，调用 core 规划门面 `_core.buildPipeline(gql, {}, null)`
+ * ① 结构性可规划：对每个 query 步骤的 gql，调用 core 规划门面 `getCore().buildPipeline(gql, {}, null)`
  *    （params 传 {} = 不绑参；ctx 传 null = 不引入调用点上下文）。parse / model / 关系 /
  *    `$pipeline` / 递归深度任一不可规划 → core 抛错，此处汇聚成注册期错误。
  * ② 参数键完整：返回体 `ast` 暴露 `params`（槽位→@key，含嵌套关系，见 core `pipeline/ast.rs`）；
@@ -331,7 +331,7 @@ function validatePlanable(defn) {
     const where = `steps[${i}]`;
     let built;
     try {
-      built = _core.buildPipeline(step.gql, {}, null);
+      built = getCore().buildPipeline(step.gql, {}, null);
     } catch (e) {
       errors.push(`${where}: gql 不可规划: ${e && e.message ? e.message : String(e)}`);
       return;
@@ -388,7 +388,7 @@ const _workflows = new Map();
 /** 注册工作流定义（注册即静态校验，白名单外显式 Err；name 全局唯一）。
  *
  * `ctx`：可选定义层门禁上下文（`{internal: true}` / `{roles: [...]}`）。判决唯一在 core
- * （`_core.canRegister`，与 schema.register 同一 MetaPolicy）；默认 Open → 全放行。
+ * （`getCore().canRegister`，与 schema.register 同一 MetaPolicy）；默认 Open → 全放行。
  * Closed 且 ctx 不过 → 抛 `ERR_PERMISSION:`（定义不写入）。
  *
  * 同名同形重复注册幂等通过（对齐 core schema.register 的复跑语义——场景 harness
@@ -396,7 +396,7 @@ const _workflows = new Map();
  */
 function register(defn, ctx) {
   // 定义层门禁：判决先于静态校验（拒绝即返回，零副作用；与 schema.register_with_ctx 同序）
-  if (!_core.canRegister(ctx ?? null)) {
+  if (!getCore().canRegister(ctx ?? null)) {
     const name = defn && defn.name ? defn.name : '';
     throw new WorkflowError(`ERR_PERMISSION: 无权注册或覆盖工作流定义 ${name}`);
   }
@@ -564,7 +564,7 @@ function _prescanSources(defn, routeOverride, now, ctx) {
     if (step.op !== 'mutation') continue;
     try {
       const pool = _newIdPool(step.model, step.data);
-      const plan = _call(() => _core.planMutation(step.model, step.data, now, pool, ctx, routeOverride));
+      const plan = _call(() => getCore().planMutation(step.model, step.data, now, pool, ctx, routeOverride));
       for (const s of _sourcesOf(plan)) sources.add(s || 'default');
     } catch (e) {
       // 预扫失败降级裸跑（显式声明，禁静默）

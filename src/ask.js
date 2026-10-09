@@ -8,12 +8,12 @@
  *
  *     用户问题 → ① describeForAi(ctx) 权限过滤摘要
  *              → ② LLM（注入式客户端）翻译为 {"gql","params"}
- *              → ③ text2query() 档内规划期校验（core 判决：语法/档位/权限/硬限）
+ *              → ③ text2query 档位视图内规划期校验（core 判决：语法/档位/权限/硬限）
  *              → ④ crud.query 执行（只读）
  *              → ⑤ 失败结构化回喂 LLM 重试（≤ maxRetries 次），耗尽抛 AskExhausted
  *
  * 护栏面（D5，服务端硬编码，LLM 零可触）：
- *   - 档位 = text2query：本模块硬编码 `text2query()` 包裹全部执行；
+ *   - 档位 = text2query：本模块硬编码以作用域档位视图（withScope + withPolicy）包裹全部执行；
  *   - 用户上下文 = ctx：服务端注入参数，经 permission.scopedContext 进执行面，
  *     绝不进入任何 LLM 消息；core 档位门禁强制无 ctx 即拒（fail-secure，A4）；
  *   - routeOverride = null：硬编码（CWE-639；Host 兜底 _guardRouteOverride 双保险）；
@@ -25,8 +25,10 @@
  * 不可能变成不受控命令。一切失败结构化显式暴露（no-error-masking：是错就是错，
  * 禁降级、禁返回空结果——「问数失败」就是失败，交上层裁决，D4）。
  *
- * 并发限制（如实声明）：text2query 档位（core 单例）与反馈 sink 为进程级全局，
- * 同一进程内并发调用 ask() 会互相串扰，宿主需串行化（或每任务独享进程/事件循环）。
+ * 并发隔离（R2）：text2query 档位与反馈 sink 不再全局切换，改由 withScope 承载
+ * 「一请求一档位视图 / 一 sink」（派生视图见 rust-store 02，作用域形态见 03 §4.4）；
+ * 同一进程内并发调用 ask() 各自独立、互不串扰——「宿主须串行化 / 每任务独享进程」
+ * 的要求随之解除（fail-open 姿态与 core 判决语义均不变）。
  */
 
 const fs = require('node:fs');
@@ -36,7 +38,7 @@ const crud = require('./crud');
 const feedback = require('./feedback');
 const permission = require('./permission');
 const schema = require('./schema');
-const { text2query } = require('./profile');
+const { withScope } = require('./scope');
 const { getLlm } = require('./llm');
 
 // ─── 轨迹载体 ──────────────────────────────────────────────────
@@ -148,7 +150,7 @@ function describeForAi(ctx = null) {
     const computes = {};
     // 新绑定：core 角色判决；旧绑定（core-node 未导出 readableComputes，如 npm
     // rust-store-node 2.0.0）：能力探测降级为「配 read 一律收窄 + 告警」（对齐 py 现状）
-    const readableComputes = typeof schema.core.readableComputes === 'function'
+    const readableComputes = typeof schema.getCore().readableComputes === 'function'
       ? new Set(permission.getReadableComputes(name, ctx))
       : null;
     for (const [cname, cdef] of Object.entries(mirror.computes)) {
@@ -251,6 +253,48 @@ function _errorFromException(e, roundEvents) {
 }
 
 /**
+ * ask 执行主体（作用域内运行：档位视图 / 反馈 sink / 用户 ctx 均已就位）。
+ *
+ * R2 起本函数（及整个执行面）**不得**出现 `setProfile` / `setSink` / `setMeta`
+ * 全局切换——档位与 sink 由 `withScope` 承载（03 §4.4，grep 核销为零）。
+ */
+async function _askBody({ client, messages, attempts, events, roundEvents, maxRetries }) {
+  for (let i = 0; i < 1 + maxRetries; i++) {
+    roundEvents.length = 0;
+    // LLM 客户端异常（llmNetworkError/llmHttpError/llmEmptyContent）原样穿透
+    const raw = await client(messages);
+    const attempt = { llmRaw: raw };
+    let parsed;
+    try {
+      parsed = _parseLlmOutput(raw);
+    } catch (e) {
+      if (!(e instanceof BadLlmOutput)) throw e;
+      attempt.error = e.detail;
+      attempts.push(attempt);
+      messages.push({ role: 'assistant', content: raw });
+      messages.push({ role: 'user', content: JSON.stringify({ error: e.detail }) });
+      continue;
+    }
+    attempt.gql = parsed.gql;
+    attempt.params = parsed.params;
+    try {
+      // routeOverride 硬编码 null（受信参数，禁 AI 侧指定，D5/CWE-639）
+      const data = await crud.query(parsed.gql, parsed.params, null);
+      attempt.rows = data.length;
+      attempts.push(attempt);
+      return new AskResult(data, attempts, events);
+    } catch (e) {
+      attempt.error = _errorFromException(e, roundEvents);
+      attempts.push(attempt);
+      messages.push({ role: 'assistant', content: raw });
+      messages.push({ role: 'user', content: JSON.stringify({ error: attempt.error }) });
+    }
+  }
+  // 循环走完（重试耗尽）→ undefined，由入口抛 AskExhausted
+  return undefined;
+}
+
+/**
  * AI 问数唯一入口（L1 只读）：自然语言 → LLM 翻译 → 受控沙箱执行 → 结构化回喂。
  *
  * 参数（options 对象，对齐 py keyword-only 形参）：
@@ -302,47 +346,18 @@ async function ask(question, { llm, ctx, maxRetries = 3, knowledge = null } = {}
     roundEvents.push(event);
   };
 
-  const prevSink = feedback.getSink();
-  feedback.setSink(collect);
-  let result;
-  try {
-    // 成功轮在内层闭包 return AskResult；循环走完（耗尽）内层返回 undefined
-    result = await text2query(() => permission.scopedContext(ctx, async () => {
-      for (let i = 0; i < 1 + maxRetries; i++) {
-        roundEvents.length = 0;
-        // LLM 客户端异常（llmNetworkError/llmHttpError/llmEmptyContent）原样穿透
-        const raw = await client(messages);
-        const attempt = { llmRaw: raw };
-        let parsed;
-        try {
-          parsed = _parseLlmOutput(raw);
-        } catch (e) {
-          if (!(e instanceof BadLlmOutput)) throw e;
-          attempt.error = e.detail;
-          attempts.push(attempt);
-          messages.push({ role: 'assistant', content: raw });
-          messages.push({ role: 'user', content: JSON.stringify({ error: e.detail }) });
-          continue;
-        }
-        attempt.gql = parsed.gql;
-        attempt.params = parsed.params;
-        try {
-          // routeOverride 硬编码 null（受信参数，禁 AI 侧指定，D5/CWE-639）
-          const data = await crud.query(parsed.gql, parsed.params, null);
-          attempt.rows = data.length;
-          attempts.push(attempt);
-          return new AskResult(data, attempts, events);
-        } catch (e) {
-          attempt.error = _errorFromException(e, roundEvents);
-          attempts.push(attempt);
-          messages.push({ role: 'assistant', content: raw });
-          messages.push({ role: 'user', content: JSON.stringify({ error: attempt.error }) });
-        }
-      }
-    }));
-  } finally {
-    feedback.setSink(prevSink);
-  }
+  // R2（03 §4.4）：一次性派生 text2query 档位视图，档位与反馈 sink 随作用域承载——
+  // 不再全局 setProfile / setSink，「进入即改进程档位 + 退出恢复」的串扰根源随之消除。
+  const view = schema.getCore().withPolicy({ profile: 'text2query' });
+  const result = await withScope(
+    // sink：本作用域 emit 的事件只进本次 events（feedback.emit 优先取 currentScope().sink）；
+    // meta（ns 标签）不在此伪造——ask 无 tenant/env 入参，沿用进程级 feedback.setMeta 注入值
+    { view, sink: collect },
+    // ctx 经 permission.scopedContext 注入执行面（core 档位门禁强制 ctx，fail-secure，A4）
+    () => permission.scopedContext(ctx, () => _askBody({
+      client, messages, attempts, events, roundEvents, maxRetries,
+    })),
+  );
   if (result !== undefined) return result;
   throw new AskExhausted(attempts, events);
 }

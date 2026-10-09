@@ -5,7 +5,7 @@
  * / 跨库联邦（逐源执行 → 内存 hash join）
  */
 
-const { core: _core, getAsyncFn, getProfile } = require('../schema');
+const { getCore, getAsyncFn, getProfile } = require('../schema');
 const { emit: _emitFeedback } = require('../feedback');
 const {
   _call, _ctx, _exec, _execOn, resolvePlaceholders, ProfileViolation, _PROFILE_HINT,
@@ -42,7 +42,7 @@ async function _runQueryPlan(plan) {
     if (!ids.length) return [];
     const cmd2 = resolvePlaceholders(plan.commands[1], { ids });
     const items = await _exec(cmd2);
-    return _core.restoreSortOrder(items, ids, plan.sort ?? null).items;
+    return getCore().restoreSortOrder(items, ids, plan.sort ?? null).items;
   }
   return _exec(plan.commands[0]);
 }
@@ -50,13 +50,13 @@ async function _runQueryPlan(plan) {
 /** 读路径尾处理两段式：core 后处理 → Host 执行 asyncFn → core 剥离注入依赖 */
 async function _finalize(plan, items) {
   if (!plan.postprocess) return items;
-  const prepared = _core.prepareQuery(plan.postprocess, items, _ctx());
+  const prepared = getCore().prepareQuery(plan.postprocess, items, _ctx());
   for (const ref of prepared.fnRefs) {
     const fn = getAsyncFn(ref);
     if (!fn) throw new Error(`asyncFn 计算列 ${ref} 未注册实现`);
     await fn(prepared.items, _ctx());
   }
-  return _core.stripQuery(plan.postprocess, prepared.items).items;
+  return getCore().stripQuery(plan.postprocess, prepared.items).items;
 }
 
 /**
@@ -70,14 +70,14 @@ async function _finalize(plan, items) {
  */
 async function query(gql, params = null, routeOverride = null) {
   _guardRouteOverride(routeOverride);
-  const plan = _call(() => _core.planQuery(gql, params ?? {}, _ctx(), routeOverride));
+  const plan = _call(() => getCore().planQuery(gql, params ?? {}, _ctx(), routeOverride));
   return _finalize(plan, await _runQueryPlan(plan));
 }
 
 /** GQL 查询（返回单条）—— 走 core `planQueryOne`：未显式 `$limit` 时下推 `$limit(1)` */
 async function queryOne(gql, params = null, routeOverride = null) {
   _guardRouteOverride(routeOverride);
-  const plan = _call(() => _core.planQueryOne(gql, params ?? {}, _ctx(), routeOverride));
+  const plan = _call(() => getCore().planQueryOne(gql, params ?? {}, _ctx(), routeOverride));
   const items = await _finalize(plan, await _runQueryPlan(plan));
   return items.length ? items[0] : null;
 }
@@ -95,7 +95,7 @@ async function _runFederatedUnit(unit) {
     if (!ids.length) return [];
     const cmd2 = resolvePlaceholders(commands[1], { ids });
     const items = await _execOn(unit.source, cmd2);
-    return _core.restoreSortOrder(items, ids, unit.sort ?? null).items;
+    return getCore().restoreSortOrder(items, ids, unit.sort ?? null).items;
   }
   return _execOn(unit.source, commands[0]);
 }
@@ -111,7 +111,7 @@ async function _runFederatedUnit(unit) {
  * 无法下推的分页/排序进 `plan.degraded` 并告警，不阻断查询。
  */
 async function queryFederated(gql, params = null) {
-  const plan = _call(() => _core.planFederated(gql, params ?? {}, _ctx()));
+  const plan = _call(() => getCore().planFederated(gql, params ?? {}, _ctx()));
 
   for (const d of plan.degraded || []) {
     // 降级事件走统一反馈通道（无 sink 时打 stderr，允许拦截，禁止静默失守）
@@ -120,7 +120,7 @@ async function queryFederated(gql, params = null) {
 
   const results = await Promise.all((plan.sources || []).map(_runFederatedUnit));
 
-  const merged = _call(() => _core.mergeFederated(plan, results));
+  const merged = _call(() => getCore().mergeFederated(plan, results));
   return _finalize(plan, merged);
 }
 
@@ -135,7 +135,7 @@ async function queryFederated(gql, params = null) {
 async function queryWithCount(gql, params = null, routeOverride = null) {
   _guardRouteOverride(routeOverride);
   const plan = _call(() =>
-    _core.planQueryWithCount(gql, params ?? {}, _ctx(), null, routeOverride));
+    getCore().planQueryWithCount(gql, params ?? {}, _ctx(), null, routeOverride));
   const items = await _finalize(plan, await _runQueryPlan(plan));
   const total = await _exec(plan.countCommand);
   return {

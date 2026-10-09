@@ -19,7 +19,7 @@
  */
 
 const { AsyncLocalStorage } = require('node:async_hooks');
-const { core: _core, get: _getSchema } = require('./schema');
+const { getCore, get: _getSchema } = require('./schema');
 const { emit: _emitFeedback } = require('./feedback');
 const executors = require('./executors');
 
@@ -489,7 +489,7 @@ function route(cmd) {
  * 使上层（crud/*）对 Mongo / SQL 两条路径无感。
  */
 async function execSql(source, connection, cmd) {
-  const plan = _core.dialectTranslate(connection.kind, cmd);
+  const plan = getCore().dialectTranslate(connection.kind, cmd);
   // Host 兜底：core 标记了无法安全下推的组合（如 $lookup 子 $limit 每父 top-N）时，
   // 绝不执行「缺少该段」的 SQL（会静默返回错误结果），改为显式报错，由调用方降级重查。
   // 先于执行器检查 —— 命令本身不可安全下推时，报下推不支持而非「执行器未接入」
@@ -550,7 +550,7 @@ async function executeRaw(source, sql, params = null, isWrite = null) {
   }
   let compiled;
   try {
-    compiled = _core.rawStmtCompile(conn0.kind, sql, params ?? null, isWrite ?? null);
+    compiled = getCore().rawStmtCompile(conn0.kind, sql, params ?? null, isWrite ?? null);
   } catch (e) {
     throw new RawSqlError((e && e.message) || String(e));
   }

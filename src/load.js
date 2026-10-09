@@ -5,7 +5,7 @@
  *
  * 职责切分（判据唯一在 core）：
  *   - IO 在本模块：读 store.config.json、递归 walk 定义目录、读 JSON 文件；
- *   - 纯判决在 core：`schema.core.planLoad`（db 归属 / 路径→落点 / 主从 / 查重）。
+ *   - 纯判决在 core：`schema.getCore().planLoad`（db 归属 / 路径→落点 / 主从 / 查重）。
  * 本模块**不含**任何落点/主从判据（禁双端漂移；总纲 §5 + 06 §4.1）。
  */
 
@@ -72,7 +72,7 @@ function _walk(dir, root, out) {
 
 /** 纯规划（转调 core；判决唯一在 core） */
 function planLoad(config, files) {
-  return schema.core.planLoad(config, files);
+  return schema.getCore().planLoad(config, files);
 }
 
 /**

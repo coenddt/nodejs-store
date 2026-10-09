@@ -11,7 +11,9 @@
 
 const { AsyncLocalStorage } = require('node:async_hooks');
 
-const { core } = require('./schema');
+// 门面经 `getCore()` 现场取（作用域内作用于派生视图，域外回退 base——03 §4.2）；
+// 本模块形参名 `schema` 已被占用（`_model(schema)`），故引入名用 `schemaMod`（对齐 naming.js）
+const schemaMod = require('./schema');
 
 const _als = new AsyncLocalStorage();
 
@@ -63,88 +65,88 @@ function _model(schema) {
 }
 
 function canReadSchema(schema, ctx) {
-  return core.canRead(_model(schema), ctx ?? null);
+  return schemaMod.getCore().canRead(_model(schema), ctx ?? null);
 }
 
 function canWriteSchema(schema, ctx) {
-  return core.canWrite(_model(schema), ctx ?? null);
+  return schemaMod.getCore().canWrite(_model(schema), ctx ?? null);
 }
 
 function shouldInjectOwnerCondition(schema, ctx) {
-  return core.shouldInjectOwner(_model(schema), ctx ?? null);
+  return schemaMod.getCore().shouldInjectOwner(_model(schema), ctx ?? null);
 }
 
 function mergeOwnerCondition(schema, ctx, condition) {
-  const out = core.mergeOwnerCondition(_model(schema), ctx ?? null, condition ?? null);
+  const out = schemaMod.getCore().mergeOwnerCondition(_model(schema), ctx ?? null, condition ?? null);
   // core 在「不注入」时返回 null（无法区分原条件为 null）→ 原样返回入参条件
   return out === null || out === undefined ? condition : out;
 }
 
 function getReadableFields(schema, ctx) {
-  return core.readableFields(_model(schema), ctx ?? null);
+  return schemaMod.getCore().readableFields(_model(schema), ctx ?? null);
 }
 
 function getReadableRelations(schema, ctx) {
-  return core.readableRelations(_model(schema), ctx ?? null);
+  return schemaMod.getCore().readableRelations(_model(schema), ctx ?? null);
 }
 
 /** 角色可读计算列集（列级白名单；core 未导出该判决的旧绑定上为 undefined） */
 function getReadableComputes(schema, ctx) {
-  return core.readableComputes(_model(schema), ctx ?? null);
+  return schemaMod.getCore().readableComputes(_model(schema), ctx ?? null);
 }
 
 function getWritableFields(schema, ctx) {
-  return core.writableFields(_model(schema), ctx ?? null);
+  return schemaMod.getCore().writableFields(_model(schema), ctx ?? null);
 }
 
 function filterWritableData(schema, ctx, data) {
-  return core.filterWritableData(_model(schema), ctx ?? null, data);
+  return schemaMod.getCore().filterWritableData(_model(schema), ctx ?? null, data);
 }
 
 // ─── RBAC 动态策略（core 判决；本模块零判决，仅透传，对齐 py_store.permission） ──
 
 /** 注入/清除 RBAC 策略。object = 注入（解析失败 core 抛错）；null = 清除关闭 */
 function setRbac(policy) {
-  return core.setRbac(policy ?? null);
+  return schemaMod.getCore().setRbac(policy ?? null);
 }
 
 /** RBAC 策略是否已注入 */
 function rbacEnabled() {
-  return core.rbacEnabled();
+  return schemaMod.getCore().rbacEnabled();
 }
 
 /** RBAC 动作判决：action ∈ {read, insert, update, remove}；RBAC 不介入 → true */
 function rbacCan(model, action, ctx) {
-  return core.rbacCan(_model(model), action, ctx ?? null);
+  return schemaMod.getCore().rbacCan(_model(model), action, ctx ?? null);
 }
 
 /** RBAC 叠加后的可读字段集（静态 ∩ readFields）；无 ctx → null 不裁剪 */
 function rbacReadableFields(model, ctx) {
-  return core.rbacReadableFields(_model(model), ctx ?? null);
+  return schemaMod.getCore().rbacReadableFields(_model(model), ctx ?? null);
 }
 
 /** RBAC 叠加后的可写字段集（静态 ∩ writeFields）；无 ctx → null 不裁剪 */
 function rbacWritableFields(model, ctx) {
-  return core.rbacWritableFields(_model(model), ctx ?? null);
+  return schemaMod.getCore().rbacWritableFields(_model(model), ctx ?? null);
 }
 
 /** RBAC 行级条件（ownerOnly/condition 的 OR 合并体）；action ∈ {read, update, remove} */
 function rbacRowCondition(model, action, ctx) {
-  return core.rbacRowCondition(_model(model), action, ctx ?? null);
+  return schemaMod.getCore().rbacRowCondition(_model(model), action, ctx ?? null);
 }
 
 // ── 角色清单与未配置姿态（清单化语义，判决唯一在 core；本层仅透传） ──
 
 function setExemptRoles(roles) {
-  return core.setExemptRoles(roles);
+  return schemaMod.getCore().setExemptRoles(roles);
 }
 
 function setDenyWriteRoles(roles) {
-  return core.setDenyWriteRoles(roles);
+  return schemaMod.getCore().setDenyWriteRoles(roles);
 }
 
 function setUnconfiguredPolicy(policy) {
-  return core.setUnconfiguredPolicy(policy);
+  return schemaMod.getCore().setUnconfiguredPolicy(policy);
 }
 
 // ─── 自定义错误 ──────────────────────────────────────────────

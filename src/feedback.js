@@ -14,11 +14,17 @@
  *
  * 默认无 sink 时打 stderr（向后兼容）；宿主可 `setSink(fn)` 接管，
  * 接入自动反馈闭环（允许被拦截，禁止静默失守）。
+ *
+ * R2（03 §3.2）：`emit` 的 sink 与 ns 标签**作用域优先**——作用域内取
+ * `currentScope().sink` / `.meta`，未进入作用域则回退进程级 `_sink` / `_meta`
+ * （fail-open 姿态不变；`failCount` / `_pending` 仍为进程级聚合，设计 D5 保留）。
  */
+
+const scope = require('./scope');
 
 let _sink = null;
 
-// 进程级 ns 标签（进程级隔离下天然单 ns；由宿主 setMeta 注入）
+// 进程级 ns 标签（进程级隔离下天然单 ns；由宿主 setMeta 注入）；作用域 meta 优先于此
 let _meta = { tenant: '', env: '' };
 
 // 落库失败累计计数（进程级；>0 表示有事件未入表——可观测，不静默）
@@ -26,6 +32,16 @@ let _failCount = 0;
 
 // 在途落库 Promise（进程级；graceful shutdown 前经 flush() 收口，消除 fire-and-forget 丢事件窗口 D8）
 const _pending = new Set();
+
+/** 当前生效 sink（R2）：作用域 sink 优先，未进入作用域回退进程级 `_sink` */
+function _currentSink() {
+  return scope.currentScope()?.sink ?? _sink;
+}
+
+/** 当前生效 ns 标签（R2）：作用域 meta 优先，未进入作用域回退进程级 `_meta` */
+function _currentMeta() {
+  return scope.currentScope()?.meta ?? _meta;
+}
 
 /** 注册反馈事件回调 `fn(event)`；传 null/非函数恢复默认 stderr 行为 */
 function setSink(fn) {
@@ -67,7 +83,8 @@ function enableFeedbackTable(store) {
   setSink((event) => {
     // 事件类别键 `type` 与 field 级契约保留键冲突（core §6.3）→ 落库列名为 `eventType`
     const { type, ...rest } = event || {};
-    const row = { ...rest, eventType: type, tenant: _meta.tenant || '', env: _meta.env || '', now: Date.now() };
+    const ns = _currentMeta();
+    const row = { ...rest, eventType: type, tenant: ns.tenant || '', env: ns.env || '', now: Date.now() };
     // 在途跟踪：panic 前 flush() 可等待；失败仍走 stderr + 计数（不抛回 emit）
     const p = Promise.resolve(metadef._runInternal(() => store.insert('__feedback', row)))
       .catch((e) => {
@@ -93,11 +110,12 @@ async function flush() {
   }
 }
 
-/** 产出一条反馈事件：有 sink 回调之；否则打印 stderr（允许拦截，禁止静默） */
+/** 产出一条反馈事件：作用域/进程级 sink 回调之；否则打印 stderr（允许拦截，禁止静默） */
 function emit(event) {
   const e = event || {};
-  if (_sink) {
-    _sink(e);
+  const sink = _currentSink();
+  if (sink) {
+    sink(e);
     return;
   }
   console.error(

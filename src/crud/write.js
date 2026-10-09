@@ -4,7 +4,7 @@
  * 写路径 —— 单条/批量插入、更新、删除归档、存在性与计数
  */
 
-const { core: _core, get: _getSchema } = require('../schema');
+const { getCore, get: _getSchema } = require('../schema');
 const { _call, _ctx, _exec, _nowFor, runAtomic, sourcesOf, declareTriggerSources } = require('./exec');
 const { _generateId } = require('./id');
 const { runTriggers } = require('./triggers');
@@ -24,7 +24,7 @@ async function insert(schemaName, data, routeOverride = null) {
   const s = _getSchema(schemaName);
   const now = _nowFor(schemaName);
   const plan = _call(() =>
-    _core.planInsert(schemaName, data ?? null, now, s.idPrefix ? _generateId(s) : '', _ctx(),
+    getCore().planInsert(schemaName, data ?? null, now, s.idPrefix ? _generateId(s) : '', _ctx(),
       routeOverride));
 
   const finish = (result) => {
@@ -62,7 +62,7 @@ async function insertMany(schemaName, docs, routeOverride = null) {
       'AUTOINCREMENT_NOT_SUPPORTED: insertMany 不支持 autoincrement schema'
       + '（批量自增值回读不可靠）；请逐条 insert 或显式提供 _id');
   }
-  const plan = _call(() => _core.planInsertMany(
+  const plan = _call(() => getCore().planInsertMany(
     schemaName,
     docs,
     _nowFor(schemaName),
@@ -88,7 +88,7 @@ async function update(schemaName, condition, data, options = null, routeOverride
   const now = _nowFor(schemaName);
   const ctx = _ctx();
   const first = _call(() =>
-    _core.planUpdate(schemaName, condition ?? null, data ?? null, options ?? null, now, ctx,
+    getCore().planUpdate(schemaName, condition ?? null, data ?? null, options ?? null, now, ctx,
       null, null, routeOverride));
   const sources = sourcesOf(first);
 
@@ -98,7 +98,7 @@ async function update(schemaName, condition, data, options = null, routeOverride
     if (out.needsProbe) {
       before = await _exec(out.needsProbe);            // 探针文档 = before（含 onFields 投影）
       out = _call(() =>
-        _core.planUpdate(schemaName, condition ?? null, data ?? null, options ?? null, now, ctx,
+        getCore().planUpdate(schemaName, condition ?? null, data ?? null, options ?? null, now, ctx,
           before !== null && before !== undefined, before ?? null, routeOverride));
     }
     // 触发链触及源并入原子性声明（update 的 triggers 二次规划才产出；跨源 → non_atomic_write）
@@ -108,7 +108,7 @@ async function update(schemaName, condition, data, options = null, routeOverride
     if (out.triggers && out.triggers.length && result) {
       await runTriggers(out.triggers, { root: result, before, now, ctx, executed: new Set() });
     }
-    return result ? _call(() => _core.applyWriteDefaults(schemaName, result)) : null;
+    return result ? _call(() => getCore().applyWriteDefaults(schemaName, result)) : null;
   };
 
   return runAtomic(sources, doRun);
@@ -152,7 +152,7 @@ function fillPreIds(command, ids) {
 /** 批量更新（支持原生操作符） */
 async function updateMany(schemaName, condition, data, routeOverride = null) {
   const out = _call(() =>
-    _core.planUpdateMany(schemaName, condition ?? null, data ?? null, _nowFor(schemaName), _ctx(), routeOverride));
+    getCore().planUpdateMany(schemaName, condition ?? null, data ?? null, _nowFor(schemaName), _ctx(), routeOverride));
   const result = await execWithPre(out.command);
   return { modifiedCount: result.modifiedCount };
 }
@@ -164,7 +164,7 @@ async function updateMany(schemaName, condition, data, routeOverride = null) {
  * 首条（被删文档代表值、全字段）；未删到（docs 空）不触发，与 update 0 行命中语义一致 */
 async function remove(schemaName, condition, routeOverride = null) {
   const out = await _planWithProbe((found, doc) => _call(() =>
-    _core.planRemove(schemaName, condition ?? null, _ctx(), found, doc, routeOverride)));
+    getCore().planRemove(schemaName, condition ?? null, _ctx(), found, doc, routeOverride)));
 
   const doRemove = async () => {
     let archivedCount = 0;
@@ -179,7 +179,7 @@ async function remove(schemaName, condition, routeOverride = null) {
     if (out.findCommand) {
       docs = await (ids !== null ? fillPreIds(out.findCommand, ids) : _exec(out.findCommand));
       if (docs.length) {
-        const arch = _call(() => _core.planArchiveDocs(schemaName, docs, _nowFor(schemaName), routeOverride));
+        const arch = _call(() => getCore().planArchiveDocs(schemaName, docs, _nowFor(schemaName), routeOverride));
         await _exec(arch.command);
         archivedCount = docs.length;
       }
@@ -201,14 +201,14 @@ async function remove(schemaName, condition, routeOverride = null) {
 
 /** 判断是否存在 */
 async function exists(schemaName, condition, routeOverride = null) {
-  const cmd = _call(() => _core.planExists(schemaName, condition ?? null, routeOverride));
+  const cmd = _call(() => getCore().planExists(schemaName, condition ?? null, routeOverride));
   const doc = await _exec(cmd);
   return doc !== null && doc !== undefined;
 }
 
 /** 统计符合条件的文档数量 */
 async function count(schemaName, filter = null, routeOverride = null) {
-  const cmd = _call(() => _core.planCount(schemaName, filter ?? null, _ctx(), routeOverride));
+  const cmd = _call(() => getCore().planCount(schemaName, filter ?? null, _ctx(), routeOverride));
   return _exec(cmd);
 }
 

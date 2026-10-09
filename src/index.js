@@ -359,7 +359,7 @@ class Store {
   // ── 底层工具（调试/高级用法） ──
   /** 解析 GQL 并构建 pipeline，返回 `{tokens, ast, pipeline, projection}` */
   buildPipeline(gql, params) {
-    return schema.core.buildPipeline(gql, params ?? {}, permission.getContext() ?? null);
+    return schema.getCore().buildPipeline(gql, params ?? {}, permission.getContext() ?? null);
   }
 
   // ── 宿主接入守卫（Registry 级，对齐 py-store c44001e） ──
@@ -391,7 +391,7 @@ class Store {
     return schema.getProfile();
   }
 
-  /** text2query 便捷上下文（进入设档、退出恢复；同 scopedRoles 的 token-set/reset） */
+  /** text2query 便捷上下文（档位随作用域视图隔离，退出即回退 base——R2，03 §3.2） */
   async text2query(fn) {
     return text2query(fn);
   }
