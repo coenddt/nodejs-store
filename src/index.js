@@ -40,6 +40,7 @@ const permission = require('./permission');
 const { text2query } = require('./profile');
 const resource = require('./resource');
 const schema = require('./schema');
+const secure = require('./secure');
 const { setFn, assertFnsCovered } = schema;
 const { syncSchema } = require('./sync');
 const workflow = require('./workflow');
@@ -505,6 +506,26 @@ class Store {
   setMetaPolicy(closed, roles) {
     return schema.setMetaPolicy(closed, roles);
   }
+
+  // ── 统一安全模式（fail-secure 一键入口；见 ./secure） ──
+  /**
+   * 一键进入 fail-secure：同时翻转「上下文强制 + 未配白名单全拒 + 定义注册门禁」
+   * 三个独立开关。`opts.adminRoles` 为允许改定义的角色（默认仅 internal）。
+   * 返回 `{ secure: true }`。
+   */
+  secureMode(opts) {
+    return secure.secureMode(opts);
+  }
+
+  /** 当前是否经统一入口处于安全模式 */
+  isSecure() {
+    return secure.isSecure();
+  }
+
+  /** 退出安全模式、恢复默认 fail-open（仅供本地脚本/测试） */
+  relaxMode() {
+    return secure.relaxMode();
+  }
 }
 
 /** 自定义权限错误（实例可被 store.PermissionError 捕获） */
@@ -646,6 +667,7 @@ module.exports = {
   ddl,
   load,
   schema,
+  secure,
   permission,
   crud,
   resource,

@@ -72,3 +72,56 @@ test('require_context: 关闭后恢复 fail-open', async () => {
   store.setRequireContext(false);
   await store.query('RcPost{ title }');
 });
+
+// ── secureMode 统一安全模式（fail-secure 一键入口；见 src/secure.js） ──
+
+test('secureMode: 一键翻转三个开关，无 ctx 的读写与注册全拒', async () => {
+  store.secureMode({ adminRoles: ['admin'] });
+  assert.equal(store.isSecure(), true);
+  assert.equal(store.requireContext(), true);
+  // 开关1 require_context：无 ctx 读写拒绝
+  await assert.rejects(() => store.query('RcPost{ title }'), /ERR_NO_CONTEXT/);
+  await assert.rejects(() => store.insert('RcPost', { title: 'x' }), /ERR_NO_CONTEXT/);
+  // 开关3 meta closed：无 ctx 注册新定义拒绝
+  assert.throws(
+    () => _sc.register({ name: 'RcTmp', collection: 'rc_tmp', fields: {}, relations: {}, datasource: SRC }),
+    /ERR_PERMISSION/,
+  );
+});
+
+test('secureMode: 白名单角色可注册，但未配权限白名单的 schema 对任何用户全拒', async () => {
+  // 注意：register 的定义门禁只认显式 ctx 参数（不读 ALS），须显式传入
+  _sc.register(
+    {
+      name: 'RcSecret', collection: 'rc_secret', timestamps: false,
+      fields: { title: { type: 'string' } }, relations: {}, datasource: SRC,
+    },
+    { userId: 'admin1', roles: ['admin'] },
+  );
+  // 查询面身份走 ALS（register 门禁与读写判决的上下文通道不同）
+  permission.setContext({ userId: 'admin1', roles: ['admin'] });
+  // 开关2 unconfigured=closed：该 schema 未配 read/write 白名单，admin 自己也被拒
+  // （判决在 core plan 阶段，先于 SQL 执行，故 rc_secret 物理表缺失不影响断言）。
+  // core 抛 ERR_PERMISSION，经 crud/exec._call 归一为 PermissionError（前缀已剥离）。
+  await assert.rejects(() => store.query('RcSecret{ title }'), permission.PermissionError);
+  await assert.rejects(() => store.insert('RcSecret', { title: 'a' }), permission.PermissionError);
+  // 普通用户同样被拒
+  permission.setContext({ userId: 'u2', roles: ['user'] });
+  await assert.rejects(() => store.query('RcSecret{ title }'), permission.PermissionError);
+});
+
+test('secureMode: internal 上下文照常放行（后台任务通道保留）', async () => {
+  await permission.runAsInternal(async () => {
+    await store.insert('RcPost', { title: '内部写入' });
+    const items = await store.query('RcPost{ title }');
+    assert.ok(items.some((it) => it.title === '内部写入'));
+  });
+});
+
+test('secureMode: relaxMode 恢复 fail-open 姿态', async () => {
+  store.relaxMode();
+  assert.equal(store.isSecure(), false);
+  assert.equal(store.requireContext(), false);
+  permission.setContext(undefined);
+  await store.query('RcPost{ title }');
+});
