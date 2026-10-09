@@ -25,6 +25,9 @@ const executors = require('./executors');
 
 const DEFAULT_SOURCE = 'default';
 
+/** 本地磁盘数据源类型标记（连接描述符与事务视图均携带该 `kind`） */
+const LOCAL_KIND = 'local';
+
 let _connections = Object.create(null);
 
 /** 事务作用域的连接覆盖：source → 事务描述符（见 runInTransaction） */
@@ -109,9 +112,9 @@ function _isMongoHandle(x) {
   );
 }
 
-/** 归一化连接映射：单个 Mongo db 实例 / MongoClient → `{ default: 连接 }` */
+/** 归一化连接映射：单个 Mongo db 实例 / MongoClient / 裸 local 描述符 → `{ default: 连接 }` */
 function _normalize(connections) {
-  if (_isMongoHandle(connections)) {
+  if (_isMongoHandle(connections) || isLocalConnection(connections)) {
     return { [DEFAULT_SOURCE]: connections };
   }
   return connections || {};
@@ -150,6 +153,11 @@ function isSqlConnection(connection) {
 /** 数据源名是否绑定 SQL 源 */
 function isSql(source) {
   return isSqlConnection(getConnection(source));
+}
+
+/** 本地磁盘数据源判别：`kind === 'local'`（描述符与事务视图都携带 `handle`） */
+function isLocalConnection(connection) {
+  return !!connection && connection.kind === LOCAL_KIND;
 }
 
 /**
@@ -270,6 +278,35 @@ async function runInTransaction(source, fn) {
   }
   const conn = getConnection(source);
   const parent = _txStore.getStore() || new Map();
+
+  if (isLocalConnection(conn)) {
+    // ── 本地磁盘分支（事务作用域）──
+    if (typeof conn.withTransaction !== 'function') {
+      // 降级不静默：显式声明本事务作用域未生效
+      warnTransactionNotAtomic(source, conn.kind);
+      return fn();
+    }
+    if (parent.has(source)) {
+      // 同源嵌套：local 快照无保存点原语 → 走降级声明（nestedSavepointScope 内判定）
+      return nestedSavepointScope(source, parent.get(source), fn);
+    }
+    const tx = await conn.openTransaction();
+    const view = { kind: LOCAL_KIND, conn, session: tx.session, tx, handle: tx.handle };
+    const store = new Map(parent);
+    store.set(source, view);
+    return _txStore.run(store, async () => {
+      try {
+        const out = await fn();
+        await tx.commit();
+        return out;
+      } catch (e) {
+        await tx.rollback();
+        throw e;
+      } finally {
+        await tx.release();
+      }
+    });
+  }
 
   if (isSqlConnection(conn)) {
     // ── SQL 分支（事务作用域）──
@@ -556,7 +593,8 @@ async function executeNative(source, collection, pipeline = [], options = null) 
     );
   }
   const isTxView = !!conn && conn.kind === 'mongo';
-  const db = mongoDb(isTxView ? conn.conn : conn, source, null);
+  const isLocal = isLocalConnection(conn);
+  const db = isLocal ? conn.handle : mongoDb(isTxView ? conn.conn : conn, source, null);
   if (!db) {
     throw new NativeCommandError(
       `数据源 ${source} 不是 Mongo 源（原生 Mongo 命令入口仅支持 mongo）`,
@@ -692,6 +730,19 @@ class Session {
       }
       this._warnNotAtomic(source, connection.kind);
       return null;
+    }
+    // 本地磁盘源：快照隔离开事务；无原语 → 声明未原子并直通
+    if (isLocalConnection(connection)) {
+      if (typeof connection.openTransaction === 'function') {
+        const tx = await connection.openTransaction();
+        this._txs.set(source, tx);
+        this._opened.push(source);
+        return {
+          kind: LOCAL_KIND, conn: connection, session: tx.session, tx, handle: tx.handle,
+        };
+      }
+      this._warnNotAtomic(source, connection.kind);
+      return null; // 直通：_execOn 收到原始描述符（同样带 handle）
     }
     // Mongo 源（裸驱动实例）
     const cap = await mongoTransactable(connection);
@@ -875,11 +926,13 @@ class Session {
 
 module.exports = {
   DEFAULT_SOURCE,
+  LOCAL_KIND,
   setConnections,
   getConnection,
   hasConnection,
   isSqlConnection,
   isSql,
+  isLocalConnection,
   connectionFor,
   resolveConnection,
   runInTransaction,

@@ -16,6 +16,8 @@ const path = require('node:path');
 const { readSnapshot, writeCollections, withDirLock } = require('../src/local/store');
 const { createDb } = require('../src/local/handle');
 const { connect, LOCAL_KIND } = require('../src/local');
+const datasource = require('../src/datasource');
+const feedback = require('../src/feedback');
 
 const _dirs = [];
 
@@ -230,4 +232,54 @@ test('local/index: openTransaction 快照隔离（commit 可见 / rollback 丢�
   });
   assert.equal(out, 'ok');
   assert.equal(readSnapshot(dir).users.length, 3);
+});
+
+// ─── 步骤 5：datasource 接线 ────────────────────────────────
+
+test('local/datasource: 裸描述符归一 + 事务作用域（commit 可见 / 无 mongo 告警）', async () => {
+  const dir = tmpDir('ds-tx');
+  writeCollections(dir, ['users'], { users: [{ _id: 'u1' }] });
+  const conn = connect({ dir });
+  const events = [];
+  feedback.setSink((e) => events.push(e));
+  try {
+    assert.equal(datasource.LOCAL_KIND, 'local');
+    assert.equal(datasource.isLocalConnection(conn), true);
+    datasource.setConnections(conn); // 裸描述符 → { default: conn }
+    assert.equal(datasource.getConnection('default'), conn);
+
+    await datasource.runInTransaction('default', async () => {
+      const view = datasource.connectionFor('default');
+      assert.equal(view.kind, 'local');
+      assert.equal(typeof view.handle.collection, 'function', '事务视图须携带 handle');
+      await view.handle.collection('users').insertOne({ _id: 'u2' });
+      assert.equal(view.session.snapshot().users.length, 2, 'tx 内快照含新写');
+      assert.equal(readSnapshot(dir).users.length, 1, 'commit 前磁盘不可见');
+    });
+    assert.equal(readSnapshot(dir).users.length, 2, 'commit 后落盘可见');
+  } finally {
+    feedback.setSink(null);
+    datasource.setConnections({});
+  }
+  assert.ok(
+    !events.some((e) => e.code === 'mongoTransactionUnsupported'),
+    'local 源不得出现 mongo 事务告警',
+  );
+});
+
+test('local/datasource: 无 withTransaction 原语 → transaction_not_atomic（降级不静默）', async () => {
+  const events = [];
+  feedback.setSink((e) => events.push(e));
+  try {
+    datasource.setConnections({ default: { kind: 'local' } }); // 缺 openTransaction/withTransaction
+    const ran = await datasource.runInTransaction('default', async () => 'ok');
+    assert.equal(ran, 'ok', '降级后按原样执行');
+  } finally {
+    feedback.setSink(null);
+    datasource.setConnections({});
+  }
+  assert.ok(
+    events.some((e) => e.code === 'transactionNotAtomic'),
+    '应声明 transaction_not_atomic',
+  );
 });
