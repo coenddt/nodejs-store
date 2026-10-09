@@ -34,6 +34,7 @@ const introspect = require('./introspect');
 const naming = require('./naming');
 const llm = require('./llm');
 const load = require('./load');
+const local = require('./local');
 const metadef = require('./metadef');
 const permission = require('./permission');
 const { text2query } = require('./profile');
@@ -538,6 +539,20 @@ async function _createIndexesIfNeeded() {
     // 当前连接映射中时软跳过，不阻塞 init；其余配置错误（database 形态不匹配等）
     // 按 fail-fast 由 dbOfSchema 上抛，不静默吞掉
     if (!datasource.hasConnection(datasource.sourceOfSchema(name))) continue;
+    // local 源 v1 无索引（仅顺序扫描）：声明 indexes 即告警（禁静默忽略），直接跳过建索引
+    if (datasource.isLocalConnection(datasource.getConnection(datasource.sourceOfSchema(name)))) {
+      if ((s.indexes || []).length) {
+        feedback.emit({
+          type: 'local_indexes_ignored',
+          code: 'localIndexesIgnored',
+          layer: 'local',
+          message: `schema ${name} 声明了 indexes，但 local 数据源 v1 不建索引（仅顺序扫描）`,
+          hint: 'local 源请勿声明 indexes；需要索引请改用 sqlite/mongo 等后端',
+          schema: name,
+        });
+      }
+      continue;
+    }
     const db = datasource.dbOfSchema(name); // Mongo 按 (datasource, database) 解析；SQL 源返回 null
     if (!db) continue; // SQL 后端不建索引
 
@@ -627,6 +642,7 @@ module.exports = {
   RawSqlError: datasource.RawSqlError,
   NativeCommandError: datasource.NativeCommandError,
   datasource,
+  local,
   ddl,
   load,
   schema,
