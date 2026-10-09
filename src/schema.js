@@ -13,9 +13,23 @@
 
 const native = require('./core');
 const { emit: _emitFeedback } = require('./feedback');
+const scope = require('./scope');
 
 /** Rust core 注册表（全项目共享单例） */
 const core = new native.Registry();
+
+/**
+ * 取当前生效的 core 门面（R2 双端宿主作用域）：作用域内回退到该作用域的派生视图，否则 base。
+ *
+ *   - 未进入作用域（无 `withScope`）→ 恒等 base `core`（零行为变化，fail-open 姿态不变）；
+ *   - 进入作用域 → 返回 `scope.currentView()`（派生 Registry，策略覆盖只作用于本作用域）；
+ *   - 视图为只读：写类调用（register/setXxx）由 core 守卫抛 `ERR_POLICY_VIEW_READONLY:`。
+ *
+ * 禁模块级/跨 await 缓存返回值（03 §7）：每个调用点现场取。
+ */
+function getCore() {
+  return scope.currentView() ?? core;
+}
 
 // 重复名去重签名（同一重复形态只告警一次，避免 list() 高频调用刷屏）
 const _dupSignatures = new Set();
@@ -338,6 +352,7 @@ function registerBatch(items, ctx) {
 
 module.exports = {
   core,
+  getCore,
   register,
   registerBatch,
   get,

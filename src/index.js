@@ -40,6 +40,7 @@ const permission = require('./permission');
 const { text2query } = require('./profile');
 const resource = require('./resource');
 const schema = require('./schema');
+const scope = require('./scope');
 const secure = require('./secure');
 const { setFn, assertFnsCovered } = schema;
 const { syncSchema } = require('./sync');
@@ -655,6 +656,10 @@ module.exports = {
   setTriggerFn: triggerExec.setTriggerFn,
   assertTriggerFnsCovered: triggerExec.assertTriggerFnsCovered,
   text2query,
+  // ── 执行作用域（R2 双端宿主作用域）：一请求/一安全域一份视图，未进入回退 base ──
+  withScope: scope.withScope,
+  currentScope: scope.currentScope,
+  currentView: scope.currentView,
   Session,
   NonAtomicWriteError,
   PermissionError: permission.PermissionError,
