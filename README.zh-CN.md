@@ -1,16 +1,16 @@
 # nodejs-store
 
-**面向 MongoDB、MySQL、SQLite 与 PostgreSQL 的统一数据层 —— 用纯 JSON 定义模型，用 MongoDB 风格的 GQL 树语法查询，开箱即得基于角色的访问控制、计算列与软删除。**
+**面向 MongoDB、MySQL、SQLite、PostgreSQL 与本地磁盘（local）的统一数据层 —— 用纯 JSON 定义模型，用 MongoDB 风格的 GQL 树语法查询，开箱即得基于角色的访问控制、计算列与软删除。**
 
 ![npm version](https://img.shields.io/npm/v/nodejs-store)
 ![license](https://img.shields.io/npm/l/nodejs-store)
 ![node](https://img.shields.io/node/v/nodejs-store)
-![backends](https://img.shields.io/badge/backends-MongoDB%20%7C%20MySQL%20%7C%20SQLite%20%7C%20PostgreSQL-blue)
+![backends](https://img.shields.io/badge/backends-MongoDB%20%7C%20MySQL%20%7C%20SQLite%20%7C%20PostgreSQL%20%7C%20Local-blue)
 ![query dialect](https://img.shields.io/badge/query%20dialect-GQL%20(MongoDB--flavoured)-green)
 
 > English docs: [README.md](README.md)
 
-`nodejs-store` 让 Node.js 服务通过**单一 schema 定义、单一查询方言**同时对接 MongoDB（原生聚合）、MySQL、PostgreSQL 与 SQLite。嵌套关系会编译为**每个后端一条原生查询** —— 你永远不必手写 `$lookup` 或原生 SQL。
+`nodejs-store` 让 Node.js 服务通过**单一 schema 定义、单一查询方言**同时对接 MongoDB（原生聚合）、MySQL、PostgreSQL、SQLite 与本地磁盘（local）。嵌套关系会编译为**每个后端一条原生查询** —— 你永远不必手写 `$lookup` 或原生 SQL。
 
 > 也在找 Python 版本？见 [`py-store`](https://github.com/coenddt/py-store)（pip 包 `storepy`）。两者都是共享 Rust 引擎 [`rust-store`](https://github.com/coenddt/rust-store) 之上的薄宿主。
 
@@ -113,7 +113,7 @@ MongoDB 是*主方言*：查询以 MongoDB 风格的 GQL 编写，三种关系�
 | | nodejs-store | Mongoose | Prisma | TypeORM / Sequelize | Drizzle |
 | --- | --- | --- | --- | --- | --- |
 | 主要形态 | JSON schema + GQL 数据层 | ODM（MongoDB） | Schema DSL + 生成的客户端 | 装饰器/实体 ORM | TypeScript SQL 构建器 |
-| 后端 | MongoDB、MySQL、SQLite、PostgreSQL | MongoDB | PostgreSQL、MySQL、SQLite、SQL Server、MongoDB、CockroachDB | MySQL、PostgreSQL、SQLite、MSSQL、Oracle（+ MongoDB） | PostgreSQL、MySQL、SQLite、… |
+| 后端 | MongoDB、MySQL、SQLite、PostgreSQL、local | MongoDB | PostgreSQL、MySQL、SQLite、SQL Server、MongoDB、CockroachDB | MySQL、PostgreSQL、SQLite、MSSQL、Oracle（+ MongoDB） | PostgreSQL、MySQL、SQLite、… |
 | 跨 Mongo **与** SQL 的统一查询方言 | ✅（MongoDB 风格 GQL） | ➖（仅 Mongo） | ➖（每个 provider 一个客户端） | ⚠️（Mongo 模型与 SQL 实体不同） | ➖（仅 SQL） |
 | 单条查询内的嵌套关系读取 | ✅ 声明式 relations → `$lookup` / `JOIN` | ✅ `populate()` | ✅ `include` | ✅ relations | ⚠️ 手动 join |
 | 内置角色 / 字段级 RBAC + 属主注入 | ✅ | ➖ | ➖（通过扩展） | ➖ | ➖ |
@@ -141,7 +141,7 @@ MongoDB 是*主方言*：查询以 MongoDB 风格的 GQL 编写，三种关系�
 npm install nodejs-store
 ```
 
-需要 Node.js 18+，以及一个受支持的后端（MongoDB / MySQL / SQLite / PostgreSQL）。
+需要 Node.js 18+，以及一个受支持的后端（MongoDB / MySQL / SQLite / PostgreSQL / 本地磁盘）。
 
 ## 快速开始
 
@@ -198,21 +198,38 @@ const items = await store.query('Post($condition:@c0) { title, status }', { c0: 
 | MySQL | 参数化 SQL，`information_schema` introspection |
 | SQLite | 参数化 SQL，`sqlite_master` + `PRAGMA` introspection。**同步驱动**（`better-sqlite3`）：调用按设计阻塞事件循环 —— 高并发热路径请优先 MySQL/PostgreSQL/MongoDB，或把 SQLite 隔离到专用进程 |
 | PostgreSQL | 参数化 SQL（`$n`），支持 `RETURNING` |
+| local（本地磁盘） | 集合以 JSON 文件落盘，core 本地求值器执行（无 SQL、无驱动依赖）；见[本地磁盘数据源（local）](#本地磁盘数据源local) |
 
-GQL 树查询会编译为每个后端一条原生查询 —— 再也不必手写 `$lookup` 或原生 SQL。
+GQL 树查询会编译为每个后端一条原生查询（local 源除外 —— 命令在 core 本地求值器内直接求值）—— 再也不必手写 `$lookup` 或原生 SQL。
+
+### 本地磁盘数据源（local）
+
+零外部服务、零原生 DB 引擎：集合以 JSON 文件落盘，命令在 Rust core 的本地求值器内直接执行（语义与 MongoDB 驱动一致）。
+
+```js
+const { init, local } = require('nodejs-store');
+
+await init({ default: local.connect({ dir: './data/store' }) });
+```
+
+- **用法**：`local.connect({ dir })` 返回连接描述符（`kind: 'local'`），与 Mongo/SQL 连接一样传给 `init()` / `setConnections()`。
+- **落盘格式**：`<dir>/<物理集合名>.json`（文档数组）；写入先写 `.tmp` 中间文件再原子 `rename`。
+- **事务语义**：快照隔离 —— 事务期读写内存快照，`commit()` 整目录落盘、`rollback()` 丢弃，天然原子。
+- **护栏**：单集合上限 100,000 文档（超限显式报错，不静默截断）；不建索引（仅顺序扫描），声明 `schema.indexes` 即发 `local_indexes_ignored` 反馈事件。
+- **并发限制**：仅单进程 —— 进程内写经目录锁串行化；跨进程并发不在 v1 保证范围。
 
 ## 特性
 
 - **纯 JSON schema，零代码** —— 一个模型就是一个对象：fields、relations、computes、indexes。
 - **GQL 树查询 → 一条原生查询** —— 嵌套关系在单条查询中解析；再也不必手写 `$lookup`。
-- **归一化聚合** —— 根级 `$group` / `$having` 与关系聚合谓词（semi/anti-join）在同一份 GQL 中，下推到全部四种后端。
+- **归一化聚合** —— 根级 `$group` / `$having` 与关系聚合谓词（semi/anti-join）在同一份 GQL 中，下推到全部五种后端。
 - **读时默认值与计算列** —— 写入只存用户数据；读取时填充默认值并运行 `fn` / `asyncFn` / 关系 `agg` 计算列。
 - **智能持久化** —— `mutation()` 依据 `_id` + 唯一索引自动识别 upsert，并递归填充关系子文档。
 - **内置软删除** —— 每个 schema 自动注册一个 `<Model>Deleted` 归档集合/表；`remove()` 先归档再删除。
 - **权限上下文** —— 基于 `AsyncLocalStorage` 的角色（`super_admin`/`admin`/`guest`/`creator`...）、schema/字段级读写白名单、自动属主条件注入。
 - **多数据源 & 多租户** —— 通过 `(source, database, schema, collection)` 定位 schema；按请求用路由覆盖重新定向。
 - **异步优先，Rust 核心** —— 基于 `mongodb` Node.js 驱动与共享的 Rust 核心（含 SQL 方言）。
-- **mutation 关系谓词** —— `update` / `remove` 按关联表字段过滤，下推到全部四个后端（此前 MongoDB 侧是静默 no-op）。
+- **mutation 关系谓词** —— `update` / `remove` 按关联表字段过滤，下推到全部五个后端（此前 MongoDB 侧是静默 no-op）。
 - **自增主键** —— `_id` 声明 `{ type: 'int', strategy: 'autoincrement' }` 即用数据库自增整数 ID；做不到自增的场景显式报错。
 - **索引 DDL** —— `schema.indexes` 编译为真实 `CREATE [UNIQUE] INDEX` 语句（按后端、逐字节一致）；生成器仍只产文本。
 

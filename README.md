@@ -1,14 +1,14 @@
 # nodejs-store
 
-**One data layer for MongoDB, MySQL, SQLite and PostgreSQL — define models as pure JSON, query them with a MongoDB-style GQL tree syntax, and get role-based access control, computed columns and soft-delete out of the box.**
+**One data layer for MongoDB, MySQL, SQLite, PostgreSQL and local disk — define models as pure JSON, query them with a MongoDB-style GQL tree syntax, and get role-based access control, computed columns and soft-delete out of the box.**
 
 ![npm version](https://img.shields.io/npm/v/nodejs-store)
 ![license](https://img.shields.io/npm/l/nodejs-store)
 ![node](https://img.shields.io/node/v/nodejs-store)
-![backends](https://img.shields.io/badge/backends-MongoDB%20%7C%20MySQL%20%7C%20SQLite%20%7C%20PostgreSQL-blue)
+![backends](https://img.shields.io/badge/backends-MongoDB%20%7C%20MySQL%20%7C%20SQLite%20%7C%20PostgreSQL%20%7C%20Local-blue)
 ![query dialect](https://img.shields.io/badge/query%20dialect-GQL%20(MongoDB--flavoured)-green)
 
-`nodejs-store` lets a Node.js service talk to MongoDB (native aggregation), MySQL, PostgreSQL and SQLite through a **single schema definition and a single query dialect**. Nested relations compile to **one native query per backend** — you never hand-write `$lookup` or raw SQL.
+`nodejs-store` lets a Node.js service talk to MongoDB (native aggregation), MySQL, PostgreSQL, SQLite and local disk through a **single schema definition and a single query dialect**. Nested relations compile to **one native query per backend** — you never hand-write `$lookup` or raw SQL.
 
 > Also looking for the Python version? See [`py-store`](https://github.com/coenddt/py-store) (pip `storepy`). Both are thin hosts over the shared Rust engine [`rust-store`](https://github.com/coenddt/rust-store).
 > 中文文档见 [README.zh-CN.md](README.zh-CN.md)。
@@ -113,7 +113,7 @@ General positioning, not a benchmark — always verify against each tool's curre
 | | nodejs-store | Mongoose | Prisma | TypeORM / Sequelize | Drizzle |
 | --- | --- | --- | --- | --- | --- |
 | Primary shape | JSON schema + GQL data layer | ODM (MongoDB) | Schema DSL + generated client | Decorator/entity ORM | TypeScript SQL builder |
-| Backends | MongoDB, MySQL, SQLite, PostgreSQL | MongoDB | PostgreSQL, MySQL, SQLite, SQL Server, MongoDB, CockroachDB | MySQL, PostgreSQL, SQLite, MSSQL, Oracle (+ MongoDB) | PostgreSQL, MySQL, SQLite, … |
+| Backends | MongoDB, MySQL, SQLite, PostgreSQL, local | MongoDB | PostgreSQL, MySQL, SQLite, SQL Server, MongoDB, CockroachDB | MySQL, PostgreSQL, SQLite, MSSQL, Oracle (+ MongoDB) | PostgreSQL, MySQL, SQLite, … |
 | One query dialect across Mongo **and** SQL | ✅ (MongoDB-flavoured GQL) | ➖ (Mongo only) | ➖ (one client per provider) | ⚠️ (Mongo model differs from SQL entities) | ➖ (SQL only) |
 | Nested relation reads in one query | ✅ declarative relations → `$lookup` / `JOIN` | ✅ `populate()` | ✅ `include` | ✅ relations | ⚠️ manual joins |
 | Built-in role / field-level RBAC + owner injection | ✅ | ➖ | ➖ (via extensions) | ➖ | ➖ |
@@ -141,7 +141,7 @@ Short version: use an ORM when you want **compile-time types and migrations**; u
 npm install nodejs-store
 ```
 
-Requires Node.js 18+ and one supported backend (MongoDB / MySQL / SQLite / PostgreSQL).
+Requires Node.js 18+ and one supported backend (MongoDB / MySQL / SQLite / PostgreSQL / local disk).
 
 ## Quick start
 
@@ -198,21 +198,38 @@ const items = await store.query('Post($condition:@c0) { title, status }', { c0: 
 | MySQL | parameterized SQL, `information_schema` introspection |
 | SQLite | parameterized SQL, `sqlite_master` + `PRAGMA` introspection. **Sync driver** (`better-sqlite3`): calls block the event loop by design — for high-concurrency hot paths prefer MySQL/PostgreSQL/MongoDB, or isolate SQLite in a dedicated process |
 | PostgreSQL | parameterized SQL (`$n`), `RETURNING` support |
+| local (local disk) | collections persisted as JSON files, evaluated directly by the core's local evaluator (no SQL, no driver); see [Local disk data source (local)](#local-disk-data-source-local) |
 
-GQL tree queries compile to a single native query per backend — never hand-write `$lookup` or raw SQL again.
+GQL tree queries compile to a single native query per backend (except the local source — commands are evaluated directly by the core's local evaluator) — never hand-write `$lookup` or raw SQL again.
+
+### Local disk data source (local)
+
+Zero external services, zero native DB engine: collections are persisted as JSON files and commands are evaluated directly inside the Rust core's local evaluator (semantics match the MongoDB driver).
+
+```js
+const { init, local } = require('nodejs-store');
+
+await init({ default: local.connect({ dir: './data/store' }) });
+```
+
+- **Usage**: `local.connect({ dir })` returns a connection descriptor (`kind: 'local'`); pass it to `init()` / `setConnections()` like any Mongo/SQL connection.
+- **On-disk format**: `<dir>/<physical collection>.json` (an array of documents); writes go through a `.tmp` temp file and an atomic `rename`.
+- **Transactions**: snapshot isolation — during a transaction reads/writes hit an in-memory snapshot; `commit()` persists the whole directory, `rollback()` discards it. Atomic by construction.
+- **Guardrails**: hard cap of 100,000 documents per collection (explicit error, never silent truncation); no indexes (sequential scan only) — declaring `schema.indexes` emits a `local_indexes_ignored` feedback event.
+- **Concurrency limit**: single process only — in-process writes are serialized by a directory lock; cross-process concurrency is outside the v1 guarantee.
 
 ## Features
 
 - **Pure JSON schemas, zero code** — a model is just an object: fields, relations, computes, indexes.
 - **GQL tree queries → one native query** — nested relations resolve in a single query; never hand-write `$lookup` again.
-- **Normalized aggregation** — root-level `$group` / `$having` and relation aggregate predicates (semi/anti-join) in the same GQL, pushed down to all four backends.
+- **Normalized aggregation** — root-level `$group` / `$having` and relation aggregate predicates (semi/anti-join) in the same GQL, pushed down to all five backends.
 - **Read-time defaults & computed columns** — writes store only user data; reads fill defaults and run `fn` / `asyncFn` / relation-`agg` computes.
 - **Smart mutation** — `mutation()` auto-detects upsert by `_id` + unique index and recursively fills relation children.
 - **Soft-delete built in** — every schema auto-registers a `<Model>Deleted` archive collection/table; `remove()` archives before deleting.
 - **Permission context** — `AsyncLocalStorage`-based roles (`super_admin`/`admin`/`guest`/`creator`...), schema/field-level read/write whitelists, automatic owner-condition injection.
 - **Multi-datasource & multi-tenant** — locate a schema by `(source, database, schema, collection)`; re-target per request with a route override.
 - **Async-first, Rust core** — built on the `mongodb` Node.js driver and a shared Rust core with SQL dialects.
-- **Relation predicates in mutations** — filter `update` / `remove` by related-table fields, pushed down to all four backends (previously a silent no-op on MongoDB).
+- **Relation predicates in mutations** — filter `update` / `remove` by related-table fields, pushed down to all five backends (previously a silent no-op on MongoDB).
 - **Autoincrement primary keys** — declare `_id` as `{ type: 'int', strategy: 'autoincrement' }` for database-assigned integer IDs, with explicit errors where autoincrement is impossible.
 - **Index DDL** — `schema.indexes` compiles to real `CREATE [UNIQUE] INDEX` statements (per backend, byte-identical); the generator still only emits text.
 
