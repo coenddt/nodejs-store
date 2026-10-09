@@ -18,6 +18,7 @@ const { createDb } = require('../src/local/handle');
 const { connect, LOCAL_KIND } = require('../src/local');
 const datasource = require('../src/datasource');
 const feedback = require('../src/feedback');
+const { init, store, schema: _sc } = require('../src');
 
 const _dirs = [];
 
@@ -282,4 +283,56 @@ test('local/datasource: 无 withTransaction 原语 → transaction_not_atomic（
     events.some((e) => e.code === 'transactionNotAtomic'),
     '应声明 transaction_not_atomic',
   );
+});
+
+// ─── 步骤 6：命令路由接线（store 门面端到端） ───────────────
+
+test('local/exec: store 门面端到端（insert/query 关系/count/update/remove 归档）', async () => {
+  _sc.register({
+    name: 'ElUser', collection: 'el_users', idPrefix: 'eu_', timestamps: false,
+    fields: { name: { type: 'string' } }, relations: {},
+  });
+  _sc.register({
+    name: 'ElPost', collection: 'el_posts', idPrefix: 'ep_', timestamps: false,
+    fields: { title: { type: 'string' }, authorId: { type: 'string' } },
+    relations: {
+      author: { model: 'ElUser', type: 'one', localField: 'authorId', foreignField: '_id' },
+    },
+  });
+
+  const dir = tmpDir('e2e');
+  try {
+    await init(connect({ dir }));
+
+    const u = await store.insert('ElUser', { name: 'Ada' });
+    const p = await store.insert('ElPost', { title: 'P1', authorId: u._id });
+    assert.ok(String(u._id).startsWith('eu_'), '应生成 idPrefix 前缀 _id');
+
+    // 落盘为物理名（camelCase）文件、内容为文档数组
+    assert.equal(readSnapshot(dir).elUsers.length, 1);
+    assert.equal(readSnapshot(dir).elPosts.length, 1);
+
+    // query（含 one 关系 → 对象）
+    const rows = await store.query('ElPost{ title author { name } }');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].title, 'P1');
+    assert.equal(rows[0].author.name, 'Ada');
+
+    // count
+    assert.equal(await store.count('ElPost', {}), 1);
+
+    // update（回读被更新文档）
+    const out = await store.update('ElPost', { _id: p._id }, { title: 'P2' });
+    assert.equal(out.title, 'P2');
+    assert.equal(readSnapshot(dir).elPosts[0].title, 'P2');
+
+    // remove → 归档集合 ElPostDeleted 出现（文件 elPostsDeleted.json）
+    const r = await store.remove('ElPost', { _id: p._id });
+    assert.equal(r.deletedCount, 1);
+    assert.equal(r.archivedCount, 1);
+    assert.equal(readSnapshot(dir).elPosts.length, 0);
+    assert.equal(readSnapshot(dir).elPostsDeleted.length, 1);
+  } finally {
+    datasource.setConnections({});
+  }
 });
