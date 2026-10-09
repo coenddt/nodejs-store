@@ -336,3 +336,106 @@ test('local/exec: store 门面端到端（insert/query 关系/count/update/remov
     datasource.setConnections({});
   }
 });
+
+// ─── 步骤 7：索引声明告警 + 模块导出 ───────────────────────
+
+test('local/index.js: 声明 indexes → localIndexesIgnored（禁静默）；模块导出 local', async () => {
+  const api = require('../src');
+  assert.equal(typeof api.local.connect, 'function', 'index.js 应导出 local 模块');
+
+  _sc.register({
+    name: 'ElIdx', collection: 'el_idx', idPrefix: 'ei_', timestamps: false,
+    fields: { name: { type: 'string' } }, relations: {},
+    indexes: [{ keys: { name: 1 } }],
+  });
+
+  const dir = tmpDir('idx');
+  const events = [];
+  feedback.setSink((e) => events.push(e));
+  try {
+    await init(connect({ dir }));
+    assert.ok(
+      events.some((e) => e.code === 'localIndexesIgnored'),
+      'local schema 声明 indexes 应发 localIndexesIgnored',
+    );
+    // 不建索引、不抛错：集合仍可正常读写
+    await store.insert('ElIdx', { name: 'x' });
+    assert.equal(readSnapshot(dir).elIdx.length, 1);
+  } finally {
+    feedback.setSink(null);
+    datasource.setConnections({});
+  }
+});
+
+// ─── 步骤 8：A1/A3/A5 端到端补齐 ───────────────────────────
+
+test('local/A1: one 关系查询返回含 _id/name 的对象', async () => {
+  const dir = tmpDir('rel');
+  try {
+    await init(connect({ dir }));
+    const u = await store.insert('ElUser', { name: 'Rel' });
+    await store.insert('ElPost', { title: 'T', authorId: u._id });
+    const rows = await store.query('ElPost{ author { _id name } }');
+    assert.deepEqual(rows[0].author, { _id: u._id, name: 'Rel' });
+  } finally {
+    datasource.setConnections({});
+  }
+});
+
+test('local/A3: store.transaction commit 可见 / 异常回滚不可见（无 mongo 告警）', async () => {
+  const dir = tmpDir('tx-store');
+  const events = [];
+  feedback.setSink((e) => events.push(e));
+  try {
+    await init(connect({ dir }));
+    await store.transaction('default', async () => {
+      await store.insert('ElUser', { name: 'TxAda' });
+    });
+    assert.equal(readSnapshot(dir).elUsers.length, 1, 'commit 后落盘可见');
+
+    await assert.rejects(
+      () => store.transaction('default', async () => {
+        await store.insert('ElUser', { name: 'TxBob' });
+        throw new Error('boom');
+      }),
+      /boom/,
+    );
+    assert.equal(readSnapshot(dir).elUsers.length, 1, 'rollback 后不落盘');
+  } finally {
+    feedback.setSink(null);
+    datasource.setConnections({});
+  }
+  assert.ok(
+    !events.some((e) => e.code === 'mongoTransactionUnsupported'),
+    'local 源事务不应出现 mongo 事务告警',
+  );
+});
+
+test('local/A3: store.session 内多条写提交后可见', async () => {
+  const dir = tmpDir('session');
+  try {
+    await init(connect({ dir }));
+    await store.session(async (s) => {
+      await s.insert('ElUser', { name: 'S1' });
+      await s.insert('ElUser', { name: 'S2' });
+    });
+    assert.equal(readSnapshot(dir).elUsers.length, 2, '会话提交后两条写可见');
+  } finally {
+    datasource.setConnections({});
+  }
+});
+
+test('local/A5: 两次 init 幂等（同目录数据保留、不重复）', async () => {
+  const dir = tmpDir('init2');
+  try {
+    await init(connect({ dir }));
+    await store.insert('ElUser', { name: 'Keep' });
+    const before = readSnapshot(dir).elUsers.length;
+
+    await init(connect({ dir })); // 二次 init：同一目录
+    assert.equal(readSnapshot(dir).elUsers.length, before, '二次 init 不应清空/重复');
+    assert.equal(await store.count('ElUser', {}), before);
+  } finally {
+    datasource.setConnections({});
+  }
+});
