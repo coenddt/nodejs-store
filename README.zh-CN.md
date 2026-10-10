@@ -723,7 +723,7 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
 
 ## 触发器
 
-schema 声明式触发链：写事件（首批 `insert` / `update`）由 Rust 核心在规划期展开为有序副作用步骤（`plan.triggers`），宿主在源写同一原子包络内依次执行。声明形态（`triggers` 三类键 + T 字段表）与占位符语法以 rust-store README「触发器」章节为准；core 侧展开输出跨端逐字节一致（`rust-store/fixtures/triggers/cases.json` golden 守护）。
+schema 声明式触发链：写事件（`insert` / `update` / `remove`）由 Rust 核心在规划期展开为有序副作用步骤（`plan.triggers`），宿主在源写同一原子包络内依次执行。声明形态（`triggers` 三类键 + T 字段表）与占位符语法以 rust-store README「触发器」章节为准；core 侧展开输出跨端逐字节一致（`rust-store/fixtures/triggers/cases.json` golden 守护）。
 
 **回调装配**（`src/crud/triggers.js`）：
 
@@ -736,12 +736,13 @@ store.assertTriggerFnsCovered(defns); // 启动期：schema 声明的 fnRef 缺�
 
 **执行语义**：
 
-- **命中判定** —— update 事件先判 `onFields 值真的变化`（结构深比较，no-op 抑制——值未变不触发）→ 再判 `when`（`eq/ne/gt/gte/lt/lte/in/and/or/not`）；insert 事件无 before，跳过字段级检查。系统字段（`createdAt` / `updatedAt` / `deletedAt`）不进触发器探针投影，其变化天然不触发。
+- **命中判定** —— update 事件先判 `onFields 值真的变化`（结构深比较，no-op 抑制——值未变不触发）→ 再判 `when`（`eq/ne/gt/gte/lt/lte/in/and/or/not`）；insert 事件无 before，跳过字段级检查；`remove` 以归档（删除前）文档为根。系统字段（`createdAt` / `updatedAt` / `deletedAt`）不进触发器探针投影，其变化天然不触发。
 - **占位符** —— `{{root.*}}`（变化后值）/ `{{before.*}}`（变化前值）/ `{{now}}` 只做整值替换；内嵌拼接显式报 `ERR_TRIGGER_PLACEHOLDER`，禁静默漂移。
 - **去重** —— 同一次顶层调用内 `(step.name, _id)` 只执行一次。
 - **回调式** —— `impl(args, ctx, { store })`；回调内 `store.*` 落到当前事务连接 → 与主写同事务。
+- **定时（cron）** —— `schedule` 事件由宿主定时任务插件（`src/scheduler/index.js`）枚举并复用同一触发链；占位符仅允许 `{{now}}`。
 
-**边界**：单源真事务 / 跨源 `nonAtomic` 声明 / `store.session()` 内跨源 fail-closed（见[事务边界](#事务边界)）；**不支持级联**（触发写不再触发任何触发器）；`updateMany` 不支持字段级触发（显式拒绝，禁静默降级）；`remove` 事件与命令式步骤 `op: "upsert"` 注册期 `Err`。
+**边界**：单源真事务 / 跨源 `nonAtomic` 声明 / `store.session()` 内跨源 fail-closed（见[事务边界](#事务边界)）；**不支持级联**（触发写不再触发任何触发器）；`updateMany` 不支持字段级触发（显式拒绝，禁静默降级）；命令式步骤 `op: "upsert"` 注册期 `Err`。
 
 ## 事务型能力
 

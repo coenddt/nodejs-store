@@ -1,5 +1,28 @@
 # Changelog
 
+## 4.4.1 (2026-10-10)
+
+### Added / Fixed（NoContext 错误档）
+
+- **`NoContextError` 归一**：core fail-secure（`require_context` / `secureMode`）下无 ctx 时统一携带
+  `ERR_NO_CONTEXT:` 稳定前缀（见 core `command/mod.rs`），宿主按前缀映射为 `NoContextError`
+  （与 `PermissionError` 同档 403，前缀已剥离），导出 `store.NoContextError`；`code` 与 core machine
+  code 对齐（`no_context`），供协议皮按枚举判定（禁按文案匹配）。
+
+## 4.4.0 (2026-10-10)
+
+### Added（本地磁盘数据源 local + R2 全局单值状态 + 触发器补齐）
+
+- **本地磁盘数据源 `local`**：新增零外部服务、零原生 DB 引擎的本地后端（`src/local/`：文件 IO
+  `store.js`、Mongo 兼容手柄 `handle.js`、门面 `index.js`），datasource 接线 + 命令路由 + 索引声明
+  告警 + 端到端用例；规划输出与 py-store 对拍逐字节一致。
+- **R2 进程级全局单值状态**：作用域原语与派生视图入口（`src/scope.js`），宿主收口（四件套改造：
+  permission / profile / secure / schema），双端作用域对拍。
+- **资源表字段映射**：`configureResource` 支持 `fields` 声明，宿主字段映射 + 测试。
+- **schema 触发器补齐**：`remove` 事件触发链（`src/crud/write.js`）+ 宿主定时任务插件
+  （`src/scheduler/index.js`，cron）。
+- **依赖**：`rust-store-node` 依赖下限抬升至 `^4.3.0`（local / cron 随引擎 4.3.0 启用）。
+
 ## 4.3.0 (2026-10-08)
 
 ### Added（触发器）
@@ -19,6 +42,29 @@
   `remove` 事件与命令式步骤 `op: "upsert"` 注册期 `Err`。
 - **对拍**：`scripts/parity-triggers.js` 读 `rust-store/fixtures/triggers/cases.json` 产出规划输出，
   与 py-store 对拍输出逐字节一致。
+
+## 4.2.1 (2026-10-08)
+
+### Fixed（资源读取不存在错误类型化）
+
+- **`ERR_RESOURCE_NOT_FOUND` 前缀**：resource open 遇零副本行改抛 `ERR_RESOURCE_NOT_FOUND` 前缀
+  错误（原静默返回空），宿主归一为类型化错误。
+- **版本声明点对齐**：修复 `CITATION.cff` / `package-lock.json` 版本漂移。
+
+## 4.2.0 (2026-10-05)
+
+### Added（资源插件扩展 OSS / MinIO）
+
+- **资源插件扩展**：node 门面支持 OSS / MinIO provider + 单测。
+
+## 4.1.0 (2026-10-05)
+
+### Added（资源数据驱动）
+
+- **资源数据驱动**：node 资源 provider 层（可选依赖 `@aws-sdk/client-s3`）、资源能力门面与门面接线、
+  资源 schema 与 SQLite DDL、资源计算列与级联工具、资源能力单测与真库 e2e、A5/A6 副本失败反馈单测。
+- **修复**：`package-lock.json` 补齐全平台子包条目（4.0.0），修 Linux 上 `npm ci` 的
+  `Invalid Version`；eslint 覆盖 `packages/**`（补 node 全局）。
 
 ## 4.0.0 (2026-10-04)
 

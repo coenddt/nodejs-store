@@ -2,7 +2,7 @@
 
 > Source of truth: https://github.com/coenddt/nodejs-store
 > npm: `nodejs-store` | Node.js 18+ | MIT
-> Backends: MongoDB, MySQL, SQLite, PostgreSQL
+> Backends: MongoDB, MySQL, SQLite, PostgreSQL, local (local disk)
 
 This file is a single-file, plain-text snapshot of the nodejs-store documentation, intended
 for direct ingestion by language models. It mirrors README.md plus the FAQ and use-case
@@ -102,6 +102,7 @@ const items = await store.query('Post($condition:@c0) { title, status }', { c0: 
 | MySQL | parameterized SQL, `information_schema` introspection |
 | SQLite | parameterized SQL, `sqlite_master` + `PRAGMA` introspection. **Sync driver** (`better-sqlite3`) — calls block the event loop by design; for high-concurrency hot paths prefer MySQL/PostgreSQL/MongoDB or isolate SQLite in its own process |
 | PostgreSQL | parameterized SQL (`$n`), `RETURNING` support |
+| local (local disk) | collections persisted as JSON files, evaluated directly by the core's local evaluator (no SQL, no driver) |
 
 GQL tree queries compile to a single native query per backend.
 

@@ -6,7 +6,7 @@
 
 - npm package: `nodejs-store`
 - Runtime: Node.js 18+
-- Backends: MongoDB, MySQL, SQLite, PostgreSQL
+- Backends: MongoDB, MySQL, SQLite, PostgreSQL, local (local disk)
 - License: MIT
 
 ## When to use it
@@ -15,7 +15,7 @@
 - Nested / relational reads without writing `$lookup` or JOINs
 - Admin backends and internal CRUD services with schema-driven models
 - Row-level and field-level access control (role whitelists, `creator` ownership, owner-condition injection)
-- Multi-tenant SaaS (schema bound to `source` / `namespace`, runtime route override)
+- Multi-tenant SaaS (schema bound to `{ source, database, schema, collection }`, runtime route override)
 - Migrating between MongoDB and SQL while keeping one query syntax
 - AI / natural-language data-QA layers (plan-only `buildPipeline()`, deterministic command JSON, structured feedback events)
 
@@ -34,7 +34,7 @@
 - [Aggregation](https://github.com/coenddt/nodejs-store#aggregation): root-level `$group` / `$having`, relation aggregate predicates (semi/anti-join), relation-rolling computed columns
 - [Query & write API](https://github.com/coenddt/nodejs-store#query--write-api): `query`, `queryOne`, `queryWithCount`, `insert`, `update`, `remove`, `mutation`, `upsert`
 - [Permissions](https://github.com/coenddt/nodejs-store#permission-context): `setContext`, `scopedRoles`, `runAsInternal`, fail-secure `setRequireContext(true)`
-- [Multi-datasource & multi-tenant](https://github.com/coenddt/nodejs-store#multi-datasource-connections): `(source, namespace, collection)` and route override
+- [Multi-datasource & multi-tenant](https://github.com/coenddt/nodejs-store#multi-datasource-connections): `{ source, database, schema, collection }` and route override
 - [Schema reference](https://github.com/coenddt/nodejs-store#schema-reference): fields, relations, computes, indexes, read/write whitelists
 - [Advanced API](https://github.com/coenddt/nodejs-store#advanced-api): `buildPipeline`, `syncSchema`, `setFeedbackSink`, low-level modules
 - [AI ask (natural-language query)](https://github.com/coenddt/nodejs-store#storeaskquestion-opts): `store.ask` + `store.describeForAi` + pluggable LLM registry (`makeOpenaiCompat`), guarded by the read-only `text2query` profile

@@ -35,6 +35,7 @@
 - [Schema reference](#schema-reference)
 - [Advanced API](#advanced-api)
 - [Transactions](#transaction-boundary)
+- [Triggers](#triggers)
 - [Transactional capabilities](#transactional-capabilities)
 - [FAQ](#faq)
 - [Related projects](#related-projects)
@@ -722,6 +723,29 @@ await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) }
 - **Archive idempotency**: `remove` archives with upsert-by-`_id` semantics, so a retry after partial failure no longer fails on duplicate `_id`.
 - Read consistency: only multiple reads inside an explicit session share one transaction connection; reads outside a session do not open an extra transaction.
 - **Cross-source writes (no session)**: a single write call touching ≥2 datasources **cannot be atomic**; it runs sequentially and emits one `non_atomic_write` feedback event (`code: nonAtomic`, with the source list) — degradation is allowed, silence is not. Converge writes onto a single source, or wrap them in `store.session()` (which fails closed on cross-source writes).
+
+## Triggers
+
+Declarative trigger chains on a schema: write events (`insert` / `update` / `remove`) are expanded by the Rust core at plan time into an ordered list of side-effect steps (`plan.triggers`) that the host runs in sequence inside the same atomic envelope as the source write. The declaration form (the `triggers` event keys plus the field table) and the placeholder grammar are defined by the "Triggers" section of the rust-store README; the core's expanded output is byte-for-byte identical across hosts (golden guard: `rust-store/fixtures/triggers/cases.json`).
+
+**Callback wiring** (`src/crud/triggers.js`):
+
+```js
+store.setTriggerFn('grantPoints', async (args, ctx, { store }) => {
+  await store.update('User', { _id: args.userId }, { $inc: { points: args.amount } });
+});
+store.assertTriggerFnsCovered(defns); // startup: a declared fnRef without an implementation ⇒ ERR_TRIGGER_FN_MISSING
+```
+
+**Execution semantics**:
+
+- **Hit test** — an `update` event first checks that the `onFields` values actually changed (a structural deep compare, no-op suppression — an unchanged value does not fire) → then the `when` guard (`eq/ne/gt/gte/lt/lte/in/and/or/not`); `insert` has no `before` and skips the field-level check; `remove` uses the archived (pre-delete) document as root. System fields (`createdAt` / `updatedAt` / `deletedAt`) are excluded from the trigger probe projection, so their changes never fire.
+- **Placeholders** — `{{root.*}}` (post-change value) / `{{before.*}}` (pre-change value) / `{{now}}` undergo whole-value substitution only; embedding a placeholder inside a string raises `ERR_TRIGGER_PLACEHOLDER` — no silent drift.
+- **De-duplication** — within one top-level call, `(step.name, _id)` runs at most once.
+- **Callbacks** — `impl(args, ctx, { store })`; `store.*` inside the callback hits the current transaction connection → the same transaction as the source write.
+- **Scheduled (cron)** — the `schedule` event is enumerated by the host scheduler plugin (`src/scheduler/index.js`) and reuses the same trigger chain; only `{{now}}` is allowed as a placeholder.
+
+**Boundaries**: single-source real transaction / a cross-source write declares `nonAtomic` / cross-source writes inside `store.session()` fail closed (see [Transaction boundary](#transaction-boundary)); **no cascading** (a trigger write does not fire further triggers); `updateMany` does not support field-level triggers (explicitly refused, no silent degradation); the command step `op: "upsert"` is a registration-time `Err`.
 
 ## Transactional capabilities
 
