@@ -9,7 +9,9 @@ import globals from 'globals';
 
 export default [
   {
-    ignores: ['node_modules/', 'coverage/', '**/*.node'],
+    // rust-store/ = CI 里为 scheduler 对拍 fixture 检出的兄弟仓（见 .github/workflows/ci.yml），
+    // 非本仓源码；本仓 eslint 规则（含 js.configs.recommended 的 no-undef）不适用于它。
+    ignores: ['node_modules/', 'coverage/', '**/*.node', 'rust-store/'],
   },
   js.configs.recommended,
   {
