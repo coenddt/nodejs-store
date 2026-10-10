@@ -21,7 +21,17 @@ const { init, store, executors, schema: _sc } = require('../src');
 const scheduler = require('../src/scheduler');
 
 const SRC = 'sch_a';
-const FX = path.resolve(__dirname, '../../rust-store/fixtures/triggers/cases.json');
+// cron 对拍 fixture 的单一事实源在 rust-store 仓（与 py-store/tests/test_scheduler.py 共用）：
+// 本地开发 = 与 nodejs-store 平级的 common-store 布局（`../rust-store`）；
+// CI = checkout coenddt/rust-store 到 workspace 内（`<repo>/rust-store`，见 .github/workflows/ci.yml）。
+const FX = [path.resolve(__dirname, '../../rust-store'), path.resolve(__dirname, '../rust-store')]
+  .map((root) => path.join(root, 'fixtures/triggers/cases.json'))
+  .find((p) => fs.existsSync(p));
+if (!FX) {
+  throw new Error(
+    '未找到 rust-store/fixtures/triggers/cases.json（本地需与 rust-store 平级；CI 需 checkout rust-store）'
+  );
+}
 const cronCases = JSON.parse(fs.readFileSync(FX, 'utf8')).cronCases;
 
 function createDb() {

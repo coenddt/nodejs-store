@@ -57,6 +57,14 @@ jobs:
           --health-retries=12
     steps:
       - uses: actions/checkout@v4
+      # tests/scheduler.test.js 的 cron 对拍 fixture 单一事实源在 rust-store 仓
+      # （fixtures/triggers/cases.json，与 py-store/tests/test_scheduler.py 双宿主共用）；
+      # actions/checkout 不允许逃逸 workspace，故 checkout 到 workspace 内 rust-store/，
+      # 测试按候选路径探测（本地 common-store 布局仍走平级 ../rust-store）。
+      - uses: actions/checkout@v4
+        with:
+          repository: coenddt/rust-store
+          path: rust-store
       # 工作流 T5-09（跨步骤原子回滚）依赖 MongoDB 事务：单机 mongod 须以 --replSet 启动。
       # services 的 options 是 docker create flags，容器 command 传不进去（exit 125），
       # 故用 step 内 docker run 自管 mongo 生命周期；客户端用容器内 mongosh。
