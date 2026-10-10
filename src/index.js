@@ -531,6 +531,8 @@ class Store {
 
 /** 自定义权限错误（实例可被 store.PermissionError 捕获） */
 Store.prototype.PermissionError = permission.PermissionError;
+/** 上下文缺失错误（实例可被 store.NoContextError 捕获；fail-secure 下未注入 ctx） */
+Store.prototype.NoContextError = permission.NoContextError;
 /** 档位拒绝错误（实例可被 store.ProfileViolation 捕获；权限错误另见 PermissionError） */
 Store.prototype.ProfileViolation = crud.ProfileViolation;
 /** 原生 SQL 入口错误（实例可被 store.RawSqlError 捕获） */
@@ -663,6 +665,7 @@ module.exports = {
   Session,
   NonAtomicWriteError,
   PermissionError: permission.PermissionError,
+  NoContextError: permission.NoContextError,
   ProfileViolation: crud.ProfileViolation,
   PushdownUnsupportedError: datasource.PushdownUnsupportedError,
   RawSqlError: datasource.RawSqlError,

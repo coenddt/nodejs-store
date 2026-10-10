@@ -157,10 +157,10 @@ async function checkRequireContext(h, expect) {
     await h.store.query(gql);
   } catch (e) {
     const msg = String((e && e.message) || e);
-    if (msg.includes('ERR_NO_CONTEXT')) {
-      return { ok: true, note: '开启强制后无 ctx 被拒（ERR_NO_CONTEXT）' };
+    if (e instanceof h.store.NoContextError) {
+      return { ok: true, note: '开启强制后无 ctx 被拒（NoContextError）' };
     }
-    return { ok: false, note: `开启强制后抛的非 ERR_NO_CONTEXT 错误: ${msg}` };
+    return { ok: false, note: `开启强制后抛的非 NoContextError 错误: ${msg}` };
   }
   return { ok: false, note: '开启 require_context 后无 ctx 竟放行（fail-secure 失效）' };
 }

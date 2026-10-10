@@ -13,7 +13,7 @@
  * 结果再回映射为逻辑名），SQL 走 `translate → exec`。
  */
 
-const { PermissionError, getContext } = require('../permission');
+const { PermissionError, NoContextError, getContext } = require('../permission');
 const datasource = require('../datasource');
 const { execMongo } = require('../executors/mongo');
 const { emit: _emitFeedback } = require('../feedback');
@@ -36,6 +36,13 @@ const _PERM_PREFIX = 'ERR_PERMISSION:';
  * 反馈事件 `profile_blocked`（自动反馈原则：允许拦截，禁止静默）。
  */
 const _PROFILE_PREFIX = 'ERR_TEXT2QUERY:';
+
+/**
+ * 上下文缺失识别：core fail-secure（require_context / secureMode）下无 ctx 时统一携带
+ * `ERR_NO_CONTEXT:` 稳定前缀（见 core `command/mod.rs`），同上按前缀映射。命中即抛
+ * `NoContextError`（与 PermissionError 同档 403；前缀剥离）。
+ */
+const _NO_CONTEXT_PREFIX = 'ERR_NO_CONTEXT:';
 
 /**
  * 从 core 文案 `... [$feature]（功能收缩）` 中提取门禁项名；无 `[..]` 时留白
@@ -81,6 +88,7 @@ function _ctx() {
 /**
  * 绑定层调用包装：
  *   - 权限类错误（`ERR_PERMISSION:` 前缀）→ PermissionError
+ *   - 上下文缺失（`ERR_NO_CONTEXT:` 前缀）→ NoContextError（同档 403）
  *   - 档位类错误（`ERR_TEXT2QUERY:` 前缀）→ emit `profile_blocked` 反馈 + ProfileViolation
  *
  * 按前缀映射而非具体文案（core 文案可自由调整，映射不随文案漂移而静默失效）。
@@ -93,6 +101,9 @@ function _call(fn) {
     const msg = e && e.message;
     if (typeof msg === 'string' && msg.startsWith(_PERM_PREFIX)) {
       throw new PermissionError(msg.slice(_PERM_PREFIX.length));
+    }
+    if (typeof msg === 'string' && msg.startsWith(_NO_CONTEXT_PREFIX)) {
+      throw new NoContextError(msg.slice(_NO_CONTEXT_PREFIX.length));
     }
     if (typeof msg === 'string' && msg.startsWith(_PROFILE_PREFIX)) {
       const detail = msg.slice(_PROFILE_PREFIX.length);

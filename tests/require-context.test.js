@@ -47,10 +47,10 @@ test('require_context: 默认关闭 = fail-open（无 ctx 照常查询/写入）
 
 test('require_context: 开启后缺 ctx 抛 ERR_NO_CONTEXT（读/写全路径）', async () => {
   store.setRequireContext(true);
-  await assert.rejects(() => store.query('RcPost{ title }'), /ERR_NO_CONTEXT/);
-  await assert.rejects(() => store.insert('RcPost', { title: 'x' }), /ERR_NO_CONTEXT/);
-  await assert.rejects(() => store.update('RcPost', {}, { title: 'y' }), /ERR_NO_CONTEXT/);
-  await assert.rejects(() => store.remove('RcPost', {}), /ERR_NO_CONTEXT/);
+  await assert.rejects(() => store.query('RcPost{ title }'), permission.NoContextError);
+  await assert.rejects(() => store.insert('RcPost', { title: 'x' }), permission.NoContextError);
+  await assert.rejects(() => store.update('RcPost', {}, { title: 'y' }), permission.NoContextError);
+  await assert.rejects(() => store.remove('RcPost', {}), permission.NoContextError);
 });
 
 test('require_context: 系统上下文（runAsInternal）放行', async () => {
@@ -80,8 +80,8 @@ test('secureMode: 一键翻转三个开关，无 ctx 的读写与注册全拒', 
   assert.equal(store.isSecure(), true);
   assert.equal(store.requireContext(), true);
   // 开关1 require_context：无 ctx 读写拒绝
-  await assert.rejects(() => store.query('RcPost{ title }'), /ERR_NO_CONTEXT/);
-  await assert.rejects(() => store.insert('RcPost', { title: 'x' }), /ERR_NO_CONTEXT/);
+  await assert.rejects(() => store.query('RcPost{ title }'), permission.NoContextError);
+  await assert.rejects(() => store.insert('RcPost', { title: 'x' }), permission.NoContextError);
   // 开关3 meta closed：无 ctx 注册新定义拒绝
   assert.throws(
     () => _sc.register({ name: 'RcTmp', collection: 'rc_tmp', fields: {}, relations: {}, datasource: SRC }),

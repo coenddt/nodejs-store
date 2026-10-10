@@ -159,6 +159,22 @@ class PermissionError extends Error {
   }
 }
 
+/**
+ * 上下文缺失错误（fail-secure：require_context 开启 / secureMode 下未注入 ctx）
+ *
+ * 与 PermissionError 同属权限上下文类（403）：core 抛 `ERR_NO_CONTEXT:` 稳定前缀
+ * （见 core `command/mod.rs`），由 `crud/exec._call` 归一为本类型（前缀已剥离）。
+ * `code` 与 core machine code 对齐（`no_context`），供皮按枚举判定（禁按文案匹配）。
+ */
+class NoContextError extends Error {
+  constructor(message, status = 403) {
+    super(message);
+    this.name = 'NoContextError';
+    this.code = 'no_context';
+    this.status = status;
+  }
+}
+
 module.exports = {
   setContext,
   _als,
@@ -185,4 +201,5 @@ module.exports = {
   setDenyWriteRoles,
   setUnconfiguredPolicy,
   PermissionError,
+  NoContextError,
 };
