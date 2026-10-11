@@ -176,3 +176,72 @@ describe('跨库联邦 A5/A6', () => {
     assert.equal(solo._id, doc._id);
   });
 });
+
+/**
+ * A4 零回归：未声明 `links` ⇒ `planFederated` 输出除 `v` 外逐字段一致。
+ *
+ * 自包含（不依赖外部 DB 就绪）：两张跨源 schema 各挂一个 source，
+ * 直接把 `dsConfig` 作为 `planFederated` 第 4 参传入 → 纯规划、零 IO。
+ * 对照两遍：① 全程不触碰链路声明；② 走宿主装载入口 `applyLinkDecls`
+ * 但配置不含 `links`（应 no-op）。两次计划除 `v` 外应逐字段一致。
+ */
+describe('A4 零回归（plan 快照对拍）', () => {
+  it('未声明 links ⇒ planFederated 输出除 v 外逐字段一致', () => {
+    _sc.register({
+      name: 'A4Order',
+      collection: 'a4_orders',
+      idPrefix: 'a4o_',
+      timestamps: false,
+      datasource: 'a4_mongo',
+      fields: { userId: { type: 'string' }, code: { type: 'string' } },
+      relations: {},
+    });
+    _sc.register({
+      name: 'A4User',
+      collection: 'a4_users',
+      idPrefix: 'a4u_',
+      timestamps: false,
+      datasource: 'a4_mysql',
+      fields: { name: { type: 'string' } },
+      relations: {
+        orders: { model: 'A4Order', type: 'many', localField: '_id', foreignField: 'userId' },
+      },
+    });
+
+    const gql = 'A4User{name, orders{code}}';
+    const ds = { sources: { a4_mongo: 'mongodb', a4_mysql: 'mysql' } };
+    const core = _sc.getCore();
+
+    // ① 未触碰链路声明
+    const base = core.planFederated(gql, {}, undefined, ds);
+
+    // ② 走宿主装载入口，但配置不含 links ⇒ 应为 no-op
+    core.applyLinkDecls({
+      sources: {
+        a4_mongo: { kind: 'mongodb', databases: ['a4db'] },
+        a4_mysql: { kind: 'mysql', databases: ['a4db'] },
+      },
+      defs: ['schema'],
+    });
+    const after = core.planFederated(gql, {}, undefined, ds);
+
+    assert.equal(after.v, 3, '联邦计划契约升版：v === 3');
+
+    // 除 v 外逐字段一致（A4 零回归红线）
+    const stripV = (p) => {
+      const o = { ...p };
+      delete o.v;
+      return o;
+    };
+    assert.deepEqual(stripV(after), stripV(base), '未声明 links ⇒ planFederated 除 v 外逐字段一致');
+
+    // 未声明 links ⇒ 读链路取注册原序、role/priority 均 null（未重排、未附着）
+    assert.ok(after.links, 'plan 应含 v3 的 links 字段');
+    for (const name of Object.keys(after.links)) {
+      for (const l of after.links[name]) {
+        assert.equal(l.role, null, `${name} 未声明 links ⇒ role 应为 null`);
+        assert.equal(l.priority, null, `${name} 未声明 links ⇒ priority 应为 null`);
+      }
+    }
+  });
+});
