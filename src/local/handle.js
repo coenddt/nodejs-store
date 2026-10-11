@@ -25,9 +25,11 @@ const core = require('../core');
 
 const _registry = new core.Registry(); // localEval 为纯函数（不读 self.core），单例复用
 
-/** @param {{load(): object, save(changed: string[], collections: object): (void|Promise<void>)}} io */
-function createDb(io) {
-  return { collection: (name) => new LocalColl(io, name) };
+/** @param {{load(): object, save(changed: string[], collections: object): (void|Promise<void>)}} io
+ *  @param {string|null} [database] 仅作 IO 寻址标识（手柄自身读写经 io 闭包定位分区），
+ *         不进入发往 core 的命令 */
+function createDb(io, database = null) {
+  return { database, collection: (name) => new LocalColl(io, name) };
 }
 
 function cursor(docs) {

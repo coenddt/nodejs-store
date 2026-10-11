@@ -3,7 +3,8 @@
 /**
  * 本地磁盘数据源的文件 IO（唯一落盘边界）
  *
- * 布局：`<dir>/<物理集合名>.json`，内容为该集合的**文档数组**。
+ * 布局：`<dir>/<database>/<物理集合名>.json`（`database` 为空时回落旧布局
+ * `<dir>/<物理集合名>.json`），内容为该集合的**文档数组**。
  *   - 读：整个目录快照 `{ "<集合名>": [文档…] }`（目录不存在 → `{}`）。
  *     非数组 / 非法 JSON 文件一律**抛错**（禁静默当空集合，见执行文档 §7）。
  *   - 写：只回写 `changed` 里的集合，先写 `.tmp` 再 `rename`（原子替换），
@@ -18,14 +19,36 @@ const path = require('node:path');
 const _queues = new Map(); // dir -> Promise（写串行化：单进程内互斥）
 
 /**
+ * 唯一路径拼装点（红线）：`database` 非空 ⇒ `<dir>/<database>`；为空 ⇒ `dir` 本体。
+ * 非法 `database`（含 `/`、`\`、`..`，防目录穿越）⇒ 抛错。
+ * @param {string} dir
+ * @param {string|null|undefined} database
+ * @returns {string}
+ */
+function _dirFor(dir, database) {
+  if (database === null || database === undefined || database === '') return dir;
+  if (
+    typeof database !== 'string'
+    || database.includes('/')
+    || database.includes('\\')
+    || database.includes('..')
+  ) {
+    throw new Error(`ERR:LOCAL database 非法: ${database}`);
+  }
+  return path.join(dir, database);
+}
+
+/**
  * 读取整个目录快照。
  * @param {string} dir
+ * @param {string|null} [database] 空 ⇒ 旧布局（`<dir>` 本体）
  * @returns {Record<string, Array<object>>} 集合名 → 文档数组
  */
-function readSnapshot(dir) {
+function readSnapshot(dir, database = null) {
+  const target = _dirFor(dir, database);
   let entries;
   try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
+    entries = fs.readdirSync(target, { withFileTypes: true });
   } catch (e) {
     if (e && e.code === 'ENOENT') return {};
     throw e;
@@ -35,7 +58,7 @@ function readSnapshot(dir) {
     if (!ent.isFile()) continue;
     const name = ent.name;
     if (!name.endsWith('.json')) continue; // `.tmp` 中间文件天然被排除
-    const full = path.join(dir, name);
+    const full = path.join(target, name);
     const raw = fs.readFileSync(full, 'utf8');
     let parsed;
     try {
@@ -58,15 +81,17 @@ function readSnapshot(dir) {
  * @param {string} dir
  * @param {Iterable<string>} changed 需回写的集合名
  * @param {Record<string, Array<object>>} collections 最新快照
+ * @param {string|null} [database] 空 ⇒ 旧布局（`<dir>` 本体）；非空 ⇒ `<dir>/<database>`
  */
-function writeCollections(dir, changed, collections) {
+function writeCollections(dir, changed, collections, database = null) {
+  const target = _dirFor(dir, database); // 先校验（非法 database ⇒ 抛错）
   const names = Array.from(changed);
   if (names.length === 0) return;
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(target, { recursive: true });
   for (const name of names) {
-    const tmp = path.join(dir, `.${name}.json.tmp`);
+    const tmp = path.join(target, `.${name}.json.tmp`);
     fs.writeFileSync(tmp, JSON.stringify(collections[name] ?? [], null, 2));
-    fs.renameSync(tmp, path.join(dir, `${name}.json`));
+    fs.renameSync(tmp, path.join(target, `${name}.json`));
   }
 }
 
@@ -84,4 +109,4 @@ function withDirLock(dir, fn) {
   return next;
 }
 
-module.exports = { readSnapshot, writeCollections, withDirLock };
+module.exports = { readSnapshot, writeCollections, withDirLock, _dirFor };
