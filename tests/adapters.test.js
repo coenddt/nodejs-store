@@ -15,6 +15,7 @@ const http = require('node:http');
 
 const { connect } = require('../src/memory');
 const datasource = require('../src/datasource');
+const load = require('../src/load');
 const { init, store, schema } = require('../src');
 const { createHttpAdapter, pullInto } = require('../src/adapters');
 
@@ -122,4 +123,11 @@ test('adapters/A9: 成功 0 条 ⇒ pulled:0 且不调写路径', async () => {
   const out = await pullInto({ adapter, schemaName: 'AdpEmpty', store: spyStore });
   assert.deepEqual(out, { pulled: 0, written: null });
   assert.equal(writeCalls, 0, '0 条不得调用写路径');
+});
+
+// ─── A7 后半：sources 出现 kind:"http" ⇒ 显式 Err（零代码改动） ─────────
+
+test('adapters/A7 后半: sources.kind="http" ⇒ 显式 Err（接口不可注册为可查询源）', () => {
+  const cfg = { sources: { api: { kind: 'http', databases: ['x'] } }, defs: [] };
+  assert.throws(() => load.planLoad(cfg, []), /kind 非法/);
 });
