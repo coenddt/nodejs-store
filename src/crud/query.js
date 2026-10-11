@@ -10,6 +10,7 @@ const { emit: _emitFeedback } = require('../feedback');
 const {
   _call, _ctx, _exec, _execOn, resolvePlaceholders, ProfileViolation, _PROFILE_HINT,
 } = require('./exec');
+const { runWithSelection } = require('../cache/context');
 
 /**
  * Host 兜底：text2query 档禁用 `routeOverride`（受信参数，禁 AI 侧指定）
@@ -71,7 +72,7 @@ async function _finalize(plan, items) {
 async function query(gql, params = null, routeOverride = null) {
   _guardRouteOverride(routeOverride);
   const plan = _call(() => getCore().planQuery(gql, params ?? {}, _ctx(), routeOverride));
-  return _finalize(plan, await _runQueryPlan(plan));
+  return runWithSelection(plan.links ?? null, async () => _finalize(plan, await _runQueryPlan(plan)));
 }
 
 /** GQL 查询（返回单条）—— 走 core `planQueryOne`：未显式 `$limit` 时下推 `$limit(1)` */
@@ -118,10 +119,12 @@ async function queryFederated(gql, params = null) {
     _emitFeedback({ ...(d || {}), type: 'federation_degraded' });
   }
 
-  const results = await Promise.all((plan.sources || []).map(_runFederatedUnit));
+  return runWithSelection(plan.links ?? null, async () => {
+    const results = await Promise.all((plan.sources || []).map(_runFederatedUnit));
 
-  const merged = _call(() => getCore().mergeFederated(plan, results));
-  return _finalize(plan, merged);
+    const merged = _call(() => getCore().mergeFederated(plan, results));
+    return _finalize(plan, merged);
+  });
 }
 
 /**
