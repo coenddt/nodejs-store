@@ -89,6 +89,8 @@ async function loadDefs(opts = {}) {
   const files = collectFiles(roots);
   const items = planLoad(cfg, files);
   schema.registerBatch(items, ctx);
+  // 链路声明装配：宿主只转交 cfg（读/解析/排序/判据单点在 core）；Err 原样上抛（fail-fast）
+  schema.getCore().applyLinkDecls(cfg);
   return items;
 }
 

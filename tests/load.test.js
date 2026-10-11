@@ -42,13 +42,14 @@ test('A2 目录即落点：L1=database；PG L2=schema；L3+ 打平', () => {
   ];
   const items = load.planLoad(CFG, files);
 
-  assert.deepEqual(locOf(items, 'Order'), { source: 'mongoMain', database: 'sales_db', schema: null });
+  // 02 起 Location 五元组：role/priority 未声明 ⇒ null（绑定 location_to_value 透出）
+  assert.deepEqual(locOf(items, 'Order'), { source: 'mongoMain', database: 'sales_db', schema: null, role: null, priority: null });
   // Mongo 不读 L2：inventory 目录被打平，归属仍是 sales_db
-  assert.deepEqual(locOf(items, 'Item'), { source: 'mongoMain', database: 'sales_db', schema: null });
+  assert.deepEqual(locOf(items, 'Item'), { source: 'mongoMain', database: 'sales_db', schema: null, role: null, priority: null });
   // PG 读 L2：app = schema
-  assert.deepEqual(locOf(items, 'Customer'), { source: 'pgMain', database: 'analytics_db', schema: 'app' });
+  assert.deepEqual(locOf(items, 'Customer'), { source: 'pgMain', database: 'analytics_db', schema: 'app', role: null, priority: null });
   // PG L3 自由目录打平：schema 仍是 app
-  assert.deepEqual(locOf(items, 'Monthly'), { source: 'pgMain', database: 'analytics_db', schema: 'app' });
+  assert.deepEqual(locOf(items, 'Monthly'), { source: 'pgMain', database: 'analytics_db', schema: 'app', role: null, priority: null });
 });
 
 test('A1 同名主 ≥2 ⇒ ERR:LOAD 主定义重复', () => {
@@ -101,7 +102,7 @@ test('loadDefs：真实目录 IO + registerBatch（落点注入 core）', async 
 
     const items = await load.loadDefs({ config: path.join(root, 'store.config.json') });
     assert.equal(items.length, 1);
-    assert.deepEqual(items[0].location, { source: 'mongoMain', database: 'sales_db', schema: null });
+    assert.deepEqual(items[0].location, { source: 'mongoMain', database: 'sales_db', schema: null, role: null, priority: null });
     assert.equal(schema.has('Order'), true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
