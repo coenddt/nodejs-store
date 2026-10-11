@@ -28,6 +28,9 @@ const DEFAULT_SOURCE = 'default';
 /** 本地磁盘数据源类型标记（连接描述符与事务视图均携带该 `kind`） */
 const LOCAL_KIND = 'local';
 
+/** 进程内内存数据源类型标记（与 local 同族：同为嵌入式载体） */
+const MEMORY_KIND = 'memory';
+
 let _connections = Object.create(null);
 
 /** 事务作用域的连接覆盖：source → 事务描述符（见 runInTransaction） */
@@ -112,9 +115,9 @@ function _isMongoHandle(x) {
   );
 }
 
-/** 归一化连接映射：单个 Mongo db 实例 / MongoClient / 裸 local 描述符 → `{ default: 连接 }` */
+/** 归一化连接映射：单个 Mongo db 实例 / MongoClient / 裸嵌入式描述符 → `{ default: 连接 }` */
 function _normalize(connections) {
-  if (_isMongoHandle(connections) || isLocalConnection(connections)) {
+  if (_isMongoHandle(connections) || isEmbeddedConnection(connections)) {
     return { [DEFAULT_SOURCE]: connections };
   }
   return connections || {};
@@ -158,6 +161,19 @@ function isSql(source) {
 /** 本地磁盘数据源判别：`kind === 'local'`（描述符与事务视图都携带 `handle`） */
 function isLocalConnection(connection) {
   return !!connection && connection.kind === LOCAL_KIND;
+}
+
+/** 内存数据源判别：`kind === 'memory'`（描述符与事务视图都携带 `handle`） */
+function isMemoryConnection(connection) {
+  return !!connection && connection.kind === MEMORY_KIND;
+}
+
+/**
+ * 嵌入式载体判别（local ∪ memory）：无外部驱动、可整量求值的载体族。
+ * 单点泛化：此后新增同族载体只改这一处（消除硬编码二元判别）。
+ */
+function isEmbeddedConnection(connection) {
+  return isLocalConnection(connection) || isMemoryConnection(connection);
 }
 
 /**
@@ -279,19 +295,19 @@ async function runInTransaction(source, fn) {
   const conn = getConnection(source);
   const parent = _txStore.getStore() || new Map();
 
-  if (isLocalConnection(conn)) {
-    // ── 本地磁盘分支（事务作用域）──
+  if (isEmbeddedConnection(conn)) {
+    // ── 嵌入式载体分支（local / memory；事务作用域）──
     if (typeof conn.withTransaction !== 'function') {
       // 降级不静默：显式声明本事务作用域未生效
       warnTransactionNotAtomic(source, conn.kind);
       return fn();
     }
     if (parent.has(source)) {
-      // 同源嵌套：local 快照无保存点原语 → 走降级声明（nestedSavepointScope 内判定）
+      // 同源嵌套：嵌入式快照无保存点原语 → 走降级声明（nestedSavepointScope 内判定）
       return nestedSavepointScope(source, parent.get(source), fn);
     }
     const tx = await conn.openTransaction();
-    const view = { kind: LOCAL_KIND, conn, session: tx.session, tx, handle: tx.handle };
+    const view = { kind: conn.kind, conn, session: tx.session, tx, handle: tx.handle };
     const store = new Map(parent);
     store.set(source, view);
     return _txStore.run(store, async () => {
@@ -593,8 +609,8 @@ async function executeNative(source, collection, pipeline = [], options = null) 
     );
   }
   const isTxView = !!conn && conn.kind === 'mongo';
-  const isLocal = isLocalConnection(conn);
-  const db = isLocal ? conn.handle : mongoDb(isTxView ? conn.conn : conn, source, null);
+  const isEmbedded = isEmbeddedConnection(conn);
+  const db = isEmbedded ? conn.handle : mongoDb(isTxView ? conn.conn : conn, source, null);
   if (!db) {
     throw new NativeCommandError(
       `数据源 ${source} 不是 Mongo 源（原生 Mongo 命令入口仅支持 mongo）`,
@@ -731,14 +747,14 @@ class Session {
       this._warnNotAtomic(source, connection.kind);
       return null;
     }
-    // 本地磁盘源：快照隔离开事务；无原语 → 声明未原子并直通
-    if (isLocalConnection(connection)) {
+    // 嵌入式载体（local / memory）：快照隔离开事务；无原语 → 声明未原子并直通
+    if (isEmbeddedConnection(connection)) {
       if (typeof connection.openTransaction === 'function') {
         const tx = await connection.openTransaction();
         this._txs.set(source, tx);
         this._opened.push(source);
         return {
-          kind: LOCAL_KIND, conn: connection, session: tx.session, tx, handle: tx.handle,
+          kind: connection.kind, conn: connection, session: tx.session, tx, handle: tx.handle,
         };
       }
       this._warnNotAtomic(source, connection.kind);
@@ -927,12 +943,15 @@ class Session {
 module.exports = {
   DEFAULT_SOURCE,
   LOCAL_KIND,
+  MEMORY_KIND,
   setConnections,
   getConnection,
   hasConnection,
   isSqlConnection,
   isSql,
   isLocalConnection,
+  isMemoryConnection,
+  isEmbeddedConnection,
   connectionFor,
   resolveConnection,
   runInTransaction,

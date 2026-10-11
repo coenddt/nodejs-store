@@ -563,15 +563,16 @@ async function _createIndexesIfNeeded() {
     // 当前连接映射中时软跳过，不阻塞 init；其余配置错误（database 形态不匹配等）
     // 按 fail-fast 由 dbOfSchema 上抛，不静默吞掉
     if (!datasource.hasConnection(datasource.sourceOfSchema(name))) continue;
-    // local 源 v1 无索引（仅顺序扫描）：声明 indexes 即告警（禁静默忽略），直接跳过建索引
-    if (datasource.isLocalConnection(datasource.getConnection(datasource.sourceOfSchema(name)))) {
+    // 嵌入式载体（local / memory）v1 无索引（仅顺序扫描）：声明 indexes 即告警（禁静默忽略），直接跳过建索引
+    const conn = datasource.getConnection(datasource.sourceOfSchema(name));
+    if (datasource.isEmbeddedConnection(conn)) {
       if ((s.indexes || []).length) {
         feedback.emit({
           type: 'local_indexes_ignored',
           code: 'localIndexesIgnored',
-          layer: 'local',
-          message: `schema ${name} 声明了 indexes，但 local 数据源 v1 不建索引（仅顺序扫描）`,
-          hint: 'local 源请勿声明 indexes；需要索引请改用 sqlite/mongo 等后端',
+          layer: conn.kind,
+          message: `schema ${name} 声明了 indexes，但 ${conn.kind} 数据源 v1 不建索引（仅顺序扫描）`,
+          hint: `${conn.kind} 源请勿声明 indexes；需要索引请改用 sqlite/mongo 等后端`,
           schema: name,
         });
       }

@@ -129,9 +129,13 @@ function _call(fn) {
  * 事务 / 会话作用域内经 datasource.resolveConnection 落到事务专用连接） */
 async function _execOn(source, cmd) {
   const connection = await datasource.resolveConnection(source, datasource.isWriteCommand(cmd));
-  // 本地磁盘源：与 Mongo 同路径（复用 execMongo；handle 已绑定事务快照或直连 IO）
-  if (datasource.isLocalConnection(connection)) {
-    return _toLogical(await execMongo(connection.handle, _toMongo(cmd)), cmd);
+  // 嵌入式载体（local / memory）：与 Mongo 同路径（复用 execMongo）
+  // 按命令的 database 取该库分区手柄；缺省回落描述符自身 handle（向后兼容）
+  if (datasource.isEmbeddedConnection(connection)) {
+    const db = typeof connection.handleFor === 'function'
+      ? connection.handleFor(cmd.database ?? null)
+      : connection.handle;
+    return _toLogical(await execMongo(db, _toMongo(cmd)), cmd);
   }
   if (connection && connection.kind === 'mongo') {
     // Mongo 事务视图：db 按命令 database 解析，session 透传给驱动
