@@ -52,7 +52,7 @@ function createHttpAdapter(spec) {
 
   const doFetch = fetchImpl || (typeof fetch === 'function' ? fetch : null);
   if (!doFetch) {
-    throw new Error("createHttpAdapter 需要 fetch（Node >= 18 内置）或注入 spec.fetchImpl");
+    throw new Error('createHttpAdapter 需要 fetch（Node >= 18 内置）或注入 spec.fetchImpl');
   }
 
   async function fetchDocs(params = {}) {

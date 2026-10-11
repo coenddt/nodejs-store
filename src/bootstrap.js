@@ -47,7 +47,7 @@ async function createApp(cfg) {
 
   let gateway = null;
   if (skins) {
-    // eslint-disable-next-line global-require
+     
     const { serve } = require('store-gateway-node');
     gateway = await serve(store, { ...skins, reload });
   }

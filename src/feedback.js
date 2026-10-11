@@ -76,7 +76,7 @@ function _fail(msg) {
  */
 function enableFeedbackTable(store) {
   // 延迟 require：避免 schema ↔ feedback 的加载期循环
-  // eslint-disable-next-line global-require
+   
   const metadef = require('./metadef');
   metadef.ensureBuiltins(); // 幂等（含 __feedback）
   const prev = getSink();

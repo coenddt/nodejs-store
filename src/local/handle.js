@@ -81,7 +81,7 @@ class LocalColl {
   listIndexes() {
     return cursor([]); // local v1 无索引
   }
-  // eslint-disable-next-line class-methods-use-this
+   
   async createIndex() {} // 声明即告警（由 src/index.js 发 localIndexesIgnored），此处不静默建索引
 
   // ── 写 ────────────────────────────────────────────────────
