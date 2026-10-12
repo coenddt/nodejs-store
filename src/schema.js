@@ -31,6 +31,15 @@ function getCore() {
   return scope.currentView() ?? core;
 }
 
+/**
+ * 取 base core 门面（恒 base，无视作用域）：协议皮派生视图的唯一合法起点
+ * （R2-04 §4.1 `store.baseView()`；皮侧禁自持 `new Registry()`——§7）。
+ * 与 `getCore()` 的区别：getCore 作用域内返回派生视图，getBase 恒返回 base。
+ */
+function getBase() {
+  return core;
+}
+
 // 重复名去重签名（同一重复形态只告警一次，避免 list() 高频调用刷屏）
 const _dupSignatures = new Set();
 
@@ -353,6 +362,7 @@ function registerBatch(items, ctx) {
 module.exports = {
   core,
   getCore,
+  getBase,
   register,
   registerBatch,
   get,

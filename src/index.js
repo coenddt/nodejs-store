@@ -362,6 +362,14 @@ class Store {
     return schema.getCore().buildPipeline(gql, params ?? {}, permission.getContext() ?? null);
   }
 
+  /**
+   * base Registry 引用（恒 base，无视作用域）：协议皮经宿主门面派生视图的唯一合法起点
+   * （`baseView().withPolicy(overrides)` → withScope；皮侧禁自持 `new Registry()`——R2-04 §4.1/§7）
+   */
+  baseView() {
+    return schema.getBase();
+  }
+
   // ── 宿主接入守卫（Registry 级，对齐 py-store c44001e） ──
   /**
    * 开关「上下文强制」（默认关闭 = fail-open）。开启后：所有查询/写入在 ctx 缺失时
