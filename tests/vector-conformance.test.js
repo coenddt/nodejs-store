@@ -97,6 +97,11 @@ const MYSQL_URI =
 const PG_URI = process.env.PG_URI || 'postgres://e2e:e2e123@127.0.0.1:5432/mongo_store_e2e_real';
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/mongo_store_e2e_real';
 
+/** 错误 → 简短文案：setup 的 skip 理由须携带真实错误，禁吞成统一「不可达」 */
+function _errText(e) {
+  return e && e.message ? e.message : String(e);
+}
+
 const _dirs = [];
 
 /** 每后端一份独立 schema 名（同一 collection / 同一批文档 / 同一用例集） */
@@ -156,7 +161,8 @@ async function assertCaseError(name, c, pattern) {
 
 /**
  * 定义某后端的完整用例组。
- * `setup` 返回连接映射；返回 null 表示实例不可达（整组 skip）。
+ * `setup` 返回连接映射；返回字符串 = 自报 skip 理由（携带真实错误）；
+ * 返回 null = 实例不可达（整组 skip，统一文案）。
  */
 function defineSuite(tag, setup, teardown) {
   describe(`vector conformance · ${tag}`, () => {
@@ -166,12 +172,16 @@ function defineSuite(tag, setup, teardown) {
     before(async () => {
       permission.setContext({ userId: 'vc_admin', roles: ['admin'] });
       name = registerSchema(tag, `vc_${tag}`);
-      const connections = await setup();
-      if (!connections) {
+      const result = await setup();
+      if (typeof result === 'string') {
+        ctx.skip = result;
+        return;
+      }
+      if (!result) {
         ctx.skip = `${tag} 实例不可达`;
         return;
       }
-      await init(connections);
+      await init(result);
       for (const doc of CONFORMANCE.docs) await store.insert(name, doc);
     });
 
@@ -311,9 +321,9 @@ defineSuite(
       await client.db().command({ ping: 1 });
       _mongoClient = client;
       return { vc_mongodb: client.db() };
-    } catch {
+    } catch (e) {
       await client.close().catch(() => {});
-      return null;
+      return `mongodb 实例不可达: ${_errText(e)}`;
     }
   },
   async () => {
@@ -350,10 +360,10 @@ defineSuite(
       await _mysqlConn.query('DROP TABLE IF EXISTS vector_conformance_deleted');
       await _mysqlConn.query(ddl.generate('mysql', [registerSchemaName('mysql')]));
       return { vc_mysql: executors.createConnection('mysql', _mysqlConn) };
-    } catch {
+    } catch (e) {
       if (_mysqlConn) await _mysqlConn.end().catch(() => {});
       _mysqlConn = null;
-      return null;
+      return `mysql 实例不可达: ${_errText(e)}`;
     }
   },
   async () => {
@@ -375,10 +385,10 @@ defineSuite(
       await _pgPool.query('DROP TABLE IF EXISTS vector_conformance_deleted');
       await _pgPool.query(ddl.generate('postgres', [registerSchemaName('postgres')]));
       return { vc_postgres: executors.createConnection('postgres', _pgPool) };
-    } catch {
+    } catch (e) {
       if (_pgPool) await _pgPool.end().catch(() => {});
       _pgPool = null;
-      return null;
+      return `postgres 实例不可达 / 无 pgvector: ${_errText(e)}`;
     }
   },
   async () => {

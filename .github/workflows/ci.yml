@@ -42,8 +42,10 @@ jobs:
           --health-interval=10s
           --health-timeout=5s
           --health-retries=12
+      # pgvector 官方镜像（postgres 超集）：postgres:16 无 vector 扩展，
+      # 向量一致性套件建表 DDL 会报 type "vector" does not exist → 整套静默 skip
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: e2e
           POSTGRES_PASSWORD: e2e123
@@ -96,7 +98,9 @@ jobs:
         env:
           PGPASSWORD: e2e123
         run: |
-          psql -h 127.0.0.1 -U e2e -d postgres -c 'CREATE DATABASE mongo_store_e2e_real';
+          psql -h 127.0.0.1 -U e2e -d postgres -c 'CREATE DATABASE mongo_store_e2e_real'
+          # pgvector 按库启用：向量一致性套件建 vector 列/索引前必须先在该库 CREATE EXTENSION
+          psql -h 127.0.0.1 -U e2e -d mongo_store_e2e_real -c 'CREATE EXTENSION IF NOT EXISTS vector'
       - name: Install deps
         run: npm ci --no-audit --no-fund
       - name: Lint
