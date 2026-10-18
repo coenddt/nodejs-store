@@ -38,6 +38,8 @@
 - [Transactions](#transaction-boundary)
 - [Triggers](#triggers)
 - [Transactional capabilities](#transactional-capabilities)
+- [Scenario examples](#scenario-examples)
+- [Performance](#performance)
 - [FAQ](#faq)
 - [Related projects](#related-projects)
 - [Framework usage contract](#framework-usage-contract)
@@ -372,7 +374,7 @@ sql     = store.generateDdl('postgres', ['Course', 'CourseDeleted']);
 
 - Only scalar fields become columns; `object` / `array` fields do not.
 - Every table gets the `__present` sentinel column; `timestamps` models also get `createdAt` / `updatedAt`; the `<collection>_deleted` archive table is generated like any other registered def.
-- No `CREATE INDEX` is emitted — SQL backends keep indexes as metadata only.
+- Declared `schema.indexes` render as `CREATE [UNIQUE] INDEX idx_<table>_<cols>` (byte-identical across MySQL / PostgreSQL / SQLite). At runtime SQL backends still keep indexes as metadata — the store never executes DDL against the database.
 - MySQL `__present` is `VARCHAR(255)`; a schema whose present-token string would overflow emits a `ddlPresentOverflow` feedback event rather than failing silently.
 
 ## Multi-datasource connections
@@ -915,6 +917,738 @@ run = await store.runWorkflow('placeOrder', { productId: 'p1', warehouse: 'w1', 
 | Workflow defn persistence / hot reload | Depends on schema versioning (next on the roadmap) | defn stays code-side JSON + register, like schemas today |
 | Timers / event triggers | Scheduling is a resident-IO concern, orthogonal to pure orchestration | call `runWorkflow` from the application layer |
 | Placeholders inside gql / array-index paths | Injection surface / per-row iteration semantics | params binding / host-code orchestration |
+
+## Scenario examples
+
+Concrete, runnable scenarios that show where the data layer earns its place — each as
+**Scenario → Code → Result → Why it wins**, argued against the hand-written alternative
+(raw driver, hand-rolled SQL, an ORM).
+
+### 1. Define a model as JSON, then query it — no ORM boilerplate
+
+**Scenario.** You need a `Post` model with defaults, a derived label and an index. With an ORM
+you write an entity/class, a migration and a generated client; here you write one JSON object and
+start querying.
+
+```js
+const { init, store, local } = require('nodejs-store');
+
+await init({ default: local.connect({ dir: './data' }) });  // or any Mongo / SQL connection
+
+store.register({
+  name: 'Post',
+  collection: 'posts',
+  idPrefix: 'PT',
+  timestamps: true,
+  fields: {
+    title: { type: 'string', default: '' },
+    status: { type: 'string', default: 'draft' },
+  },
+  computes: {
+    statusLabel: { type: 'string', depends: ['status'], fn: (d) => d.status.toUpperCase() },
+  },
+  indexes: [{ keys: { status: 1, createdAt: -1 } }],
+});
+
+await store.insert('Post', { title: 'Hello' });
+const items = await store.query(
+  'Post($condition:@c0,$sort:@s1,$limit:@l1){ title, status, statusLabel }',
+  { c0: { status: 'draft' }, s1: { createdAt: -1 }, l1: 20 },
+);
+```
+
+**Result.**
+```js
+// items = [{ title: 'Hello', status: 'draft', statusLabel: 'DRAFT' }]
+```
+The stored document holds only the user data (`title`, `status`, plus framework `_id` / `createdAt`
+/ `updatedAt`); `statusLabel` is computed at read time.
+
+**Why it wins.** One JSON object replaces the entity/class + migration + generated client of a
+typical ORM, and there is no `title` column or getter to declare twice: defaults are filled on read
+and the computed column runs on read, so writes never carry derived data. Because the model is
+data rather than code, it is also publishable, diffable and hot-reloadable.
+
+### 2. Switch backends without touching business code
+
+**Scenario.** You ship on MongoDB in development, but the production tenant wants PostgreSQL. You do
+not want a second data-access layer.
+
+```js
+const { init, store } = require('nodejs-store');
+
+// One schema, no backend-specific fields.
+store.register({
+  name: 'Order',
+  collection: 'orders',
+  idPrefix: 'OD',
+  timestamps: true,
+  fields: {
+    title: { type: 'string', default: '' },
+    status: { type: 'string', default: 'draft' },
+    amount: { type: 'float', default: 0 },
+  },
+  computes: { total: { type: 'float', depends: ['amount'], fn: (d) => d.amount * 1.1 } },
+  indexes: [{ keys: { status: 1, createdAt: -1 } }],
+});
+
+const gql = 'Order($condition:@c0,$sort:@s0){ _id, title, status, total }';
+const params = { c0: { status: 'open' }, s0: { createdAt: -1 } };
+
+// Development: MongoDB — one aggregation pipeline.
+await init({ default: mongoDb });
+const fromMongo = await store.query(gql, params);
+
+// Production: PostgreSQL — only the datasource changes; the GQL is identical.
+await init({ default: { kind: 'postgres', exec: pgPool } });
+const fromPostgres = await store.query(gql, params);
+```
+
+**Result.** Both calls return the same document shape `[{ _id, title, status, total }]`; the Mongo
+read is one aggregation pipeline (`$match` / `$sort`), the PostgreSQL read one parameterized
+`SELECT ... ORDER BY`. See [`doc/use-cases/03`](doc/use-cases/03-mongodb-to-postgres-migration.md).
+
+**Why it wins.** With Prisma / TypeORM you maintain two clients/entities; with a raw driver you
+rewrite the query. Here the backend is just the `init()` argument — the schema carries no
+backend-specific field and the same GQL string is planned and executed against either. You can run
+both databases side by side during a phased cut-over, and
+`store.syncSchema({ backend, driver, overlay })` reads an existing SQL structure into the same
+registry so your permissions/computes merge on top.
+
+### 3. One GQL read instead of an N+1 loop
+
+**Scenario.** An endpoint lists a page of orders and, for each one, its items. The naive version
+loops.
+
+```js
+// N+1: 1 query for the list + 1 query per parent
+const orders = await store.query(
+  'Order($condition:@c0,$sort:@s0,$limit:@l){ _id, code }',
+  { c0: { status: 'open' }, s0: { createdAt: -1 }, l: 20 },
+);
+for (const order of orders) {
+  order.items = await store.query(
+    'OrderItem($condition:@c0,$sort:@s0,$limit:@l){ sku, qty }',
+    { c0: { orderId: order._id }, s0: { qty: -1 }, l: 5 },
+  );   // 20 parents → 21 round trips
+}
+```
+
+Declare the relation once in the schema, ask for it in the same read:
+
+```js
+store.register({
+  name: 'Order',
+  collection: 'orders',
+  timestamps: true,
+  fields: { code: { type: 'string', default: '' }, status: { type: 'string', default: 'draft' } },
+  relations: { items: { model: 'OrderItem', type: 'many', localField: '_id', foreignField: 'orderId' } },
+});
+store.register({
+  name: 'OrderItem',
+  collection: 'order_items',
+  fields: { orderId: { type: 'string' }, sku: { type: 'string', default: '' }, qty: { type: 'int', default: 1 } },
+});
+
+const orders = await store.query(
+  'Order($condition:@c0,$sort:@s0){ _id, code, items($sort:@s1,$limit:@l1){ sku, qty } }',
+  { c0: { status: 'open' }, s0: { createdAt: -1 }, s1: { qty: -1 }, l1: 5 },
+);
+```
+
+**Result.** One call returns nested documents:
+```js
+// orders = [{ _id, code, items: [{ sku, qty }, ...] }, ...]
+```
+On MongoDB this is one `aggregate()` (`$lookup` with a per-parent `$sort`/`$limit`); on SQL it is one
+`SELECT` with a `LEFT JOIN` applying `ROW_NUMBER() OVER (PARTITION BY "orderId" ORDER BY "qty" DESC) <= 5`.
+
+**Why it wins.** The child query is declared once (`relations`) and resolved as part of the parent
+read, so it cannot drift from the parent query and there is nothing to hand-write. Both levels share
+the same `$condition`/`$sort`/`$skip`/`$limit` semantics, and permissions/computed columns resolve
+per level. The number of executions is fixed, independent of page size — no N+1. (A root `$skip`/
+`$limit` alongside a relation uses a bounded two-phase shape — two executions, still not N+1.)
+
+### 4. Row-level access: different roles see different rows
+
+**Scenario.** Editors should only see and edit courses they created; admins see everything; guests
+can never write.
+
+```js
+const { store, PermissionError } = require('nodejs-store');
+
+store.register({
+  name: 'Course',
+  collection: 'courses',
+  fields: {
+    title: { type: 'string', default: '' },
+    status: { type: 'string', default: 'draft' },
+    createdBy: { type: 'string' },
+  },
+  read: ['admin', 'editor', 'creator'],
+  write: ['admin', 'editor', 'creator'],
+});
+
+// Once per request (middleware layer).
+store.setContext({ userId: req.user.id, roles: req.user.roles });
+
+// editor with userId 'u1':
+const mine = await store.query('Course($condition:@c0){ _id, title, status }', { c0: {} });
+// → the owner condition { createdBy: 'u1' } is injected automatically
+```
+
+**Result.** Because the schema grants `creator`, queries get a `createdBy` condition injected, so an
+editor sees only their own rows; `update` / `remove` on a row they do not own throws `PermissionError`
+(`status = 403`). `guest` writes are refused outright, and `admin` / `super_admin` bypass the whitelists.
+
+**Why it wins.** Row-level ownership is a schema declaration (`creator` in the `read`/`write` lists)
+plus one context set per request — there is no per-handler `WHERE createdBy = ?` to remember or forget
+and no per-endpoint `if (user.role)` ladder. The `AsyncLocalStorage`-based context flows through nested
+calls, so any query issued inside the request (even from a helper) gets the same owner injection.
+Denied access is a typed `PermissionError` (map it to HTTP 403), not a silent empty result.
+
+### 5. Computed columns you write once and read anywhere
+
+**Scenario.** The UI needs a course's lesson count and a marked-up revenue, but you do not want to
+store derived values or recompute them in every endpoint.
+
+```js
+store.register({
+  name: 'Course',
+  collection: 'courses',
+  fields: { price: { type: 'float', default: 0 }, status: { type: 'string', default: 'draft' } },
+  relations: { lessons: { model: 'Lesson', type: 'many', localField: '_id', foreignField: 'courseId' } },
+  computes: {
+    revenue: { type: 'float', depends: ['price'], fn: (d) => d.price * 1.2 },   // scalar fn
+    lessonCount: { type: 'int', agg: { $count: 'lessons' } },                  // relation agg
+  },
+});
+
+const rows = await store.query('Course($condition:@c0){ _id, price, revenue, lessonCount }', { c0: {} });
+```
+
+**Result.**
+```js
+// rows = [{ _id, price: 100, revenue: 120, lessonCount: 7 }, ...]
+```
+`lessonCount` is `0` for a course with no lessons; only `price` / `status` are stored.
+
+**Why it wins.** Declared once in the schema, `revenue` / `lessonCount` are requestable by name from
+any GQL and reused across endpoints — no per-endpoint recomputation, no denormalized column to keep
+in sync. The scalar `fn` runs at read time from its `depends`; the relation `agg` rolls the related
+rows up inside the same query without fanning the parent out. Writes stay clean because derived
+values are never persisted. Implementations bind by canonical `fnRef`, so a host function and the
+schema agree without hand-written names (see the `fnRef` note in
+[Schema reference](#schema-reference)).
+
+### 6. Aggregation instead of hand-written SQL reports
+
+**Scenario.** A dashboard needs "number of courses and total price per status, only statuses with
+more than one course, highest total first".
+
+```js
+const rows = await store.query(
+  'Course($condition:@c0,$group:@g0,$having:@h0,$sort:@s0,$limit:@l0){ status, n, total }',
+  {
+    c0: { status: { $ne: 'deleted' } },
+    g0: { by: ['status'], agg: { n: { $count: '*' }, total: { $sum: 'price' } } },
+    h0: { n: { $gt: 1 } },
+    s0: { total: -1 },
+    l0: 20,
+  },
+);
+```
+
+**Result.**
+```js
+// rows = [{ status: 'published', n: 12, total: 4800 }, ...]
+```
+
+**Why it wins.** Normalized aggregation lives inside GQL — no separate aggregate API, no raw
+pipeline, no per-dialect report SQL. The same query is pushed down to all five backends (MongoDB
+aggregation stages / SQL `GROUP BY ... HAVING`), with a fixed execution order (`$condition` →
+`$group` → `$having` → `$sort` → `$skip`/`$limit` → projection) and a whitelisted operator set
+(`$count` / `$sum` / `$avg` / `$min` / `$max`). To filter parents by an aggregate over a relation
+("products with more than 3 orders") use a relation aggregate predicate — a semi/anti-join that
+compiles to `EXISTS`/`NOT EXISTS` on SQL and `$lookup`+`$match` on MongoDB without fanning out:
+
+```js
+await store.query('Product($condition:@c0){ _id, name }', {
+  c0: { $and: [{ status: 'onSale' }, { orders: { $count: { $gt: 3 } } }] },
+});
+```
+
+### 7. Ask a question in natural language — `store.ask` + `describeForAi`
+
+**Scenario.** Support staff want to ask "Total amount of my last 10 orders?" without a query builder.
+
+```js
+const { llm, store } = require('nodejs-store');
+
+llm.registerLlm('deepseek', llm.makeOpenaiCompat({
+  baseUrl: 'https://api.deepseek.com/v1',
+  model: 'deepseek-chat',
+  apiKey: process.env.DEEPSEEK_API_KEY,
+}));
+
+const result = await store.ask('Total amount of my last 10 orders?', {
+  llm: 'deepseek',
+  ctx: { userId: 'u1', roles: ['viewer'] },   // server-side context; required
+});
+console.log(result.data);                 // query result rows
+console.log(result.attempts.at(-1).gql);  // the GQL the model produced
+```
+
+**Result.** `result` is an `AskResult` `{ data, attempts, events }`; `data` holds the rows and
+`attempts.at(-1)` holds `{ llmRaw, gql, params, rows }`. If the model cannot produce a valid,
+permitted query within `maxRetries` rounds, `store.ask` throws `AskExhausted` (carrying
+`.attempts` / `.events`) rather than returning empty data.
+
+**Why it wins.** `describeForAi(ctx)` feeds the model a permission-filtered schema summary — a
+`viewer` never sees the models/fields it cannot read, archive tables are dropped, and ops details
+(indexes / datasource / location) never enter the prompt. The guardrails (read-only `text2query`
+profile, context enforcement, row/depth caps, route override disabled) are hardcoded server-side and
+unreachable from the model — LLM output is treated as untrusted input. A failed round is fed back
+structurally and retried, so a bad generation is never silently turned into an empty result set.
+Compare this with hand-rolling a prompt, a validator and a read-only SQL guard per endpoint.
+
+### 8. A hermetic disk source for tests
+
+**Scenario.** You want the full GQL / relations / aggregation semantics in unit tests with no running
+database.
+
+```js
+const { init, local, store } = require('nodejs-store');
+
+await init({ default: local.connect({ dir: './.tmp/store-test' }) });
+
+store.register({ name: 'Post', collection: 'posts', fields: { title: { type: 'string', default: '' } } });
+await store.insert('Post', { title: 'a' });
+const rows = await store.query('Post{ _id, title }', {});
+```
+
+**Result.** Each collection is a JSON file under `dir` (e.g. `./.tmp/store-test/posts.json`); reads
+return the same document shape as any backend and the same GQL runs unchanged — no server, no native
+DB engine.
+
+**Why it wins.** The `local` source is a real backend among the five, so tests exercise the actual
+core semantics (relations, `$group`, permissions) without provisioning MongoDB/PostgreSQL, and the
+same test file runs against a real backend by swapping only `init()`. Its guardrails are explicit: a
+hard cap of 100,000 documents per collection (never silent truncation), single process only, and
+declaring `indexes` emits a `local_indexes_ignored` feedback event (it is a sequential-scan store).
+
+### 9. Orchestrate a multi-step business action as a workflow
+
+**Scenario.** "Place an order" is a multi-step action — look up inventory, assert it exists and is
+sufficient, then decrement it — and business failures must not throw.
+
+```js
+store.registerWorkflow({
+  name: 'placeOrder',
+  run: ['admin', 'ops'],
+  steps: [
+    { op: 'query', as: 'inv',
+      gql: 'Inventory($condition:@c0){ _id, stock }',
+      params: { c0: { productId: '{{input.productId}}', warehouse: '{{input.warehouse}}' } } },
+    { op: 'fail', when: { exists: '{{inv._id}}', is: null }, message: '库存记录不存在' },
+    { op: 'fail', when: { lt: '{{inv.stock}}', than: '{{input.qty}}' }, message: '库存不足' },
+    { op: 'mutation', model: 'Inventory',
+      data: { _id: '{{inv._id}}', stock: '{{dec:{{inv.stock}},{{input.qty}}}}' } },
+  ],
+});
+
+const run = await store.runWorkflow('placeOrder', { productId: 'p1', warehouse: 'w1', qty: 30 });
+```
+
+**Result.**
+```js
+// run = { _id, workflow: 'placeOrder', status: 'succeeded' | 'failed' | 'rejected', steps, error, stepIndex, ... }
+```
+A business failure is expressed as `run.status === 'failed'` with a human-readable `run.error` and the
+failing `stepIndex` — it is not thrown. On a single source the whole step loop is atomic, and the run
+record is persisted to the built-in `__workflowRun` schema, queryable with plain GQL.
+
+**Why it wins.** The multi-step action is pure JSON, isomorphic to a schema defn — publishable,
+versionable and auditable rather than a long procedural handler. Placeholders (`{{input.*}}`,
+`{{<as>.*}}`, `{{dec:a,b}}`) keep injection out of gql (params are bound, not string-built), `when`
+guards record `skipped` explicitly (never silently skipped), and the three-tier `read`/`write`/`run`
+whitelists reuse the same RBAC semantics. `store.runWorkflow(name, input, { dryRun: true })` runs
+queries for real but records mutations/failures as `wouldRun`. What is deliberately out of scope
+(loops, human approval, auto-retry) fails registration with `WORKFLOW_UNSUPPORTED` rather than
+silently degrading.
+
+### 10. Fail-secure at the request layer
+
+**Scenario.** An internal API must never serve a request that forgot to set the user context — a
+missing context should fail, not silently pass every permission check.
+
+```js
+store.setRequireContext(true);
+
+// Every query/write without a context now throws:
+await store.query('Post{ _id, title }', {});
+// → throws `ERR_NO_CONTEXT:...`
+
+// Trusted internal jobs declare themselves explicitly:
+await store.runAsInternal(() => store.remove('Post', { _id: pid }));
+```
+
+To flip every security switch at once, use the single entry point:
+```js
+store.secureMode({ adminRoles: ['internal'] });
+// turns on: context required + unconfigured whitelist closed + definition-registration gate
+```
+
+**Result.** A context-less request fails fast with `ERR_NO_CONTEXT:...`; `runAsInternal` marks the
+call `{ internal: true }` (semantically distinct from a missing context) and always passes.
+`store.secureMode()` returns `{ secure: true }`; `store.relaxMode()` restores the default fail-open
+(for local scripts/tests only).
+
+**Why it wins.** "No context" has two meanings — a system call and a caller that forgot the context.
+Default fail-open would silently treat the second as the first and pass every check; one
+`setRequireContext(true)` (or `secureMode`) makes the distinction explicit and fail-closed. There is
+no per-handler guard to remember, because enforcement lives in the data layer, at the single chokepoint
+every query/write goes through — and internal jobs stay possible via an explicit `runAsInternal`.
+
+### 11. One store over MongoDB + MySQL — cross-source relations
+
+**Scenario.** Users live in MongoDB, their orders in MySQL (different teams, different lifecycles).
+The API needs "user with their orders" in one call.
+
+```js
+const { init, store, executors } = require('nodejs-store');
+
+store.register({
+  name: 'User', collection: 'users', datasource: 'mongo_main', timestamps: true,
+  fields: { name: { type: 'string', default: '' } },
+  relations: { orders: { model: 'Order', type: 'many', localField: '_id', foreignField: 'userId' } },
+});
+store.register({
+  name: 'Order', collection: 'orders', datasource: 'mysql_main', timestamps: true,
+  fields: {
+    userId: { type: 'string' },
+    code: { type: 'string', default: '' },
+    amount: { type: 'float', default: 0 },
+  },
+});
+
+await init({
+  mongo_main: mongoDb,                                    // MongoClient().db() instance
+  mysql_main: executors.createConnection('mysql', pool),  // mysql2/promise pool
+});
+
+const rows = await store.queryFederated(
+  'User($condition:@c0){ _id, name, orders{ code, amount } }',
+  { c0: {} },
+);
+```
+
+**Result.** One call returns the joined shape:
+```js
+// rows = [{ _id, name, orders: [{ code, amount }, ...] }, ...]
+```
+Each source is fetched with its own native query (Mongo aggregation / MySQL SELECT) and joined in
+memory; SQL↔SQL cross-database relations push down natively instead (`"db_a"."t" JOIN "db_b"."t"`).
+
+**Why it wins.** A cross-source relation is declared exactly like a same-source one — the
+hand-written alternative is two drivers plus a manual in-JS join (and the N+1 it tends to grow).
+The boundary is declared too: a cross-source *write* without a session cannot be atomic, so it runs
+sequentially and emits a `non_atomic_write` feedback event rather than pretending
+(see [Transaction boundary](#transaction-boundary)).
+
+### 12. Money transfer: transactions + raw SQL in the same scope
+
+**Scenario.** Debit one account and credit another. Both must commit or neither, and the debit read
+must lock the row.
+
+```js
+const { init, store, executors } = require('nodejs-store');
+await init({ default: executors.createConnection('mysql', pool) });
+
+await store.transaction('default', async () => {
+  const { rows } = await store.executeRaw(
+    'default', 'SELECT balance FROM account WHERE _id = :id FOR UPDATE', { id: 'acc_a' });
+  if (!rows.length || rows[0].balance < 100) throw new Error('insufficient funds');
+  await store.executeRaw(
+    'default', 'UPDATE account SET balance = balance - :amt WHERE _id = :id', { amt: 100, id: 'acc_a' });
+  await store.executeRaw(
+    'default', 'UPDATE account SET balance = balance + :amt WHERE _id = :id', { amt: 100, id: 'acc_b' });
+});
+```
+
+**Result.** All three statements land on one transaction connection — commit on normal exit,
+rollback on the thrown business error. Named `:name` params compile to each dialect's native
+placeholders (`?` / `$1..$n`), same-name reuse included, so the SQL string is never hand-concatenated.
+
+**Why it wins.** The raw-SQL escape hatch does not drop you out of the transaction: `executeRaw`
+and CRUD calls inside `transaction(source, fn)` share the same connection, so a `FOR UPDATE` lock
+mixes freely with schema-driven writes. Degradations are declared, never faked: Mongo standalone
+emits `mongo_transaction_unsupported`, executors without `withTransaction` emit
+`transaction_not_atomic`, and nested same-source scopes open savepoints (an inner failure rolls back
+only that scope). With a raw driver you thread a connection object through every helper by hand.
+
+### 13. Session (Unit of Work): many writes, one exit
+
+**Scenario.** Placing an order writes three things — the order, the inventory decrement, the ledger
+bump. They form one unit of work; partial success is a bug.
+
+```js
+await store.session(async (s) => {
+  await s.insert('Order', { code: 'A1', userId: 'u1', amount: 100 });
+  await s.update('Inventory', { productId: 'p1', warehouse: 'w1' }, { $inc: { stock: -1 } });
+  await s.executeRaw('default', 'UPDATE ledger SET ops = ops + 1', null, true);
+});
+// any throw above → the whole session rolls back; nothing commits half-done
+```
+
+**Result.** Every command in the callback lands on one transaction connection of that source and
+commits once at exit. A session that writes to ≥2 datasources fails closed — everything rolls back
+and `NonAtomicWriteError` is thrown on exit (no distributed transaction, no half-done unit).
+
+**Why it wins.** The unit of work is ambient: helpers called inside the callback join the same
+transaction without a connection object being passed around (the same context mechanism the
+permission layer uses). Lazy transaction start means a session with no commands never checks out a
+connection; nested sessions open savepoints, so an inner failure rolls back only the inner scope
+while the outer continues. The hand-rolled version is "remember to pass `conn` into every function" —
+the version that forgets one helper is how partial writes ship.
+
+### 14. DDL from schemas: a starting point for your migration tool
+
+**Scenario.** Models are defined as JSON; you want the matching `CREATE TABLE` text to hand to your
+migration tool — or to spin up the same tables in a test container — without giving the library
+write access to the database.
+
+```js
+store.register({
+  name: 'Course', collection: 'courses', idPrefix: 'c_', timestamps: true,
+  fields: {
+    _id: { type: 'string' },
+    title: { type: 'string', default: '' },
+    status: { type: 'string', default: 'draft' },
+    price: { type: 'float', default: 0 },
+  },
+  indexes: [{ keys: { status: 1, createdAt: -1 } }],
+});
+
+const text  = store.generateDdl('sqlite');              // every registered model
+const mysql = store.generateDdl('mysql', ['Course']);   // just one
+```
+
+**Result.** Pure text, one dialect per call. For SQLite:
+```sql
+CREATE TABLE "courses" (
+  "_id" TEXT PRIMARY KEY,
+  "title" TEXT,
+  "status" TEXT,
+  "price" REAL,
+  "created_at" INTEGER,
+  "updated_at" INTEGER,
+  "__present" TEXT
+);
+
+CREATE INDEX "idx_courses_status_created_at" ON "courses" ("status" ASC, "created_at" DESC)
+```
+
+**Why it wins.** `generateDdl(backend, names)` is the inverse of `syncSchema()`: one registered def
+→ one `CREATE TABLE` (+ `CREATE INDEX` for declared indexes), rendered for mysql / postgres / sqlite.
+It never connects to or writes to the database — the text is yours to review, version and run with
+the migration tool of your choice. Declare `_id` explicitly (plus `idPrefix` if the store mints ids)
+— SQL rendering needs it; the `<Model>Deleted` archive tables render like any other registered def.
+
+### 15. Declarative triggers as audit
+
+**Scenario.** Every status change and every delete on `Order` must be audited — in the same
+transaction as the write itself, with no per-handler calls to remember.
+
+```js
+store.register({
+  name: 'Order', collection: 'orders', idPrefix: 'o_', timestamps: false,
+  fields: { amount: { type: 'number' }, status: { type: 'string', default: 'draft' } },
+  triggers: {
+    update: [
+      { name: 'audit_status', onFields: ['status'], into: 'AuditLog', op: 'insert',
+        data: { _id: '{{now}}', kind: 'status', ref: '{{root._id}}',
+                prev: '{{before.status}}', next: '{{root.status}}' } },
+    ],
+    remove: [
+      { name: 'audit_remove', into: 'AuditLog', op: 'insert',
+        data: { _id: '{{now}}', kind: 'remove', ref: '{{before._id}}' } },
+    ],
+  },
+});
+store.register({
+  name: 'AuditLog', collection: 'audit_log', idPrefix: 'a_', timestamps: false,
+  fields: { kind: { type: 'string' }, ref: { type: 'string' },
+            prev: { type: 'string' }, next: { type: 'string' } },
+});
+```
+
+**Result.** `store.update('Order', { _id }, { status: 'paid' })` plans the write and its trigger
+steps together, and the host runs them in the same atomic envelope: an `AuditLog` row
+`{ kind: 'status', ref: <orderId>, prev: 'draft', next: 'paid' }` is inserted — or nothing is, if
+the write itself fails.
+
+**Why it wins.** The audit is data declared next to the model: `onFields` deep-compares so an
+unchanged value never fires; `{{before.*}}` / `{{root.*}}` / `{{now}}` substitute whole values only
+(embedding one inside a string raises `ERR_TRIGGER_PLACEHOLDER`); the trigger write shares the
+transaction with the source write, so "changed but not audited" cannot happen. Imperative cases use
+callback triggers (`fnRef` + `store.setTriggerFn`, with `assertTriggerFnsCovered` failing startup if
+an implementation is missing). No cascading, and `updateMany` explicitly refuses field-level
+triggers — boundaries fail loudly, not silently.
+
+### 16. Soft delete with a queryable archive
+
+**Scenario.** "Delete" must be undoable and auditable: the row leaves the main table but stays
+queryable for the recycle-bin endpoint and the audit export.
+
+```js
+store.register({
+  name: 'Course', collection: 'courses', idPrefix: 'c_', timestamps: true,
+  fields: { title: { type: 'string', default: '' }, price: { type: 'float', default: 0 } },
+});
+
+const r = await store.remove('Course', { _id: 'c_001' });
+// r = { deletedCount: 1, archivedCount: 1 }  — the row moved to courses_deleted (+ deletedAt)
+
+// The archive is a first-class schema: plain GQL, same semantics as any model.
+const tombstones = await store.query(
+  'CourseDeleted($condition:@c0,$sort:@s0){ _id, title, price, deletedAt }',
+  { c0: {}, s0: { deletedAt: -1 } },
+);
+```
+
+**Result.** `remove()` archives the matched documents into the auto-provisioned `<Model>Deleted`
+table/collection (adding `deletedAt`) and then deletes them. Re-creating the same `_id` later does
+not collide — the archive write is upsert-by-`_id`.
+
+**Why it wins.** Every model gets the same audit-friendly delete for free: there is no per-model
+"archive table + copy-on-delete trigger" pair to design and no code path that forgets to archive.
+The recycle bin is one GQL query over a real schema. And `remove` with an empty condition is
+rejected outright, so nobody deletes a whole table by accident.
+
+### 17. A minimal web service: identity set once per request
+
+**Scenario.** You want a small REST-ish service where permissions are enforced at the data layer —
+not re-implemented in every handler.
+
+```js
+const express = require('express');   // any framework works; this is the smallest sketch
+const { init, store, local } = require('nodejs-store');
+
+await init({ default: local.connect({ dir: './data' }) });
+
+const app = express();
+app.use(express.json());
+
+// Once per request: the data layer reads identity from here.
+// (authenticated middleware fills req.user; guests keep an explicit guest role)
+app.use((req, res, next) => {
+  store.setContext({ userId: req.user.id, roles: req.user.roles });
+  next();
+});
+
+app.get('/courses', async (req, res) => {
+  try {
+    const page = await store.queryWithCount(
+      'Course($condition:@c0,$sort:@s0){ _id, title, price }',
+      { c0: {}, s0: { createdAt: -1 }, page: Number(req.query.page) || 0, pageSize: 20 });
+    res.json(page);                    // { items, total, hasMore, page, pageSize }
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });  // PermissionError carries status 403
+  }
+});
+
+app.listen(3000);
+```
+
+**Result.** One middleware sets `{ userId, roles }`; every `store.*` call inside any handler (and
+anything it awaits) is permission-checked against the schema whitelists — `guest` never writes,
+`creator` rows are owner-filtered, denials come back as typed errors instead of empty results.
+
+**Why it wins.** Authorization lives at the single chokepoint every query/write passes through, so
+"forgot the check in handler X" is structurally impossible — the handler contains no permission code
+at all. `PermissionError.status = 403` maps straight to HTTP; `queryWithCount` returns page/total
+with a hard `pageSize` cap (5000); and `routeOverride` — the one parameter that can re-target another
+tenant — is documented as trusted server-side input, never request data. Koa / Fastify are the same
+three lines: set context in middleware, call `store.*`, map errors to responses.
+
+## Performance
+
+Positioning first: nodejs-store's performance model is **push the work into the database, plan once
+in Rust, cross the FFI boundary once**. The numbers below come from one development machine — treat
+them as order-of-magnitude evidence, not a certified benchmark.
+
+### Measured locally (SQLite, in-memory)
+
+Environment: 2026-10-15, Node v25.1.0, Windows (win32), `better-sqlite3` in-memory database
+(synchronous driver, zero network), Rust core `rust-store-node` 4.5.0 (napi-rs). Method: read cases
+run once as warm-up then 5 timed runs (median reported); the insert case is a single cold run
+(re-inserting the same rows would collide on `_id`); every case asserts result correctness before
+timing. Re-running the script moved the two 201-query cases by up to ±25% — magnitudes and ratios
+stayed stable.
+
+| Operation | Data volume | Executions | Time | vs baseline |
+| --- | --- | --- | --- | --- |
+| `insertMany` batch insert (4 chunks × 2,500 rows) | 10,000 rows | 4 statements | ~253 ms (single run) | ≈ 39,500 rows/s |
+| Relation tree read — 1 GQL, 200 parents × 10 children | 2,000 child rows | 1 query | ~56 ms (median of 5) | 2.2× faster |
+| Hand-written N+1 loop (same data) | 2,000 child rows | 201 queries | ~122 ms (median of 5) | baseline |
+| `$group` + `$sum` aggregation (8 groups) | 10,000 rows | 1 query | ~5.3 ms (median of 5) | ~42× faster |
+| Full fetch + `reduce` in JS (same data) | 10,000 rows | 1 query + JS loop | ~225 ms (median of 5) | baseline |
+| Relation-agg computed column `$count` (200 parents) | 2,000 child rows | 1 query | ~4.1 ms (median of 5) | ~9.9× faster |
+| Per-parent `store.count()` loop (same data) | 2,000 child rows | 201 queries | ~41 ms (median of 5) | baseline |
+
+How to read it:
+
+- **On an embedded synchronous driver there is no network**, so N+1 costs "only" 2–3×. Over a real
+  network (MongoDB / MySQL / PostgreSQL — one round trip per query) 201 round trips vs 1 multiplies
+  by your RTT: at 1 ms per round trip that is ~200 ms of pure waiting vs 0. The structural win is a
+  fixed execution count, independent of page size (see
+  [Scenario 3](#3-one-gql-read-instead-of-an-n1-loop)).
+- **The ~42× on `$group`** is the other half of the model: aggregation compiles to one native
+  `GROUP BY ... HAVING`, so 10,000 rows never cross the FFI + JSON-rehydration boundary; the reduce
+  version moves all of them into JS first (see
+  [Scenario 6](#6-aggregation-instead-of-hand-written-sql-reports)).
+- **Insert throughput (~40k rows/s)** includes `_id` minting, timestamps and planning on a single
+  SQLite connection. SQLite caps bound variables (~32,767), so a 10,000-row `insertMany` must be
+  chunked (~2,500 rows at a time) — a SQLite limitation, not the store's.
+
+### Existing load evidence (four backends)
+
+The repo ships a four-backend load script ([scripts/stress.js](scripts/stress.js)): MongoDB + MySQL
++ PostgreSQL + SQLite under one federated relation, 8 workers × 200 rounds × 5 ops = 8,000
+operations. Its 2026-09-12 report ([doc/2026-09-12-压测报告.md](doc/2026-09-12-压测报告.md))
+recorded **0 errors, 637.7 QPS overall**, and the cross-3-source federated read at **p50 25 ms /
+p95 48 ms** (project dev machine, `LOCAL_CORE=1`; those numbers belong to that environment and were
+not reproduced here).
+
+### Why it is fast by design
+
+- **Rust core pushdown.** GQL parsing, permission checks, computed-column planning and dialect
+  translation live in Rust (`rust-store-node` via napi-rs): relations compile to one native query per
+  backend (`$lookup` / `JOIN` + `ROW_NUMBER`), aggregation to `GROUP BY`/`HAVING`, relation
+  predicates to `EXISTS`/`NOT EXISTS` — the database does the work, not JS.
+- **Plan once, execute once.** The FFI boundary is crossed for planning (`store.buildPipeline()`
+  exposes the compiled `{ tokens, ast, pipeline, projection }` without executing); the host layer
+  only does driver IO afterwards.
+- **Bounded execution counts.** A parent+relation read is 1 query (2 with root-level paging — the
+  bounded two-phase shape), never N+1; per-child `$sort`/`$limit` is applied inside the same
+  statement.
+- **Read-time computed columns** cost one function call per returned row — not extra queries; the
+  `agg` form rolls relations up inside the same query.
+
+### Limits, honestly
+
+- **SQLite is synchronous.** `better-sqlite3` blocks the event loop — for high-concurrency hot paths
+  prefer MySQL / PostgreSQL / MongoDB (see [When not to use it](#when-not-to-use-it)).
+- **One machine, one backend.** All numbers above are this machine, in-memory SQLite, warm cache.
+  MySQL / PostgreSQL / MongoDB server-side numbers: **pending verification — no local server was
+  available for this run**; the SQL-side architecture claim (one parameterized statement per read) is
+  verifiable on your side via `store.buildPipeline()`.
+- **Computed columns scale with result size.** A scalar `fn` runs per returned row — request fewer
+  rows or fewer computes if that shows up in a profile.
+- **No magic at the driver level.** Connection-pool sizing, SQL indexing (`schema.indexes` stays
+  metadata on SQL backends; only Mongo sources get indexes auto-created at `init()`) and query
+  design remain yours.
 
 ## FAQ
 

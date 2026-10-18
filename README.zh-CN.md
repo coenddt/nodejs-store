@@ -37,6 +37,8 @@
 - [事务边界](#事务边界)
 - [触发器](#触发器)
 - [事务型能力](#事务型能力)
+- [场景事例](#场景事例)
+- [性能](#性能)
 - [常见问题](#常见问题)
 - [相关项目](#相关项目)
 - [框架使用契约](#框架使用契约)
@@ -373,7 +375,7 @@ sql     = store.generateDdl('postgres', ['Course', 'CourseDeleted']);
 
 - 只有标量字段成为列；`object` / `array` 字段不建列。
 - 每张表都会获得 `__present` 哨兵列；`timestamps` 模型还会获得 `createdAt` / `updatedAt`；`<collection>_deleted` 归档表与其它已注册 def 一样生成。
-- 不生成 `CREATE INDEX` —— SQL 后端仅把索引保留为元数据。
+- 已声明的 `schema.indexes` 会渲染为 `CREATE [UNIQUE] INDEX idx_<table>_<cols>`（在 MySQL / PostgreSQL / SQLite 上逐字节一致）。运行期 SQL 后端仍仅把索引保留为元数据 —— 库绝不向数据库执行 DDL。
 - MySQL 的 `__present` 为 `VARCHAR(255)`；若某 schema 的 present 令牌串会超限，则发出 `ddlPresentOverflow` 反馈事件，而非静默失败。
 
 ## 多数据源连接
@@ -896,6 +898,574 @@ const run = await store.runWorkflow('placeOrder', { productId: 'p1', warehouse: 
 | 工作流定义存库 / 热更 | 依赖 schema 版本化先行（路线图下一步） | defn 暂与 schema 同模式：代码内 JSON + register |
 | 定时触发 / 事件触发 | 触发器是常驻 IO 职责，属调度层，与「纯编排」正交 | 应用层自行调用 `runWorkflow` |
 | gql 内嵌占位符 / 数组下标路径 | 注入面 / 数组逐行处理语义 | params 绑定 / 宿主代码编排 |
+
+## 场景事例
+
+以下是一批可直接运行的场景，用来展示数据层在哪些地方真正创造价值 —— 每个场景都按
+**业务背景 → 代码 → 结果 → 优势所在** 四段展开，并与手写方案（直接调驱动、手写 SQL、ORM）逐项对照。
+
+### 1. 用 JSON 定义模型直接查询——无需 ORM 样板代码
+
+**业务背景。** 你需要一个带默认值、派生标签和索引的 `Post` 模型。用 ORM 得写实体类、迁移和生成的客户端；这里只写一个 JSON 对象就能开始查询。
+
+```js
+const { init, store, local } = require('nodejs-store');
+
+await init({ default: local.connect({ dir: './data' }) });  // 也可换成任意 Mongo / SQL 连接
+
+store.register({
+  name: 'Post',
+  collection: 'posts',
+  idPrefix: 'PT',
+  timestamps: true,
+  fields: {
+    title: { type: 'string', default: '' },
+    status: { type: 'string', default: 'draft' },
+  },
+  computes: {
+    statusLabel: { type: 'string', depends: ['status'], fn: (d) => d.status.toUpperCase() },
+  },
+  indexes: [{ keys: { status: 1, createdAt: -1 } }],
+});
+
+await store.insert('Post', { title: 'Hello' });
+const items = await store.query(
+  'Post($condition:@c0,$sort:@s1,$limit:@l1){ title, status, statusLabel }',
+  { c0: { status: 'draft' }, s1: { createdAt: -1 }, l1: 20 },
+);
+```
+
+**结果。**
+```js
+// items = [{ title: 'Hello', status: 'draft', statusLabel: 'DRAFT' }]
+```
+存储的文档只保留用户数据（`title`、`status` 以及框架的 `_id` / `createdAt` / `updatedAt`）；`statusLabel` 在读取时计算。
+
+**优势所在。** 一个 JSON 对象取代了典型 ORM 的「实体类 + 迁移 + 生成客户端」，而且 `title` 这类字段不需要声明两次（列和 getter）：默认值在读取时补全、计算列在读取时执行，因此写入永远不携带派生数据。又因为模型是数据而非代码，它可发布、可 diff、可热更新。
+
+### 2. 换后端不动业务代码
+
+**业务背景。** 你在开发环境用 MongoDB，但生产租户要求 PostgreSQL，而你不希望再维护第二套数据访问层。
+
+```js
+const { init, store } = require('nodejs-store');
+
+// 一份 schema，不含任何后端专属字段。
+store.register({
+  name: 'Order',
+  collection: 'orders',
+  idPrefix: 'OD',
+  timestamps: true,
+  fields: {
+    title: { type: 'string', default: '' },
+    status: { type: 'string', default: 'draft' },
+    amount: { type: 'float', default: 0 },
+  },
+  computes: { total: { type: 'float', depends: ['amount'], fn: (d) => d.amount * 1.1 } },
+  indexes: [{ keys: { status: 1, createdAt: -1 } }],
+});
+
+const gql = 'Order($condition:@c0,$sort:@s0){ _id, title, status, total }';
+const params = { c0: { status: 'open' }, s0: { createdAt: -1 } };
+
+// 开发环境：MongoDB —— 一条聚合管道。
+await init({ default: mongoDb });
+const fromMongo = await store.query(gql, params);
+
+// 生产环境：PostgreSQL —— 只换数据源，GQL 完全一致。
+await init({ default: { kind: 'postgres', exec: pgPool } });
+const fromPostgres = await store.query(gql, params);
+```
+
+**结果。** 两次调用返回相同的文档结构 `[{ _id, title, status, total }]`；Mongo 读取是一条聚合管道（`$match` / `$sort`），PostgreSQL 读取是一条参数化 `SELECT ... ORDER BY`。参见 [`doc/use-cases/03`](doc/use-cases/03-mongodb-to-postgres-migration.md)。
+
+**优势所在。** 用 Prisma / TypeORM 你得维护两套客户端/实体；用原始驱动你得重写查询。在这里后端只是 `init()` 的入参 —— schema 不含后端专属字段，同一段 GQL 字符串会被规划并执行到任一后端上。你可以在灰度切换期间让两个数据库并行运行，而 `store.syncSchema({ backend, driver, overlay })` 能把既有 SQL 结构读进同一注册表，让你的权限/计算列叠加其上。
+
+### 3. 一次 GQL 读取替代 N+1 循环
+
+**业务背景。** 某接口列出一页订单，并为每个订单带出它的明细项。朴素写法是循环查询。
+
+```js
+// N+1：列表 1 次查询 + 每个父记录 1 次查询
+const orders = await store.query(
+  'Order($condition:@c0,$sort:@s0,$limit:@l){ _id, code }',
+  { c0: { status: 'open' }, s0: { createdAt: -1 }, l: 20 },
+);
+for (const order of orders) {
+  order.items = await store.query(
+    'OrderItem($condition:@c0,$sort:@s0,$limit:@l){ sku, qty }',
+    { c0: { orderId: order._id }, s0: { qty: -1 }, l: 5 },
+  );   // 20 个父记录 → 21 次往返
+}
+```
+
+在 schema 里声明一次关系，然后在同一次读取里索取它：
+
+```js
+store.register({
+  name: 'Order',
+  collection: 'orders',
+  timestamps: true,
+  fields: { code: { type: 'string', default: '' }, status: { type: 'string', default: 'draft' } },
+  relations: { items: { model: 'OrderItem', type: 'many', localField: '_id', foreignField: 'orderId' } },
+});
+store.register({
+  name: 'OrderItem',
+  collection: 'order_items',
+  fields: { orderId: { type: 'string' }, sku: { type: 'string', default: '' }, qty: { type: 'int', default: 1 } },
+});
+
+const orders = await store.query(
+  'Order($condition:@c0,$sort:@s0){ _id, code, items($sort:@s1,$limit:@l1){ sku, qty } }',
+  { c0: { status: 'open' }, s0: { createdAt: -1 }, s1: { qty: -1 }, l1: 5 },
+);
+```
+
+**结果。** 一次调用返回嵌套文档：
+```js
+// orders = [{ _id, code, items: [{ sku, qty }, ...] }, ...]
+```
+在 MongoDB 上这是一次 `aggregate()`（`$lookup`，并带每个父记录各自的 `$sort`/`$limit`）；在 SQL 上这是一次 `SELECT` 配合 `LEFT JOIN`，施加 `ROW_NUMBER() OVER (PARTITION BY "orderId" ORDER BY "qty" DESC) <= 5`。
+
+**优势所在。** 子查询只声明一次（`relations`），并作为父读取的一部分被解析，因此它不会与父查询脱节，也没有需要手写的东西。两层共享相同的 `$condition`/`$sort`/`$skip`/`$limit` 语义，权限/计算列按层解析。执行次数是固定的，与分页大小无关 —— 没有 N+1。（根的 `$skip`/`$limit` 与关系同时出现时会使用有界的两阶段形态 —— 两次执行，仍不是 N+1。）
+
+### 4. 行级访问：不同角色看到不同数据
+
+**业务背景。** 编辑只能查看和修改自己创建的课程；管理员可以看全部；访客永远不能写。
+
+```js
+const { store, PermissionError } = require('nodejs-store');
+
+store.register({
+  name: 'Course',
+  collection: 'courses',
+  fields: {
+    title: { type: 'string', default: '' },
+    status: { type: 'string', default: 'draft' },
+    createdBy: { type: 'string' },
+  },
+  read: ['admin', 'editor', 'creator'],
+  write: ['admin', 'editor', 'creator'],
+});
+
+// 每个请求一次（中间件层）。
+store.setContext({ userId: req.user.id, roles: req.user.roles });
+
+// 角色为 editor、userId 为 'u1' 时：
+const mine = await store.query('Course($condition:@c0){ _id, title, status }', { c0: {} });
+// → 属主条件 { createdBy: 'u1' } 被自动注入
+```
+
+**结果。** 因为 schema 授予了 `creator`，查询会被注入一个 `createdBy` 条件，于是编辑只能看到自己的行；对不属于自己的行执行 `update` / `remove` 会抛 `PermissionError`（`status = 403`）。`guest` 的写入被直接拒绝，`admin` / `super_admin` 则绕过白名单。
+
+**优势所在。** 行级属主是一句 schema 声明（`read`/`write` 列表里的 `creator`）加每请求一次上下文 —— 没有每个处理器都要记的 `WHERE createdBy = ?` 可写可漏，也没有每接口一段的 `if (user.role)` 阶梯。基于 `AsyncLocalStorage` 的上下文会贯穿嵌套调用，因此请求内发出的任何查询（哪怕来自某个辅助函数）都会获得同样的属主注入。被拒绝是一次带类型的 `PermissionError`（映射为 HTTP 403），而不是静默返回空结果。
+
+### 5. 写一次、随处可读的计算列
+
+**业务背景。** 界面需要课程的课时数和加价后的收入，但你不想存储派生值，也不想在每个接口里重复计算。
+
+```js
+store.register({
+  name: 'Course',
+  collection: 'courses',
+  fields: { price: { type: 'float', default: 0 }, status: { type: 'string', default: 'draft' } },
+  relations: { lessons: { model: 'Lesson', type: 'many', localField: '_id', foreignField: 'courseId' } },
+  computes: {
+    revenue: { type: 'float', depends: ['price'], fn: (d) => d.price * 1.2 },   // 标量 fn
+    lessonCount: { type: 'int', agg: { $count: 'lessons' } },                  // 关系 agg
+  },
+});
+
+const rows = await store.query('Course($condition:@c0){ _id, price, revenue, lessonCount }', { c0: {} });
+```
+
+**结果。**
+```js
+// rows = [{ _id, price: 100, revenue: 120, lessonCount: 7 }, ...]
+```
+没有课时的课程 `lessonCount` 为 `0`；只有 `price` / `status` 被存储。
+
+**优势所在。** 在 schema 里声明一次后，`revenue` / `lessonCount` 就能按名字从任意 GQL 中索取、跨接口复用 —— 无需每接口重算，也没有需要保持同步的反范式列。标量 `fn` 在读取时基于它的 `depends` 执行；关系 `agg` 在同一次查询内把关联行汇总起来，而不把父记录扇出。写入保持干净，因为派生值从不落库。实现按规范化后的 `fnRef` 绑定，因此宿主函数与 schema 无需手写名字即可一致（见[模式参考](#模式参考)中的 `fnRef` 说明）。
+
+### 6. 用聚合替代手写 SQL 报表
+
+**业务背景。** 一个仪表盘需要「按状态统计课程数量与价格总和，只保留课程数大于 1 的状态，按总和从高到低」。
+
+```js
+const rows = await store.query(
+  'Course($condition:@c0,$group:@g0,$having:@h0,$sort:@s0,$limit:@l0){ status, n, total }',
+  {
+    c0: { status: { $ne: 'deleted' } },
+    g0: { by: ['status'], agg: { n: { $count: '*' }, total: { $sum: 'price' } } },
+    h0: { n: { $gt: 1 } },
+    s0: { total: -1 },
+    l0: 20,
+  },
+);
+```
+
+**结果。**
+```js
+// rows = [{ status: 'published', n: 12, total: 4800 }, ...]
+```
+
+**优势所在。** 归一化聚合内嵌在 GQL 中 —— 没有单独的聚合 API、没有原始管道、没有按方言写的报表 SQL。同一条查询被下推到全部五个后端（MongoDB 聚合阶段 / SQL `GROUP BY ... HAVING`），执行顺序固定（`$condition` → `$group` → `$having` → `$sort` → `$skip`/`$limit` → 投影），算子集受白名单约束（`$count` / `$sum` / `$avg` / `$min` / `$max`）。若要按关系的聚合量过滤父记录（「订单数大于 3 的商品」），使用关系聚合谓词 —— 一种 semi/anti-join，在 SQL 上编译为 `EXISTS`/`NOT EXISTS`，在 MongoDB 上编译为 `$lookup`+`$match`，且不扇出：
+
+```js
+await store.query('Product($condition:@c0){ _id, name }', {
+  c0: { $and: [{ status: 'onSale' }, { orders: { $count: { $gt: 3 } } }] },
+});
+```
+
+### 7. 自然语言问数——`store.ask` + `describeForAi`
+
+**业务背景。** 客服想直接问「我最近 10 笔订单的总金额是多少？」而不借助查询构造器。
+
+```js
+const { llm, store } = require('nodejs-store');
+
+llm.registerLlm('deepseek', llm.makeOpenaiCompat({
+  baseUrl: 'https://api.deepseek.com/v1',
+  model: 'deepseek-chat',
+  apiKey: process.env.DEEPSEEK_API_KEY,
+}));
+
+const result = await store.ask('Total amount of my last 10 orders?', {
+  llm: 'deepseek',
+  ctx: { userId: 'u1', roles: ['viewer'] },   // 服务端上下文，必填
+});
+console.log(result.data);                 // 查询结果行
+console.log(result.attempts.at(-1).gql);  // 模型产出的 GQL
+```
+
+**结果。** `result` 是一个 `AskResult` `{ data, attempts, events }`；`data` 持有结果行，`attempts.at(-1)` 持有 `{ llmRaw, gql, params, rows }`。如果模型在 `maxRetries` 轮内无法产出合法且被允许的查询，`store.ask` 会抛 `AskExhausted`（携带 `.attempts` / `.events`），而不是返回空数据。
+
+**优势所在。** `describeForAi(ctx)` 喂给模型的是经过权限过滤的 schema 摘要 —— `viewer` 永远看不到它无权读取的模型/字段，归档表被剔除，运维细节（索引 / 数据源 / 位置）从不进入 prompt。护栏（只读的 `text2query` 档位、上下文强制、行/深度上限、关闭路由覆盖）硬编码在服务端，模型无法触达 —— LLM 输出被当作不可信输入。失败的轮次会以结构化方式回馈并重试，因此一次坏生成绝不会被静默变成空结果集。可与「每个接口手写一个 prompt、一个校验器和一个只读 SQL 守卫」对照。
+
+### 8. 用 `local` 磁盘源做隔离测试
+
+**业务背景。** 你想在单元测试里用到完整的 GQL / 关系 / 聚合语义，但不启动任何数据库。
+
+```js
+const { init, local, store } = require('nodejs-store');
+
+await init({ default: local.connect({ dir: './.tmp/store-test' }) });
+
+store.register({ name: 'Post', collection: 'posts', fields: { title: { type: 'string', default: '' } } });
+await store.insert('Post', { title: 'a' });
+const rows = await store.query('Post{ _id, title }', {});
+```
+
+**结果。** 每个集合是 `dir` 下的一个 JSON 文件（例如 `./.tmp/store-test/posts.json`）；读取返回与任何后端相同的文档结构，同一段 GQL 原样运行 —— 无需服务器、无需原生数据库引擎。
+
+**优势所在。** `local` 源是五个后端中真实的一个，因此测试跑的是真正的核心语义（关系、`$group`、权限），无需准备 MongoDB/PostgreSQL，且同一份测试文件只需替换 `init()` 就能对真实后端运行。它的护栏是显式的：每个集合硬上限 100,000 个文档（绝不静默截断）、仅单进程、声明 `indexes` 会发出 `local_indexes_ignored` 反馈事件（它是顺序扫描存储）。
+
+### 9. 把多步业务动作编排为工作流
+
+**业务背景。** 「下单」是一个多步动作 —— 查库存、断言它存在且充足、然后扣减 —— 并且业务失败不能抛错。
+
+```js
+store.registerWorkflow({
+  name: 'placeOrder',
+  run: ['admin', 'ops'],
+  steps: [
+    { op: 'query', as: 'inv',
+      gql: 'Inventory($condition:@c0){ _id, stock }',
+      params: { c0: { productId: '{{input.productId}}', warehouse: '{{input.warehouse}}' } } },
+    { op: 'fail', when: { exists: '{{inv._id}}', is: null }, message: '库存记录不存在' },
+    { op: 'fail', when: { lt: '{{inv.stock}}', than: '{{input.qty}}' }, message: '库存不足' },
+    { op: 'mutation', model: 'Inventory',
+      data: { _id: '{{inv._id}}', stock: '{{dec:{{inv.stock}},{{input.qty}}}}' } },
+  ],
+});
+
+const run = await store.runWorkflow('placeOrder', { productId: 'p1', warehouse: 'w1', qty: 30 });
+```
+
+**结果。**
+```js
+// run = { _id, workflow: 'placeOrder', status: 'succeeded' | 'failed' | 'rejected', steps, error, stepIndex, ... }
+```
+业务失败表达为 `run.status === 'failed'` 并带有可读的 `run.error` 与出错的 `stepIndex` —— 它不会被抛出。在单一数据源上整个步骤循环是原子的，run 记录被持久化到内建的 `__workflowRun` schema，可用普通 GQL 查询。
+
+**优势所在。** 多步动作是纯 JSON，与 schema 定义同构 —— 可发布、可版本化、可审计，而不是一段冗长的过程式处理器。占位符（`{{input.*}}`、`{{<as>.*}}`、`{{dec:a,b}}`）把注入挡在 gql 之外（参数绑定而非字符串拼接），`when` 守卫显式记录 `skipped`（绝不静默跳过），三级 `read`/`write`/`run` 白名单复用同一套 RBAC 语义。`store.runWorkflow(name, input, { dryRun: true })` 会真实执行查询，但把 mutation / fail 记为 `wouldRun`。刻意排除在范围外的能力（循环、人工审批、自动重试）会在注册时以 `WORKFLOW_UNSUPPORTED` 失败，而不是静默降级。
+
+### 10. 在请求层统一 fail-secure
+
+**业务背景。** 一个内部 API 绝不能服务一个忘了设置用户上下文的请求 —— 缺失上下文应当失败，而不是静默通过所有权限检查。
+
+```js
+store.setRequireContext(true);
+
+// 现在每个未设置上下文的查询/写入都会抛错：
+await store.query('Post{ _id, title }', {});
+// → 抛 `ERR_NO_CONTEXT:...`
+
+// 受信的内部任务显式声明自己：
+await store.runAsInternal(() => store.remove('Post', { _id: pid }));
+```
+
+要一次性翻转所有安全开关，使用统一入口：
+```js
+store.secureMode({ adminRoles: ['internal'] });
+// 同时开启：要求上下文 + 未配置白名单关闭 + 定义注册门闸
+```
+
+**结果。** 无上下文的请求快速失败并抛 `ERR_NO_CONTEXT:...`；`runAsInternal` 把调用标记为 `{ internal: true }`（在语义上区别于上下文缺失），并且总是通过。`store.secureMode()` 返回 `{ secure: true }`；`store.relaxMode()` 恢复默认的 fail-open（仅供本地脚本/测试）。
+
+**优势所在。** 「没有上下文」有两种含义 —— 系统调用和忘了设置上下文的调用方。默认 fail-open 会把后者静默当作前者并放行所有检查；一句 `setRequireContext(true)`（或 `secureMode`）把这一区分显式化并变为 fail-closed。没有每个处理器都要记的守卫，因为强制逻辑就在数据层、在每个查询/写入都要经过的唯一卡点上 —— 而内部任务仍可通过显式的 `runAsInternal` 完成。
+
+### 11. 同一个 store 同时挂 MongoDB + MySQL —— 跨源关系
+
+**业务背景。** 用户数据在 MongoDB，他们的订单在 MySQL（不同团队、不同生命周期）。接口需要一次调用拿到「用户连同他的订单」。
+
+```js
+const { init, store, executors } = require('nodejs-store');
+
+store.register({
+  name: 'User', collection: 'users', datasource: 'mongo_main', timestamps: true,
+  fields: { name: { type: 'string', default: '' } },
+  relations: { orders: { model: 'Order', type: 'many', localField: '_id', foreignField: 'userId' } },
+});
+store.register({
+  name: 'Order', collection: 'orders', datasource: 'mysql_main', timestamps: true,
+  fields: {
+    userId: { type: 'string' },
+    code: { type: 'string', default: '' },
+    amount: { type: 'float', default: 0 },
+  },
+});
+
+await init({
+  mongo_main: mongoDb,                                    // MongoClient().db() 实例
+  mysql_main: executors.createConnection('mysql', pool),  // mysql2/promise 连接池
+});
+
+const rows = await store.queryFederated(
+  'User($condition:@c0){ _id, name, orders{ code, amount } }',
+  { c0: {} },
+);
+```
+
+**结果。** 一次调用返回拼接后的形状：
+```js
+// rows = [{ _id, name, orders: [{ code, amount }, ...] }, ...]
+```
+每个数据源各自用原生查询取数（Mongo 聚合 / MySQL SELECT），再在内存中 join；SQL↔SQL 的跨库关系则原生下推（`"db_a"."t" JOIN "db_b"."t"`）。
+
+**优势所在。** 跨源关系与同源关系的声明方式完全一致 —— 手写方案的替代品是「两个驱动 + 手工内存 join」（以及它往往会长出的 N+1）。边界同样是显式声明的：不开会话的跨源*写入*不可能原子，库会顺序执行并发 `non_atomic_write` 反馈事件，绝不假装原子（见[事务边界](#事务边界)）。
+
+### 12. 转账：事务与原生 SQL 同作用域
+
+**业务背景。** 从一个账户扣款、向另一个账户入账。两者要么都提交、要么都不提交，且扣款读取必须锁行。
+
+```js
+const { init, store, executors } = require('nodejs-store');
+await init({ default: executors.createConnection('mysql', pool) });
+
+await store.transaction('default', async () => {
+  const { rows } = await store.executeRaw(
+    'default', 'SELECT balance FROM account WHERE _id = :id FOR UPDATE', { id: 'acc_a' });
+  if (!rows.length || rows[0].balance < 100) throw new Error('insufficient funds');
+  await store.executeRaw(
+    'default', 'UPDATE account SET balance = balance - :amt WHERE _id = :id', { amt: 100, id: 'acc_a' });
+  await store.executeRaw(
+    'default', 'UPDATE account SET balance = balance + :amt WHERE _id = :id', { amt: 100, id: 'acc_b' });
+});
+```
+
+**结果。** 三条语句全部落在同一条事务连接上 —— 正常退出即提交，抛出业务错误即回滚。命名参数 `:name` 会被编译为各方言的原生占位符（`?` / `$1..$n`），同名复用也没问题，SQL 字符串无需手工拼接。
+
+**优势所在。** 原生 SQL 的逃生舱不会把你踢出事务：`transaction(source, fn)` 内的 `executeRaw` 与 CRUD 调用共用同一条连接，`FOR UPDATE` 锁可以和 schema 驱动的写入自由混用。降级必须声明、绝不假装：Mongo standalone 发 `mongo_transaction_unsupported`，未实现 `withTransaction` 的执行器发 `transaction_not_atomic`，同源嵌套作用域走保存点（内层失败只回滚本层）。用裸驱动的话，你得手工把连接对象在每个辅助函数间传来传去。
+
+### 13. 会话（Session / 工作单元）：多次写入、一次收口
+
+**业务背景。** 「下单」要写三处 —— 订单、库存扣减、台账计数。它们构成一个工作单元；部分成功就是 bug。
+
+```js
+await store.session(async (s) => {
+  await s.insert('Order', { code: 'A1', userId: 'u1', amount: 100 });
+  await s.update('Inventory', { productId: 'p1', warehouse: 'w1' }, { $inc: { stock: -1 } });
+  await s.executeRaw('default', 'UPDATE ledger SET ops = ops + 1', null, true);
+});
+// 上面任何一处抛错 → 整个会话回滚；绝不提交半截
+```
+
+**结果。** 回调内的每条命令都落到该数据源的同一条事务连接上，退出时统一提交一次。写了 ≥2 个数据源的会话 fail-closed —— 全部回滚并在退出时抛 `NonAtomicWriteError`（没有分布式事务，就不提交半截的工作单元）。
+
+**优势所在。** 工作单元是环境式的：回调内调用的辅助函数自动加入同一事务，无需把连接对象层层传递（与权限层用的是同一套上下文机制）。惰性开事务意味着没有任何命令的会话不占用连接；嵌套会话开保存点，内层失败只回滚内层、外层可继续。手写版本是「记得把 `conn` 传进每个函数」—— 忘掉其中一个辅助函数的版本，就是部分写入上线的方式。
+
+### 14. 从 schema 生成 DDL：交给迁移工具的起点
+
+**业务背景。** 模型已经用 JSON 定义好；现在想要与之匹配的 `CREATE TABLE` 文本，交给你的迁移工具 —— 或者在测试容器里建出同样的表 —— 又不想给库任何写库权限。
+
+```js
+store.register({
+  name: 'Course', collection: 'courses', idPrefix: 'c_', timestamps: true,
+  fields: {
+    _id: { type: 'string' },
+    title: { type: 'string', default: '' },
+    status: { type: 'string', default: 'draft' },
+    price: { type: 'float', default: 0 },
+  },
+  indexes: [{ keys: { status: 1, createdAt: -1 } }],
+});
+
+const text  = store.generateDdl('sqlite');              // 所有已注册模型
+const mysql = store.generateDdl('mysql', ['Course']);   // 只要一张表
+```
+
+**结果。** 纯文本，一次调用一种方言。SQLite 的输出：
+```sql
+CREATE TABLE "courses" (
+  "_id" TEXT PRIMARY KEY,
+  "title" TEXT,
+  "status" TEXT,
+  "price" REAL,
+  "created_at" INTEGER,
+  "updated_at" INTEGER,
+  "__present" TEXT
+);
+
+CREATE INDEX "idx_courses_status_created_at" ON "courses" ("status" ASC, "created_at" DESC)
+```
+
+**优势所在。** `generateDdl(backend, names)` 是 `syncSchema()` 的逆操作：一个已注册 def → 一条 `CREATE TABLE`（已声明索引附 `CREATE INDEX`），可渲染 mysql / postgres / sqlite 三种方言。它绝不连接、绝不写入数据库 —— 文本归你审阅、版本化并交给自选的迁移工具执行。渲染 SQL 需要显式声明 `_id`（若由库生成 id 还需 `idPrefix`）；`<Model>Deleted` 归档表与其它已注册 def 一样生成。
+
+### 15. 声明式触发器做审计
+
+**业务背景。** `Order` 的每次状态变更、每次删除都要留审计 —— 且与写入本身同事务，没有每个处理器都要记得调用的审计函数。
+
+```js
+store.register({
+  name: 'Order', collection: 'orders', idPrefix: 'o_', timestamps: false,
+  fields: { amount: { type: 'number' }, status: { type: 'string', default: 'draft' } },
+  triggers: {
+    update: [
+      { name: 'audit_status', onFields: ['status'], into: 'AuditLog', op: 'insert',
+        data: { _id: '{{now}}', kind: 'status', ref: '{{root._id}}',
+                prev: '{{before.status}}', next: '{{root.status}}' } },
+    ],
+    remove: [
+      { name: 'audit_remove', into: 'AuditLog', op: 'insert',
+        data: { _id: '{{now}}', kind: 'remove', ref: '{{before._id}}' } },
+    ],
+  },
+});
+store.register({
+  name: 'AuditLog', collection: 'audit_log', idPrefix: 'a_', timestamps: false,
+  fields: { kind: { type: 'string' }, ref: { type: 'string' },
+            prev: { type: 'string' }, next: { type: 'string' } },
+});
+```
+
+**结果。** `store.update('Order', { _id }, { status: 'paid' })` 会把写入与触发器步骤一起规划，宿主在同一原子包络内执行：插入一条 `AuditLog` 行 `{ kind: 'status', ref: <orderId>, prev: 'draft', next: 'paid' }` —— 若写入本身失败，则什么都不会插入。
+
+**优势所在。** 审计是声明在模型旁边的数据：`onFields` 做结构深比较，值未变化就不触发；`{{before.*}}` / `{{root.*}}` / `{{now}}` 只做整值替换（把占位符嵌进字符串会抛 `ERR_TRIGGER_PLACEHOLDER`）；触发器写入与源写入共享同一事务，「改了但没审计」不可能发生。命令式场景用回调触发器（`fnRef` + `store.setTriggerFn`，`assertTriggerFnsCovered` 在启动期校验缺实现即失败）。不级联，`updateMany` 显式拒绝字段级触发器 —— 边界都大声失败，绝不静默。
+
+### 16. 软删除与可查询的归档
+
+**业务背景。** 「删除」必须可撤销、可审计：行离开主表，但保持可查询 —— 供回收站接口和审计导出使用。
+
+```js
+store.register({
+  name: 'Course', collection: 'courses', idPrefix: 'c_', timestamps: true,
+  fields: { title: { type: 'string', default: '' }, price: { type: 'float', default: 0 } },
+});
+
+const r = await store.remove('Course', { _id: 'c_001' });
+// r = { deletedCount: 1, archivedCount: 1 }  —— 行被移入 courses_deleted（附加 deletedAt）
+
+// 归档表是一等 schema：普通 GQL，语义与任何模型相同。
+const tombstones = await store.query(
+  'CourseDeleted($condition:@c0,$sort:@s0){ _id, title, price, deletedAt }',
+  { c0: {}, s0: { deletedAt: -1 } },
+);
+```
+
+**结果。** `remove()` 先把命中的文档归档到自动置备的 `<Model>Deleted` 表/集合（附加 `deletedAt`），然后删除。之后重建相同 `_id` 也不会冲突 —— 归档写入按 `_id` upsert。
+
+**优势所在。** 每个模型免费获得同一种审计友好的删除：不需要为每个模型设计「归档表 + 删除时复制的触发器」组合，也不存在忘记归档的代码路径。回收站就是对一个真实 schema 的一次 GQL 查询。空条件的 `remove` 会被直接拒绝，谁也不会误删整张表。
+
+### 17. 最小 Web 服务：每请求一次设置身份
+
+**业务背景。** 你想要一个小型 REST 风格服务，权限在数据层强制执行 —— 而不是在每个处理器里重复实现。
+
+```js
+const express = require('express');   // 任意框架均可；这是最小示意
+const { init, store, local } = require('nodejs-store');
+
+await init({ default: local.connect({ dir: './data' }) });
+
+const app = express();
+app.use(express.json());
+
+// 每个请求一次：数据层从这里读取身份。
+// （认证中间件负责填充 req.user；游客保留显式的 guest 角色）
+app.use((req, res, next) => {
+  store.setContext({ userId: req.user.id, roles: req.user.roles });
+  next();
+});
+
+app.get('/courses', async (req, res) => {
+  try {
+    const page = await store.queryWithCount(
+      'Course($condition:@c0,$sort:@s0){ _id, title, price }',
+      { c0: {}, s0: { createdAt: -1 }, page: Number(req.query.page) || 0, pageSize: 20 });
+    res.json(page);                    // { items, total, hasMore, page, pageSize }
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });  // PermissionError 自带 status 403
+  }
+});
+
+app.listen(3000);
+```
+
+**结果。** 一个中间件设置 `{ userId, roles }`；任何处理器内（及其 await 的任何调用）的每次 `store.*` 都会按 schema 白名单做权限校验 —— `guest` 永不写、`creator` 的行按属主过滤、拒绝以带类型的错误返回而非空结果。
+
+**优势所在。** 授权位于每个查询/写入都要经过的唯一卡点，因此「在处理器 X 里忘了校验」在结构上不可能发生 —— 处理器里根本不含权限代码。`PermissionError.status = 403` 直接映射为 HTTP 状态；`queryWithCount` 返回分页与总数并带硬性 `pageSize` 上限（5000）；`routeOverride` —— 唯一能把请求重定向到其他租户的参数 —— 被明确文档化为受信服务端输入，绝不透传请求数据。Koa / Fastify 同样只是三行：中间件里设上下文、调用 `store.*`、把错误映射为响应。
+
+## 性能
+
+先给定位：nodejs-store 的性能模型是**把工作推进数据库、在 Rust 里规划一次、只跨一次 FFI 边界**。下方数字来自一台开发机 —— 请把它们当作数量级证据，而非认证基准。
+
+### 本机实测（SQLite，内存库）
+
+环境：2026-10-15，Node v25.1.0，Windows（win32），`better-sqlite3` 内存数据库（同步驱动，零网络），Rust 核心 `rust-store-node` 4.5.0（napi-rs）。方法：读取类用例先预热 1 次再计时 5 次取中位数；插入用例为单次冷跑（同批数据重复插入会撞 `_id`）；每个用例计时前都先断言结果正确性。复跑脚本时两个 201 次查询的用例波动可达 ±25% —— 数量级与比值保持稳定。
+
+| 操作 | 数据量 | 执行次数 | 耗时 | 对比基线 |
+| --- | --- | --- | --- | --- |
+| `insertMany` 批量插入（4 块 × 2,500 行） | 10,000 行 | 4 条语句 | ~253 ms（单次） | ≈ 39,500 行/秒 |
+| 关系树读取 —— 1 条 GQL，200 父 × 10 子 | 2,000 子行 | 1 次查询 | ~56 ms（5 次中位） | 快 2.2× |
+| 手写 N+1 循环（同一数据） | 2,000 子行 | 201 次查询 | ~122 ms（5 次中位） | 基线 |
+| `$group` + `$sum` 聚合（8 组） | 10,000 行 | 1 次查询 | ~5.3 ms（5 次中位） | 快 ~42× |
+| 全量拉回 + JS `reduce`（同一数据） | 10,000 行 | 1 次查询 + JS 循环 | ~225 ms（5 次中位） | 基线 |
+| 关系聚合计算列 `$count`（200 父） | 2,000 子行 | 1 次查询 | ~4.1 ms（5 次中位） | 快 ~9.9× |
+| 逐父 `store.count()` 循环（同一数据） | 2,000 子行 | 201 次查询 | ~41 ms（5 次中位） | 基线 |
+
+怎么读这组数字：
+
+- **嵌入式同步驱动没有网络**，所以 N+1 只贵 2–3×。换到真实网络（MongoDB / MySQL / PostgreSQL —— 每条查询一个网络往返）后，201 次往返对比 1 次会乘上你的 RTT：按每次往返 1 ms 计，就是约 200 ms 纯等待对比 0。结构性收益是固定的执行次数、与分页大小无关（见[事例 3](#3-一次-gql-读取替代-n1-循环)）。
+- **`$group` 的 ~42×** 是模型的另一半：聚合被编译为一条原生 `GROUP BY ... HAVING`，10,000 行数据从不跨越 FFI + JSON 还原边界；reduce 版本则要先把它们全部搬进 JS（见[事例 6](#6-用聚合替代手写-sql-报表)）。
+- **插入吞吐（约 4 万行/秒）**包含单条 SQLite 连接上的 `_id` 生成、时间戳与规划。SQLite 有绑定变量上限（约 32,767），10,000 行的 `insertMany` 必须分块（每次约 2,500 行）—— 这是 SQLite 的限制，不是本库的。
+
+### 既有压测证据（四后端）
+
+仓库自带四后端压测脚本（[scripts/stress.js](scripts/stress.js)）：MongoDB + MySQL + PostgreSQL + SQLite 挂在一条联邦关系上，8 workers × 200 轮 × 5 操作 = 8,000 次操作。其 2026-09-12 报告（[doc/2026-09-12-压测报告.md](doc/2026-09-12-压测报告.md)）记录：**0 错误、整体 637.7 QPS**，跨 3 源联邦读取 **p50 25 ms / p95 48 ms**（项目开发机、`LOCAL_CORE=1`；该组数字属于那个环境，此处未复现）。
+
+### 性能为何是设计出来的
+
+- **Rust 核心下推。** GQL 解析、权限校验、计算列规划与方言翻译都在 Rust（`rust-store-node`，napi-rs）：关系编译为每个后端一条原生查询（`$lookup` / `JOIN` + `ROW_NUMBER`），聚合编译为 `GROUP BY`/`HAVING`，关系谓词编译为 `EXISTS`/`NOT EXISTS` —— 干活的是数据库，不是 JS。
+- **规划一次、执行一次。** FFI 边界只为准入规划而跨（`store.buildPipeline()` 可在不执行的情况下暴露编译后的 `{ tokens, ast, pipeline, projection }`）；此后宿主层只做驱动 IO。
+- **有界的执行次数。** 父+关系的读取是 1 条查询（根级分页时 2 条 —— 有界两阶段形态），绝不是 N+1；子级 `$sort`/`$limit` 在同一条语句内施加。
+- **读时计算列**的代价是每返回行一次函数调用 —— 不是额外查询；`agg` 形态在同一条查询内把关系汇总上来。
+
+### 局限，如实说
+
+- **SQLite 是同步的。** `better-sqlite3` 会阻塞事件循环 —— 高并发热路径请选 MySQL / PostgreSQL / MongoDB（见[什么时候不该用它](#什么时候不该用它)）。
+- **一台机器、一个后端。** 上述全部数字来自本机、内存 SQLite、热缓存。MySQL / PostgreSQL / MongoDB 的服务端数字：**待核实（无本地服务实测）**；SQL 侧的架构性论断（每次读取一条参数化语句）可自行用 `store.buildPipeline()` 验证。
+- **计算列随结果集大小扩展。** 标量 `fn` 对每个返回行执行一次 —— 若 profile 中显形，请少取行或少取计算列。
+- **驱动层面没有魔法。** 连接池大小、SQL 索引（`schema.indexes` 在 SQL 后端仅作元数据；只有 Mongo 源会在 `init()` 时自动建索引）与查询设计仍归你管。
 
 ## 常见问题
 
