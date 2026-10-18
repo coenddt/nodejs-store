@@ -38,6 +38,85 @@ const TYPES = {
   date: ['BIGINT', 'BIGINT', 'INTEGER'],
 };
 const NON_COLUMN = ['object', 'array'];
+
+/** vector 字段列类型：PG 原生 vector(dim)，MySQL / SQLite 存 JSON 文本（降级） */
+function vectorType(backend, fdef) {
+  const dim = fdef && typeof fdef === 'object' ? fdef.dim : undefined;
+  if (!Number.isInteger(dim) || dim <= 0) {
+    throw new Error(
+      `DDL 生成：vector 字段必须声明正整数 dim，实际 ${JSON.stringify(dim)}`);
+  }
+  if (backend === 'postgres') return `vector(${dim})`;
+  if (backend === 'mysql') return 'JSON';
+  return 'TEXT';
+}
+
+// pgvector 近似索引（hnsw / ivfflat）维度上限；数值源：rust-store/core `capability::PGVECTOR_INDEX_MAX_DIM`。
+// 宿主无法在运行时读取 Rust 常量，故 node / py 各留一份，parity 测试断言两端一致且等于 2000。
+const PGVECTOR_INDEX_MAX_DIM = 2000;
+const VECTOR_METHODS = ['hnsw', 'ivfflat', 'flat'];
+const METRIC_OPS = {
+  cosine: 'vector_cosine_ops',
+  l2: 'vector_l2_ops',
+  ip: 'vector_ip_ops',
+};
+
+/** 向量索引 → CREATE INDEX（PG 原生；MySQL/SQLite 显式反馈不支持；flat 不建索引） */
+function vectorIndexStmt(defn, backend, field, opts) {
+  if (backend !== 'postgres') {
+    _emitFeedback({
+      type: 'ddl_vector_index_unsupported',
+      code: 'vectorIndexUnsupported',
+      layer: 'host',
+      message: `表 ${defn.collection} 的向量索引（字段 ${field}）在 ${backend} 无原生实现，已跳过`,
+      hint: '该后端按应用层精确检索执行；检索结果将标记 degraded=true',
+      backend,
+      schema: defn.name,
+    });
+    return [];
+  }
+  const fdef = (defn.fields || {})[field];
+  const dim = fdef && typeof fdef === 'object' ? fdef.dim : undefined;
+  if (!Number.isInteger(dim) || dim <= 0) {
+    throw new Error(`DDL 生成：向量索引字段 ${field} 缺少正整数 dim`);
+  }
+  const method = opts.method || 'hnsw';
+  if (!VECTOR_METHODS.includes(method)) {
+    throw new Error(`DDL 生成：向量索引 method 仅支持 ${VECTOR_METHODS.join('/')}，实际 ${JSON.stringify(method)}`);
+  }
+  if (method === 'flat') {
+    _emitFeedback({
+      type: 'ddl_vector_index_flat',
+      code: 'vectorIndexFlatNoIndex',
+      layer: 'host',
+      message: `表 ${defn.collection} 的向量索引（字段 ${field}）声明 method=flat，未创建近似索引`,
+      hint: 'flat 表示精确扫描；查询仍可用，native=false',
+      backend, schema: defn.name,
+    });
+    return [];
+  }
+  if (dim > PGVECTOR_INDEX_MAX_DIM) {
+    throw new Error(
+      `DDL 生成：向量索引字段 ${field} 的 dim=${dim} 超过 pgvector 索引上限 ${PGVECTOR_INDEX_MAX_DIM}（改用 method='flat' 走精确扫描）`
+    );
+  }
+  const metric = opts.metric || (fdef && fdef.metric) || 'cosine';
+  const opclass = METRIC_OPS[metric];
+  if (!opclass) {
+    throw new Error(`DDL 生成：向量索引 metric 仅支持 cosine/l2/ip，实际 ${JSON.stringify(metric)}`);
+  }
+  const table = ptable(backend, defn);
+  const col = pname(backend, field);
+  const name = 'idx_' + table + '_' + col + '_vec';
+  const withClause = method === 'hnsw'
+    ? ` WITH (m = ${opts.m || 16}, ef_construction = ${opts.efConstruction || 64})`
+    : ` WITH (lists = ${opts.lists || 100})`;
+  return [
+    `CREATE INDEX ${q(backend, name)} ON ${q(backend, table)} `
+    + `USING ${method} (${q(backend, col)} ${opclass})${withClause}`,
+  ];
+}
+
 // object/array 字段的列类型（JSON 文本列；同 core Backend::json_type_name）
 const JSON_TYPE = ['JSON', 'jsonb', 'TEXT'];
 const ID_TYPE = ['VARCHAR(64)', 'TEXT', 'TEXT'];
@@ -92,6 +171,10 @@ function columns(defn, backend) {
         strategy === 'autoincrement']);
       continue;
     }
+    if (ftype === 'vector') {
+      cols.push([col, vectorType(backend, fdef), false, false]);
+      continue;
+    }
     if (NON_COLUMN.includes(ftype)) {
       // object/array → 单列 JSON 文本（同 core field_column_ref::Json）
       cols.push([col, JSON_TYPE[i], false, false]);
@@ -141,6 +224,14 @@ function indexStmts(defn, backend) {
     if (!idx || typeof idx !== 'object') continue;
     const keys = idx.keys;
     if (!keys || typeof keys !== 'object' || !Object.keys(keys).length) continue;
+    const vecKey = Object.entries(keys).find(([, v]) => v === 'vector');
+    if (vecKey) {
+      if (Object.keys(keys).length !== 1) {
+        throw new Error('DDL 生成：向量索引必须是单字段（keys 仅一个 "字段": "vector"）');
+      }
+      out.push(...vectorIndexStmt(defn, backend, vecKey[0], idx.options || {}));
+      continue;
+    }
     const unique = Boolean(idx.unique || (idx.options && idx.options.unique));
     const physKeys = Object.keys(keys).map((k) => pname(backend, k));
     const cols = Object.entries(keys)
@@ -221,6 +312,7 @@ const WIDEN = {
 function fieldSqlType(backend, fdef) {
   const i = idx(backend);
   const ftype = declaredType(fdef);
+  if (ftype === 'vector') return vectorType(backend, fdef);
   if (NON_COLUMN.includes(ftype)) return JSON_TYPE[i];
   if (!Object.prototype.hasOwnProperty.call(TYPES, ftype)) {
     throw new Error(
@@ -281,7 +373,8 @@ function diffDefs(oldDefn, newDefn) {
     }
     const nfType = declaredType(nf);
     if (!(name in oldFields)) {
-      if (!Object.prototype.hasOwnProperty.call(TYPES, nfType) && !NON_COLUMN.includes(nfType)) {
+      if (!Object.prototype.hasOwnProperty.call(TYPES, nfType) && !NON_COLUMN.includes(nfType)
+          && nfType !== 'vector') {
         errors.push(`新列 "${name}" 类型 ${JSON.stringify(nfType)} 未知`);
         continue;
       }
@@ -293,7 +386,20 @@ function diffDefs(oldDefn, newDefn) {
     }
     const of = oldFields[name];
     const ofType = declaredType(of);
-    if (ofType === nfType) continue; // 恒等：不上报
+    if (ofType === nfType) {
+      if (nfType === 'vector') {
+        const od = of && typeof of === 'object' ? of.dim : undefined;
+        const nd = nf && typeof nf === 'object' ? nf.dim : undefined;
+        const om = (of && typeof of === 'object' && of.metric) || 'cosine';
+        const nm = (nf && typeof nf === 'object' && nf.metric) || 'cosine';
+        if (od !== nd || om !== nm) {
+          errors.push(
+            `字段 "${name}" 的 vector 元数据变更不支持（dim ${JSON.stringify(od)} → ${JSON.stringify(nd)}，`
+            + `metric ${JSON.stringify(om)} → ${JSON.stringify(nm)}）；需显式重建列与向量索引`);
+        }
+      }
+      continue;
+    }
     if (nfType && (WIDEN[ofType] || []).includes(nfType)) {
       changes.push({ op: 'widenColumn', name, from: ofType, to: nfType });
     } else {
@@ -355,9 +461,9 @@ function generateMigration(backend, oldDefn, newDefn) {
       const colName = pname(backend, ch.name); // 物理列名（与 createTable 一致）
       let colSql = `${q(backend, colName)} ${colType}`;
       if (deflt !== undefined && deflt !== null) {
-        if (NON_COLUMN.includes(ftype)) {
+        if (NON_COLUMN.includes(ftype) || ftype === 'vector') {
           throw new Error(
-            `MIGRATION_UNSUPPORTED: 新列 "${ch.name}"（object/array JSON 列）不支持 DEFAULT`
+            `MIGRATION_UNSUPPORTED: 新列 "${ch.name}"（${ftype} 列）不支持 DEFAULT`
             + '（存量行缺失语义由 __present 哨兵表达；default 仅影响新写入）');
         }
         colSql += ` DEFAULT ${sqlLiteral(deflt)}`;
@@ -379,7 +485,7 @@ function generateMigration(backend, oldDefn, newDefn) {
           + `TYPE ${colType} USING ${q(backend, pname(backend, ch.name))}::${colType}`);
       }
     } else if (ch.op === 'addIndex') {
-      stmts.push(...indexStmts({ collection: table, indexes: [ch.index] }, backend));
+      stmts.push(...indexStmts({ collection: table, fields: newDefn.fields, indexes: [ch.index] }, backend));
     } else {
       throw new Error(`MIGRATION_UNSUPPORTED: 未知变更 ${ch.op}`);
     }
