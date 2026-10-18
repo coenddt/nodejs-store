@@ -25,6 +25,9 @@ const DEGRADED_MESSAGES = {
   sqlite: '数据源 sqlite 无原生向量索引（vec0 未启用），本次按应用层精确检索（结果已按 _score 降序）',
   mongodb: '数据源 mongodb 未声明 Atlas Search 索引，本次按应用层精确检索（结果已按 _score 降序）',
   postgres: '数据源 postgres 的 pgvector 近似索引为后过滤，本次降级为精确检索以保证 ACL 与 TopK 正确',
+  // 嵌入式载体（local / memory）无原生近似索引，查询恒为应用层精确检索（06 §4.6 C10）
+  local: '数据源 local 无原生向量索引，本次按应用层精确检索（结果已按 _score 降序）',
+  memory: '数据源 memory 无原生向量索引，本次按应用层精确检索（结果已按 _score 降序）',
 };
 
 /** 默认 Registry 单例（`localEval` 是实例方法；纯函数，可安全复用） */

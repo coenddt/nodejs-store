@@ -169,6 +169,19 @@ async function _execOn(source, cmd) {
     const db = typeof connection.handleFor === 'function'
       ? connection.handleFor(cmd.database ?? null)
       : connection.handle;
+    // 嵌入式载体（local / memory）无原生近似索引：向量查询恒为应用层精确检索，
+    // 须显式声明降级（06 §4.6 C10；native 是静态能力，不因此改变）
+    if (vectorScan.canScan(cmd, datasource.kindOf(connection))) {
+      const spec = cmd.pipeline[0].$vectorSearch;
+      const kind = datasource.kindOf(connection);
+      degraded.vectorDegraded({
+        backend: kind,
+        field: spec.path,
+        metric: spec.metric,
+        message: vectorScan.DEGRADED_MESSAGES[kind],
+        hint: vectorScan.DEGRADED_HINT,
+      });
+    }
     return _toLogical(await execMongo(db, _toMongo(cmd)), cmd);
   }
   if (connection && connection.kind === 'mongo') {

@@ -22,10 +22,11 @@ const schemaMod = require('./schema');
 
 const MONGO = 'mongodb';
 
-/** 保留物理名（I3）：`_id`、`__`/`^__` 前缀内部合成名不翻译 */
+/** 保留物理名（I3）：`_id`、`_score`（向量检索评分列，core 注册期保留）、`__`/`^__` 前缀内部合成名不翻译 */
 function isReserved(name) {
   return typeof name === 'string'
-    && (name === '_id' || name.startsWith('__') || name.startsWith('^__'));
+    && (name === '_id' || name === '_score'
+      || name.startsWith('__') || name.startsWith('^__'));
 }
 
 /** 逻辑名 → Mongo 物理名（camelCase）；保留名原样（单点：core::naming.translateName） */
