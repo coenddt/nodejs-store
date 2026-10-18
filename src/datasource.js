@@ -23,6 +23,7 @@ const { getCore, get: _getSchema } = require('./schema');
 const { emit: _emitFeedback } = require('./feedback');
 const executors = require('./executors');
 const vectorScan = require('./vector-scan');
+const degraded = require('./degraded');
 
 const DEFAULT_SOURCE = 'default';
 
@@ -515,9 +516,18 @@ function route(cmd) {
  * 使上层（crud/*）对 Mongo / SQL 两条路径无感。
  */
 async function execSql(source, connection, cmd) {
-  // 向量检索降级（03 §4.7）：MySQL / SQLite 不支持 `$vectorSearch` → 取候选 + core 精确打分；
-  // PostgreSQL 由方言翻译为 pgvector SQL，不经此处降级
+  // 向量检索降级（03 §4.7 / 05 §4.9）：MySQL / SQLite 不支持 `$vectorSearch` → 取候选 + core 精确打分；
+  // PostgreSQL 无过滤由方言翻译为 pgvector SQL；带过滤时近似索引退化为后过滤（ACL / TopK 不成立），
+  // 同样回退应用层精确扫描 —— 均为运行期降级，不改变静态 native 判定
   if (vectorScan.canScan(cmd, connection.kind)) {
+    const spec = cmd.pipeline[0].$vectorSearch;
+    degraded.vectorDegraded({
+      backend: connection.kind,
+      field: spec.path,
+      metric: spec.metric,
+      message: vectorScan.DEGRADED_MESSAGES[connection.kind],
+      hint: vectorScan.DEGRADED_HINT,
+    });
     return vectorScan.scan(cmd, {
       exec: (candidate) => _execSqlDirect(source, connection, candidate),
     });

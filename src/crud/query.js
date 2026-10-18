@@ -7,6 +7,7 @@
 
 const { getCore, getAsyncFn, getProfile } = require('../schema');
 const { emit: _emitFeedback } = require('../feedback');
+const degraded = require('../degraded');
 const {
   _call, _ctx, _exec, _execOn, resolvePlaceholders, ProfileViolation, _PROFILE_HINT,
 } = require('./exec');
@@ -72,6 +73,7 @@ async function _finalize(plan, items) {
 async function query(gql, params = null, routeOverride = null) {
   _guardRouteOverride(routeOverride);
   const plan = _call(() => getCore().planQuery(gql, params ?? {}, _ctx(), routeOverride));
+  degraded.emitPlan(plan, 'plan_degraded');
   return runWithSelection(plan.links ?? null, async () => _finalize(plan, await _runQueryPlan(plan)));
 }
 
@@ -79,6 +81,7 @@ async function query(gql, params = null, routeOverride = null) {
 async function queryOne(gql, params = null, routeOverride = null) {
   _guardRouteOverride(routeOverride);
   const plan = _call(() => getCore().planQueryOne(gql, params ?? {}, _ctx(), routeOverride));
+  degraded.emitPlan(plan, 'plan_degraded');
   const items = await _finalize(plan, await _runQueryPlan(plan));
   return items.length ? items[0] : null;
 }
@@ -114,10 +117,8 @@ async function _runFederatedUnit(unit) {
 async function queryFederated(gql, params = null) {
   const plan = _call(() => getCore().planFederated(gql, params ?? {}, _ctx()));
 
-  for (const d of plan.degraded || []) {
-    // 降级事件走统一反馈通道（无 sink 时打 stderr，允许拦截，禁止静默失守）
-    _emitFeedback({ ...(d || {}), type: 'federation_degraded' });
-  }
+  // 降级事件走请求容器 + 统一反馈通道（core 事件通常不带 type，兜底 federation_degraded）
+  degraded.emitPlan(plan, 'federation_degraded');
 
   return runWithSelection(plan.links ?? null, async () => {
     const results = await Promise.all((plan.sources || []).map(_runFederatedUnit));
@@ -139,6 +140,7 @@ async function queryWithCount(gql, params = null, routeOverride = null) {
   _guardRouteOverride(routeOverride);
   const plan = _call(() =>
     getCore().planQueryWithCount(gql, params ?? {}, _ctx(), null, routeOverride));
+  degraded.emitPlan(plan, 'plan_degraded');
   const items = await _finalize(plan, await _runQueryPlan(plan));
   const total = await _exec(plan.countCommand);
   return {

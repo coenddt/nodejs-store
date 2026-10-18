@@ -4,8 +4,9 @@
  * 向量检索降级扫描（03 执行文档 §4.7）
  *
  * 把 `$vectorSearch` 从聚合管道剥离 → 先取候选行 → 交 core `localEval` 精确打分。
- * 适用于不支持 `$vectorSearch` 阶段的后端（MySQL / SQLite / 非 Atlas 的自建 Mongo）；
- * PostgreSQL 走原生 SQL，local / memory 由 core 直接求值，均不进入本模块。
+ * 适用于不支持 `$vectorSearch` 阶段的后端（MySQL / SQLite / 非 Atlas 的自建 Mongo），
+ * 以及 PostgreSQL 带 filter（近似索引退化为后过滤）的场景；
+ * PostgreSQL 无过滤走原生 SQL，local / memory 由 core 直接求值，均不进入本模块。
  *
  * 硬约束：
  *  - 候选行必须含向量字段（候选管道只保留 `$match`，不投影 → 全字段天然含 path）；
@@ -14,6 +15,17 @@
  */
 
 const MAX_VECTOR_SCAN_ROWS = 100_000;
+
+/** 向量降级统一 hint（05 §4.9，node/py 逐字一致） */
+const DEGRADED_HINT = '需要原生 TopK 与更低延迟请改用 postgres(pgvector) 或 MongoDB Atlas（索引声明 options.indexName）';
+
+/** 各后端向量降级文案（05 §4.9，逐字） */
+const DEGRADED_MESSAGES = {
+  mysql: '数据源 mysql 无原生向量索引，本次按应用层精确检索（结果已按 _score 降序）',
+  sqlite: '数据源 sqlite 无原生向量索引（vec0 未启用），本次按应用层精确检索（结果已按 _score 降序）',
+  mongodb: '数据源 mongodb 未声明 Atlas Search 索引，本次按应用层精确检索（结果已按 _score 降序）',
+  postgres: '数据源 postgres 的 pgvector 近似索引为后过滤，本次降级为精确检索以保证 ACL 与 TopK 正确',
+};
 
 /** 默认 Registry 单例（`localEval` 是实例方法；纯函数，可安全复用） */
 let _defaultRegistry = null;
@@ -44,11 +56,20 @@ function isVectorCommand(cmd) {
  * 该命令能否在本后端走降级扫描。
  *
  * backend 为连接 kind（mysql / postgres / sqlite）或 `'mongo'`；
- * postgres 由方言翻译为原生 SQL（pgvector），不降级。
+ * postgres 无过滤时由方言翻译为原生 SQL（pgvector TopK），带过滤时近似索引退化为
+ * 后过滤（ACL / TopK 不成立）→ 本后端回退应用层精确扫描（运行期降级，不改静态 native）。
  */
 function canScan(cmd, backend) {
-  if (backend === 'postgres') return false;
-  return isVectorCommand(cmd);
+  if (!isVectorCommand(cmd)) return false;
+  if (backend === 'postgres') return hasFilter(cmd);
+  return true;
+}
+
+/** `$vectorSearch.filter` 是否有实际条件（缺省 / 空对象视为无过滤） */
+function hasFilter(cmd) {
+  const spec = cmd && Array.isArray(cmd.pipeline) ? cmd.pipeline[0].$vectorSearch : null;
+  const f = spec && spec.filter;
+  return !!f && typeof f === 'object' && Object.keys(f).length > 0;
 }
 
 /** `$addFields: { _score: { $meta: 'vectorSearchScore' } }`（core 紧随 `$vectorSearch` 产出） */
@@ -180,7 +201,10 @@ function isUnsupportedStageError(err) {
 
 module.exports = {
   MAX_VECTOR_SCAN_ROWS,
+  DEGRADED_HINT,
+  DEGRADED_MESSAGES,
   canScan,
+  hasFilter,
   isVectorCommand,
   scan,
   stripVectorMeta,

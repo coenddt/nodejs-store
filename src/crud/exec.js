@@ -20,6 +20,7 @@ const { emit: _emitFeedback } = require('../feedback');
 const { get: _getSchema } = require('../schema');
 const { _toMongo, _toLogical } = require('../naming');
 const vectorScan = require('../vector-scan');
+const degraded = require('../degraded');
 
 const _PHASE1_IDS = /^\{\{phase1\.ids\}\}$/;
 const _STEP_PH = /^\{\{step\.(\d+)\._id\}\}$/;
@@ -141,6 +142,14 @@ async function _execMongoVector(db, cmd, session) {
     );
   } catch (e) {
     if (!vectorScan.canScan(cmd, 'mongo') || !vectorScan.isUnsupportedStageError(e)) throw e;
+    const spec = cmd.pipeline[0].$vectorSearch;
+    degraded.vectorDegraded({
+      backend: 'mongodb',
+      field: spec.path,
+      metric: spec.metric,
+      message: vectorScan.DEGRADED_MESSAGES.mongodb,
+      hint: vectorScan.DEGRADED_HINT,
+    });
     return vectorScan.scan(cmd, {
       exec: async (candidate) => _toLogical(
         await execMongo(db, vectorScan.stripVectorMeta(_toMongo(candidate)), session),
