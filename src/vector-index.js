@@ -18,7 +18,7 @@ function similarityOf(metric) {
 }
 
 /** 按 schema 中声明 options.indexName 的向量索引，幂等创建 Atlas Search Index */
-async function ensureVectorIndexes(store, opts = {}) {
+async function ensureVectorIndexes(store, _opts = {}) {
   const created = [];
   const skipped = [];
   for (const name of store.list()) {
