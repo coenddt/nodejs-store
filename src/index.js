@@ -40,6 +40,7 @@ const local = require('./local');
 const metadef = require('./metadef');
 const permission = require('./permission');
 const { text2query } = require('./profile');
+const reindex = require('./reindex');
 const resource = require('./resource');
 const schema = require('./schema');
 const scope = require('./scope');
@@ -355,6 +356,17 @@ class Store {
   /** 幂等创建 schema 中声明 options.indexName 的 Atlas 向量索引 */
   ensureVectorIndexes(opts) {
     return vectorIndex.ensureVectorIndexes(this, opts ?? {});
+  }
+
+  // ── 向量回填（VR-10；见 reindex.js）──
+  /** 向量回填：按 sourceHash 只重算变化项 */
+  async reindexVectors(schemaName, opts) {
+    return reindex.reindexVectors(this, schemaName, opts);
+  }
+
+  /** 注入 trigger 回调 `<Schema>.vectorReindex`，返回 fnRef（须在 assertTriggerFnsCovered 之前调用） */
+  registerVectorReindex(cfg) {
+    return reindex.registerVectorReindex(cfg);
   }
 
   // ── 工作流编排（首批：线性 + when 守卫 + fail-fast；见 workflow.js 与设计文档）──
