@@ -228,3 +228,39 @@ test('identifier safety: 未注册的 collection 直接报错（不拼接用户�
     /未注册|not found|未知|不支持|Schema/i,
   );
 });
+
+// ─── openAcquire 判据（池 checkout vs 单连接直通） ───────────────
+// 回归：mysql2 单连接 PromiseConnection 也有 connect()（已握手时 resolve 内层回调
+// 连接，其 beginTransaction 无回调返回 Query 对象），仅凭 connect 判 pg Pool 会使
+// 单连接事务链在 beginTransaction 炸出 "not a promise"（vector-conformance C11）。
+
+test('openAcquire: mysql2 单连接（有 connect 无 totalCount）直通 driver', async () => {
+  const inner = {
+    beginTransaction() {
+      return { then() { throw new Error('回调 Query 被 await'); } };
+    },
+  };
+  const driver = { connect: async () => inner, query: async () => {} };
+  const { conn, release } = await executors.openAcquire(driver);
+  assert.equal(conn, driver, '单连接形态应直通 driver 本体，不得误判为 pg Pool');
+  await release();
+});
+
+test('openAcquire: pg Pool（connect + totalCount）走 connect() checkout', async () => {
+  const client = { query: async () => {} };
+  let calls = 0;
+  const driver = { connect: async () => { calls += 1; return client; }, totalCount: 0 };
+  const { conn, release } = await executors.openAcquire(driver);
+  assert.equal(calls, 1, 'pg Pool 应 checkout 专用连接');
+  assert.equal(conn, client);
+  await release(); // client 无 release() → no-op
+});
+
+test('openAcquire: mysql2 Pool（getConnection）checkout 并归还', async () => {
+  const conn = { released: false, release() { this.released = true; } };
+  const driver = { getConnection: async () => conn };
+  const got = await executors.openAcquire(driver);
+  assert.equal(got.conn, conn);
+  await got.release();
+  assert.equal(conn.released, true, 'release 应归还池连接');
+});

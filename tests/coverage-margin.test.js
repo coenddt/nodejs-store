@@ -281,6 +281,7 @@ test('executors/postgres: 池 checkout 失败显式上抛（不退回 driver 本
   const client = pgClient();
   const pool = {
     query: client.query.bind(client),
+    totalCount: 0, // openAcquire 的 pg Pool 判据 = connect + totalCount（缺一视为单连接直通）
     async connect () { throw new Error('模拟 checkout 失败'); },
   };
   await assert.rejects(
