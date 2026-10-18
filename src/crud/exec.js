@@ -19,6 +19,7 @@ const { execMongo } = require('../executors/mongo');
 const { emit: _emitFeedback } = require('../feedback');
 const { get: _getSchema } = require('../schema');
 const { _toMongo, _toLogical } = require('../naming');
+const vectorScan = require('../vector-scan');
 
 const _PHASE1_IDS = /^\{\{phase1\.ids\}\}$/;
 const _STEP_PH = /^\{\{step\.(\d+)\._id\}\}$/;
@@ -125,6 +126,30 @@ function _call(fn) {
 
 // ─── 命令执行（唯一 IO 边界） ────────────────────────────────
 
+/**
+ * Mongo 原生执行 + 向量降级（03 §4.7）
+ *
+ * 真实驱动不认 `$vectorSearch`（非 Atlas / 未建向量索引）时，捕获该形态错误后
+ * 取候选行 → core `localEval` 精确打分。`$vectorSearch.metric` 是 core 内部元数据键，
+ * 只在物理命令副本上剥离（local 求值仍需该键）。
+ */
+async function _execMongoVector(db, cmd, session) {
+  try {
+    return _toLogical(
+      await execMongo(db, vectorScan.stripVectorMeta(_toMongo(cmd)), session),
+      cmd,
+    );
+  } catch (e) {
+    if (!vectorScan.canScan(cmd, 'mongo') || !vectorScan.isUnsupportedStageError(e)) throw e;
+    return vectorScan.scan(cmd, {
+      exec: async (candidate) => _toLogical(
+        await execMongo(db, vectorScan.stripVectorMeta(_toMongo(candidate)), session),
+        candidate,
+      ),
+    });
+  }
+}
+
 /** 在指定数据源上执行命令（Mongo 走原生驱动，SQL 走 translate → exec；
  * 事务 / 会话作用域内经 datasource.resolveConnection 落到事务专用连接） */
 async function _execOn(source, cmd) {
@@ -140,12 +165,12 @@ async function _execOn(source, cmd) {
   if (connection && connection.kind === 'mongo') {
     // Mongo 事务视图：db 按命令 database 解析，session 透传给驱动
     const db = datasource.mongoDb(connection.conn, source, cmd.database ?? null);
-    return _toLogical(await execMongo(db, _toMongo(cmd), connection.session), cmd);
+    return _execMongoVector(db, cmd, connection.session);
   }
   const db = datasource.mongoDb(connection, source, cmd.database ?? null);
   if (db) {
     // Mongo 物理名翻译（逻辑 → camelCase）；执行后按 schema 逆表回映射（物理 → 逻辑）
-    return _toLogical(await execMongo(db, _toMongo(cmd)), cmd);
+    return _execMongoVector(db, cmd, undefined);
   }
   return datasource.execSql(source, connection, cmd);
 }

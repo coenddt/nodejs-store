@@ -22,6 +22,7 @@ const { AsyncLocalStorage } = require('node:async_hooks');
 const { getCore, get: _getSchema } = require('./schema');
 const { emit: _emitFeedback } = require('./feedback');
 const executors = require('./executors');
+const vectorScan = require('./vector-scan');
 
 const DEFAULT_SOURCE = 'default';
 
@@ -505,6 +506,18 @@ function route(cmd) {
  * 使上层（crud/*）对 Mongo / SQL 两条路径无感。
  */
 async function execSql(source, connection, cmd) {
+  // 向量检索降级（03 §4.7）：MySQL / SQLite 不支持 `$vectorSearch` → 取候选 + core 精确打分；
+  // PostgreSQL 由方言翻译为 pgvector SQL，不经此处降级
+  if (vectorScan.canScan(cmd, connection.kind)) {
+    return vectorScan.scan(cmd, {
+      exec: (candidate) => _execSqlDirect(source, connection, candidate),
+    });
+  }
+  return _execSqlDirect(source, connection, cmd);
+}
+
+/** `execSql` 的直通路径（不做向量降级） */
+async function _execSqlDirect(source, connection, cmd) {
   const plan = getCore().dialectTranslate(connection.kind, cmd);
   // Host 兜底：core 标记了无法安全下推的组合（如 $lookup 子 $limit 每父 top-N）时，
   // 绝不执行「缺少该段」的 SQL（会静默返回错误结果），改为显式报错，由调用方降级重查。

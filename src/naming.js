@@ -76,11 +76,28 @@ function walk(node, rels, transformRefs) {
         out[k] = trLookup(v, rels);
         continue;
       }
+      if (k === '$vectorSearch' && v && typeof v === 'object') {
+        out[k] = trVectorSearch(v, rels);
+        continue;
+      }
       out[trKey(k, rels)] = walk(v, rels, transformRefs);
     }
     return out;
   }
   return transformRefs ? trRef(node, rels) : node;
+}
+
+/** `$vectorSearch` 阶段：`path` 为字段名（须按数据标识符译），其余键（index/metric 等）逐项走通用翻译 */
+function trVectorSearch(obj, rels) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (k === 'path') {
+      out[k] = typeof v === 'string' ? trKey(v, rels) : v;
+    } else {
+      out[k] = walk(v, rels, false);
+    }
+  }
+  return out;
 }
 
 /** `$lookup` 阶段：`from`=集合名（译）、`as`=关系名（不译）、`localField`/`foreignField`=关系字段（译） */
