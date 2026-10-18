@@ -23,7 +23,9 @@
 
 const ask = require('./ask');
 const cache = require('./cache');
+const capabilitiesProbe = require('./capabilities');
 const crud = require('./crud');
+const degraded = require('./degraded');
 const triggerExec = require('./crud/triggers');
 const datasource = require('./datasource');
 const { Session, NonAtomicWriteError } = require('./datasource');
@@ -331,6 +333,22 @@ class Store {
   /** 当前响应的缓存状态注记（恒为 HIT|MISS|BYPASS 之一） */
   cacheStatus(ctx) {
     return cache.cacheStatus(ctx ?? permission.getContext() ?? null);
+  }
+
+  // ── 向量能力与降级状态（见 capabilities.js / degraded.js）──
+  /** 按 source 探测向量能力（异步：PG 需查 pg_extension） */
+  async capabilities(opts) {
+    return capabilitiesProbe.capabilities(opts);
+  }
+
+  /** 当前请求的降级状态（无请求容器 → degraded:false） */
+  degradedStatus() {
+    return degraded.status();
+  }
+
+  /** 请求级降级作用域：返回 `{ result, status }`（协议皮用于 x-store-degraded） */
+  withDegradedScope(fn) {
+    return degraded.withRequest(fn);
   }
 
   // ── Atlas 向量索引（启动/运维调用；不参与请求路径）──

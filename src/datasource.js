@@ -177,6 +177,15 @@ function isEmbeddedConnection(connection) {
   return isLocalConnection(connection) || isMemoryConnection(connection);
 }
 
+/** 连接的物理后端类别：'mysql'|'postgres'|'sqlite'|'local'|'memory'|'mongo' */
+function kindOf(connection) {
+  if (isSqlConnection(connection)) return connection.kind;
+  if (isLocalConnection(connection)) return LOCAL_KIND;
+  if (isMemoryConnection(connection)) return MEMORY_KIND;
+  // init() 只接受 Mongo 驱动实例 / MongoClient / 上述描述符，余下即 Mongo
+  return 'mongo';
+}
+
 /**
  * 当前生效连接：事务作用域内返回覆盖描述符，否则返回全局映射的连接
  * （`exec.js#_execOn` 经此取连接，使事务内所有命令落到专用连接）
@@ -965,6 +974,7 @@ module.exports = {
   isLocalConnection,
   isMemoryConnection,
   isEmbeddedConnection,
+  kindOf,
   connectionFor,
   resolveConnection,
   runInTransaction,
