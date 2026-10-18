@@ -192,12 +192,14 @@ function stripVectorMeta(cmd) {
 }
 
 /**
- * Mongo 驱动是否因「不认识 `$vectorSearch` 阶段」而报错。
- * 只认该形态（code 40324 或 Unrecognized pipeline stage），其余错误原样上抛。
+ * Mongo 是否因「自建 mongod 执行不了 `$vectorSearch`」而报错。
+ * 只认两种形态，其余错误原样上抛：code 40324（不认识该阶段）与
+ * code 6047401（mongod 7+ 认识该阶段但仅 Atlas 允许执行）——
+ * 两者对「降级到本地精确扫描」语义等价。
  */
 function isUnsupportedStageError(err) {
   if (!err) return false;
-  if (err.code === 40324) return true;
+  if (err.code === 40324 || err.code === 6047401) return true;
   const msg = String(err.message || err);
   return /unrecognized pipeline stage/i.test(msg) && msg.includes('$vectorSearch');
 }
