@@ -45,6 +45,7 @@ const secure = require('./secure');
 const { setFn, assertFnsCovered } = schema;
 const { syncSchema } = require('./sync');
 const workflow = require('./workflow');
+const vectorIndex = require('./vector-index');
 const { createApp } = require('./bootstrap');
 
 class Store {
@@ -330,6 +331,12 @@ class Store {
   /** 当前响应的缓存状态注记（恒为 HIT|MISS|BYPASS 之一） */
   cacheStatus(ctx) {
     return cache.cacheStatus(ctx ?? permission.getContext() ?? null);
+  }
+
+  // ── Atlas 向量索引（启动/运维调用；不参与请求路径）──
+  /** 幂等创建 schema 中声明 options.indexName 的 Atlas 向量索引 */
+  ensureVectorIndexes(opts) {
+    return vectorIndex.ensureVectorIndexes(this, opts ?? {});
   }
 
   // ── 工作流编排（首批：线性 + when 守卫 + fail-fast；见 workflow.js 与设计文档）──
