@@ -103,19 +103,29 @@ test('无 indexName → 两个空数组，且不连库', async () => {
   assert.deepStrictEqual(out, { created: [], skipped: [] });
 });
 
-test('dim 非法 → 显式抛错', async () => {
-  store.register({
-    name: 'VecIdxFive',
-    collection: 'vec_idx_five',
-    fields: { _id: { type: 'string' }, embedding: { type: 'vector' } },
-    indexes: [{ keys: { embedding: 'vector' }, options: { indexName: 'vidx_five' } }],
-  });
-  datasource.setConnections({ default: fakeDb().db });
-
-  await assert.rejects(
-    () => vectorIndex.ensureVectorIndexes(oneStore('VecIdxFive')),
-    /dim\/metric 非法/,
+test('dim 缺失 → 注册期拒绝（A1 schema 校验）', () => {
+  assert.throws(
+    () => store.register({
+      name: 'VecIdxFive',
+      collection: 'vec_idx_five',
+      fields: { _id: { type: 'string' }, embedding: { type: 'vector' } },
+      indexes: [{ keys: { embedding: 'vector' }, options: { indexName: 'vidx_five' } }],
+    }),
+    /缺少必填 dim/,
   );
+});
+
+test('绕过注册期后 dim 非法 → ensureVectorIndexes 显式抛错', async () => {
+  datasource.setConnections({ default: fakeDb().db });
+  const defn = {
+    name: 'VecIdxFiveFake',
+    collection: 'vec_idx_five_fake',
+    fields: { embedding: { type: 'vector' } },
+    indexes: [{ keys: { embedding: 'vector' }, options: { indexName: 'vidx_five_fake' } }],
+  };
+  const view = { list: () => [defn.name], get: () => defn };
+
+  await assert.rejects(() => vectorIndex.ensureVectorIndexes(view), /dim\/metric 非法/);
 });
 
 test('非 Mongo 源声明 indexName → 显式抛错，不静默跳过', async () => {
