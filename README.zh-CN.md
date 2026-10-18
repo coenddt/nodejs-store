@@ -32,6 +32,7 @@
 - [多数据源连接](#多数据源连接)
 - [权限上下文](#权限上下文)
 - [Schema 参考](#schema-参考)
+- [向量检索](#向量检索)
 - [高级 API](#高级-api)
 - [事务边界](#事务边界)
 - [触发器](#触发器)
@@ -528,6 +529,86 @@ Computed columns live at the schema top level, `computes: { <key>: { type, fn | 
 - Reusing one implementation across schemas: write an explicit shared name (e.g. `"fnRef": "common.moneyLabel"`); naming goes from required to optional.
 - Every declared `fnRef` must have an implementation, otherwise the service fails to start with `ERR_FN_MISSING`.
 <!-- SPEC:FNREF:END -->
+
+## 向量检索
+
+向量就是带维度与度量声明的普通字段值：你产出 embedding，存储负责持久化、排序并回传评分。
+库内不内置任何 embedding 模型。
+
+### schema 声明
+
+```js
+{
+  name: 'Artwork',
+  collection: 'artworks',
+  fields: {
+    title: { type: 'string', default: '' },
+    caption: { type: 'string', default: '' },
+    embedding: { type: 'vector', dim: 1024, metric: 'cosine' },  // 'cosine' | 'l2' | 'ip'
+    embeddingHash: { type: 'string', default: '' },               // 可选：回填摘要
+  },
+  indexes: [
+    // 声明原生近似索引意图（pgvector / Atlas Search）
+    { keys: { embedding: 'vector' }, options: { metric: 'cosine', method: 'hnsw' } },
+  ],
+}
+```
+
+- `type: 'vector'` 必须声明整数 `dim` 与 `metric: 'cosine' | 'l2' | 'ip'` 之一；`dim` / `metric`
+  非法在**注册期**即报错，不拖到查询期。
+- 两个上限不可混用：**存储**上限 16000 维；**原生索引**上限更低且分后端——pgvector HNSW /
+  IVFFlat 为 2000 维，MongoDB Atlas `vectorSearch` 为 4096 维。DDL 生成对超限索引显式报错，
+  不静默跳过。
+- 向量索引项只接受单字段：`{ keys: { <字段>: 'vector' }, options: { ... } }`；选项为
+  `metric`、`method`（`hnsw` | `ivfflat` | `flat`）与 Atlas 的 `indexName`。
+- 向量为 `null` 的行（含迁移前存量行）不参与评分。
+
+### 查询算子
+
+```js
+const rows = await store.query(
+  'Artwork($condition:@c){ _id, title, _score }',
+  { c: { embedding: { $near: { $vector: [0.12, -0.03 /* ... */], $limit: 10 } } } },
+);
+```
+
+- `$near` 只接受三个键：`$vector`（必填查询向量）、`$limit`（必填 TopK，正整数）、
+  `$minScore`（可选，`_score` 下限）。其他键一律拒绝。
+- `metric` 由字段声明决定，**不是** `$near` 的参数。三种度量统一为「越大越相似」：
+  `cosine` 为余弦相似度，`ip` 为内积，`l2` 为 `1 / (1 + 欧氏距离)`。
+- 过滤条件写在同一个 `$condition` 内、与 `$near` 同级并列，例如
+  `{ status: 'public', embedding: { $near: { ... } } }`。
+- `_score` 按需投影：必须在投影里显式写出；不含 `$near` 的查询永不返回 `_score` 键。
+- 向量长度与 `dim` 不符、零向量、缺 `$limit` 在**所有后端**都报错。
+
+### 降级语义
+
+`store.capabilities().vector` 为静态能力报告：`{ supported, native, backend, metrics, maxDim }`。
+
+- `native: true` 表示该目标能跑近似索引（pgvector 已安装，或声明了 Atlas Search 向量索引）。
+  `native` 是目标的**静态**属性，不会因为某次查询回退而改变。
+- 没有原生索引时——MySQL、未启用 `vec0` 的 SQLite、未声明 Atlas Search 索引的自建 MongoDB，
+  以及嵌入式 `local` / `memory` 载体——查询仍按**应用层精确检索**执行，同时宿主记录
+  `vector_degraded` 降级事件。降级必须可观测，禁止静默。
+- PostgreSQL 带过滤（`$condition` 内除 `$near` 还有条件）回退为精确扫描：pgvector 近似索引
+  属后过滤，会破坏 ACL 与 TopK 正确性。
+- 三种观测方式：`store.withDegradedScope(fn)` 作用域内读 `store.degradedStatus()`；反馈通道的
+  `vector_degraded` 事件；`store-api` 的 `x-store-degraded` 响应头。事件字段为
+  `type / code / layer / backend / field / metric / message / hint`。
+
+### 迁移步骤
+
+- 存量表不会被隐式改列。须显式加列并重新注册字段：`generateMigration(...)` 产出
+  `ALTER TABLE ... ADD COLUMN embedding vector(1024)`（vector 列不接受 `DEFAULT`；存量行在回填前
+  保持 `null`）。
+- 已存在字段的 `dim` / `metric` 变更不作为迁移支持——须显式重建列与其索引。
+- 回填用 `store.reindexVectors(schema, { field, hashField, sourceFields, embed })`：按 `_id`
+  锚点分页（不用 `skip`），对 `sourceFields` 做 `sha256` 摘要，只对摘要变化的行重新 embed。
+  `force: true` 全量重算；`dryRun: true` 只报告不调 `embed`。向量与摘要同一次 update 写入。
+- 增量场景用 `store.registerVectorReindex(cfg)` 注入 `<Schema>.vectorReindex` 触发器，按需刷新
+  单行。
+- DDL 生成只打印索引语句，存储从不执行它。大表须在业务外执行（PostgreSQL 用
+  `CREATE INDEX CONCURRENTLY`）。
 
 ## 高级 API
 

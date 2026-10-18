@@ -33,6 +33,7 @@
 - [Multi-datasource connections](#multi-datasource-connections)
 - [Permission context](#permission-context)
 - [Schema reference](#schema-reference)
+- [Vector search](#vector-search)
 - [Advanced API](#advanced-api)
 - [Transactions](#transaction-boundary)
 - [Triggers](#triggers)
@@ -531,6 +532,96 @@ Computed columns live at the schema top level, `computes: { <key>: { type, fn | 
 - Reusing one implementation across schemas: write an explicit shared name (e.g. `"fnRef": "common.moneyLabel"`); naming goes from required to optional.
 - Every declared `fnRef` must have an implementation, otherwise the service fails to start with `ERR_FN_MISSING`.
 <!-- SPEC:FNREF:END -->
+
+## Vector search
+
+Vectors are ordinary field values with a declared dimension and metric: you produce the
+embedding, the store persists it, ranks by it and returns the score. No embedding model is
+bundled.
+
+### Schema declaration
+
+```js
+{
+  name: 'Artwork',
+  collection: 'artworks',
+  fields: {
+    title: { type: 'string', default: '' },
+    caption: { type: 'string', default: '' },
+    embedding: { type: 'vector', dim: 1024, metric: 'cosine' },  // 'cosine' | 'l2' | 'ip'
+    embeddingHash: { type: 'string', default: '' },               // optional: reindex digest
+  },
+  indexes: [
+    // Declares intent for a native approximate index (pgvector / Atlas Search).
+    { keys: { embedding: 'vector' }, options: { metric: 'cosine', method: 'hnsw' } },
+  ],
+}
+```
+
+- `type: 'vector'` requires an integer `dim` and one of `metric: 'cosine' | 'l2' | 'ip'`;
+  an invalid `dim` or `metric` fails at registration time, not at query time.
+- Two different ceilings apply. **Storage** accepts up to 16000 dimensions. **Native indexing**
+  is lower and backend-specific: pgvector HNSW / IVFFlat accepts up to 2000, MongoDB Atlas
+  `vectorSearch` up to 4096. DDL generation rejects an index above the backend ceiling instead
+  of silently skipping it.
+- A vector index item is a single field: `{ keys: { <field>: 'vector' }, options: { ... } }`.
+  Options are `metric`, `method` (`hnsw` | `ivfflat` | `flat`) and, for Atlas, `indexName`.
+- Rows whose vector is `null` (including pre-migration rows) are simply not scored.
+
+### Query operator
+
+```js
+const rows = await store.query(
+  'Artwork($condition:@c){ _id, title, _score }',
+  { c: { embedding: { $near: { $vector: [0.12, -0.03 /* ... */], $limit: 10 } } } },
+);
+```
+
+- `$near` takes exactly three keys: `$vector` (required query vector), `$limit` (required
+  TopK, positive integer) and `$minScore` (optional floor on `_score`). Any other key is rejected.
+- `metric` is fixed by the field declaration; it is not a `$near` parameter. All metrics are
+  normalized to "higher is more similar": `cosine` = cosine similarity, `ip` = inner product,
+  `l2` = `1 / (1 + euclidean distance)`.
+- Filters live next to the operator under the same `$condition`, e.g.
+  `{ status: 'public', embedding: { $near: { ... } } }`.
+- `_score` is opt-in: project it explicitly. A query without `$near` never returns a `_score` key.
+- A vector whose length differs from `dim`, an all-zero query vector and a missing `$limit` are
+  errors on every backend.
+
+### Degradation semantics
+
+`store.capabilities().vector` is the static capability report:
+`{ supported, native, backend, metrics, maxDim }`.
+
+- `native: true` means the target can run an approximate index (pgvector installed, or a declared
+  Atlas Search vector index). `native` is a **static** property of the target; it never changes
+  because one query had to fall back.
+- Without a native index — MySQL, SQLite without `vec0`, self-hosted MongoDB without an Atlas
+  Search index, and the embedded `local` / `memory` carriers — the query still runs as an
+  **exact application-side scan**, and the host records a `vector_degraded` degradation event.
+  Degradation is observable, never silent.
+- PostgreSQL with a filter (anything besides `$near` under `$condition`) falls back to an exact
+  scan: a pgvector approximate index is post-filtering and would break ACL / TopK correctness.
+- Read degradation three ways: `store.degradedStatus()` inside `store.withDegradedScope(fn)`,
+  the `vector_degraded` event on the feedback channel, and the `x-store-degraded` response header
+  in `store-api`. Events carry `type / code / layer / backend / field / metric / message / hint`.
+
+### Migration
+
+- Existing tables are never altered implicitly. Add the column explicitly and re-register the
+  field: `generateMigration(...)` emits `ALTER TABLE ... ADD COLUMN embedding vector(1024)`
+  (a `DEFAULT` on a vector column is rejected; existing rows stay `null` until backfilled).
+- Changing `dim` or `metric` of an existing field is not a supported migration — rebuild the
+  column and its index on purpose.
+- Backfill with
+  `store.reindexVectors(schema, { field, hashField, sourceFields, embed })`: it pages by `_id`
+  (anchored, no `skip`), digests `sourceFields` with `sha256`, and only re-embeds rows whose
+  digest changed. `force: true` re-embeds everything; `dryRun: true` reports without calling
+  `embed`. The vector and the digest are written in the same update.
+- For incremental embedding, `store.registerVectorReindex(cfg)` installs the
+  `<Schema>.vectorReindex` trigger so one row can be refreshed on demand.
+- DDL generation only prints the index statement; the store never executes it. On big tables run
+  it out of band (`CREATE INDEX CONCURRENTLY` on PostgreSQL).
 
 ## Advanced API
 
