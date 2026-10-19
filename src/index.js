@@ -38,6 +38,7 @@ const llm = require('./llm');
 const load = require('./load');
 const local = require('./local');
 const metadef = require('./metadef');
+const migrate = require('./migrate');
 const permission = require('./permission');
 const { text2query } = require('./profile');
 const reindex = require('./reindex');
@@ -304,6 +305,11 @@ class Store {
   /** 回滚到历史版本（重新 register 该版本 defn） */
   async rollbackTo(opts) {
     return metadef.rollbackTo(this, opts);
+  }
+
+  /** 迁移编排（A4）：diff → 方言 SQL → 事务执行 → `__schemaMigration` 版本行；白名单外拒绝并给分步建议 */
+  async migrate(opts) {
+    return migrate.migrate(opts);
   }
 
   // ── 定义控制面：workflow 定义（kind=workflow；见 metadef.js）──
@@ -758,6 +764,8 @@ module.exports = {
   // ── meta-store 定义控制面（定义持久化与版本化；对齐 py-store metadef）──
   metadef,
   MetaDefError: metadef.MetaDefError,
+  migrate: migrate.migrate,
+  MigrationUnsupported: migrate.MigrationUnsupported,
   // ── AI 问数（L1）：编排器 + schema 摘要 + LLM 插拔注册表（对齐 py-store ask/llm）──
   ask: ask.ask,
   describeForAi: ask.describeForAi,

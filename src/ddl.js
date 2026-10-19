@@ -493,4 +493,4 @@ function generateMigration(backend, oldDefn, newDefn) {
   return stmts;
 }
 
-module.exports = { generate, diffDefs, generateMigration };
+module.exports = { generate, diffDefs, generateMigration, pname, ptable };

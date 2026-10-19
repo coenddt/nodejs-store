@@ -20,6 +20,8 @@ const { _als } = require('./permission');
 const _SCHEMA_DEF = '__schemaDef';
 const _WORKFLOW_DEF = '__workflowDef';
 const _FEEDBACK = '__feedback';
+// 迁移版本表（C3/A4，消费方 src/migrate.js）：物理迁移版本行
+const _MIGRATION = '__schemaMigration';
 // 读取投影（双端一致；对拍比较用）
 const _DEF_FIELDS = '_id, tenant, env, name, version, defn, status, createdBy';
 
@@ -70,6 +72,33 @@ function _defModel(name, idPrefix) {
 const _SCHEMA_DEF_MODEL = _defModel(_SCHEMA_DEF, 'sdef');
 const _WORKFLOW_DEF_MODEL = _defModel(_WORKFLOW_DEF, 'wdef');
 
+/**
+ * 迁移版本表（C3/A4）：migrate 编排器的幂等闸与审计行。
+ *
+ * 行自然键 `_id` = `(tenant,env,backend,name,version)`（defId 惯例追加 backend 段，
+ * 分隔符同为 \u001f）——同版本并发写必触发唯一键冲突，与 `defId` 同语义在存储层收口。
+ * `hash` = 该版 defn stableStringify 的 SHA-1 hex（幂等闸判定键）。
+ * 不声明 indexes（理由同 `_defModel` 注释）；`write: []` 普通角色禁写（版本审计不可篡改）。
+ */
+const _MIGRATION_MODEL = {
+  name: _MIGRATION,
+  system: true,
+  collection: _MIGRATION,
+  idPrefix: 'mig',
+  write: [],
+  fields: {
+    _id: { type: 'string' },
+    tenant: { type: 'string' },
+    env: { type: 'string' },
+    backend: { type: 'string' },
+    name: { type: 'string' },
+    hash: { type: 'string' },
+    version: { type: 'int' },
+    appliedAt: { type: 'number' },
+    sqls: { type: 'array' },
+  },
+};
+
 // 内建反馈事件表（05）：承载结构化降级/拦截事件（write 空名单——普通角色禁写，事件审计）
 const _FEEDBACK_MODEL = {
   name: _FEEDBACK,
@@ -92,11 +121,12 @@ const _FEEDBACK_MODEL = {
   },
 };
 
-/** 注册内建 `__schemaDef`/`__workflowDef`/`__feedback`（幂等；core 对重复三元组显式报错，故先 has 守卫） */
+/** 注册内建 `__schemaDef`/`__workflowDef`/`__feedback`/`__schemaMigration`（幂等；core 对重复三元组显式报错，故先 has 守卫） */
 function ensureBuiltins() {
   if (!_hasSchema(_SCHEMA_DEF)) _registerSchema(_SCHEMA_DEF_MODEL);
   if (!_hasSchema(_WORKFLOW_DEF)) _registerSchema(_WORKFLOW_DEF_MODEL);
   if (!_hasSchema(_FEEDBACK)) _registerSchema(_FEEDBACK_MODEL);
+  if (!_hasSchema(_MIGRATION)) _registerSchema(_MIGRATION_MODEL);
 }
 
 /** metadef 契约失败（defn.name 缺失 / 版本不存在 / 唯一冲突） */
@@ -302,4 +332,6 @@ module.exports = {
   _SCHEMA_DEF_MODEL,
   _WORKFLOW_DEF_MODEL,
   _FEEDBACK_MODEL,
+  _MIGRATION,
+  _MIGRATION_MODEL,
 };

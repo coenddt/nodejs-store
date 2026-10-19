@@ -104,7 +104,7 @@ Typical concrete scenarios (see [`doc/use-cases/`](doc/use-cases/) for full walk
 
 Being explicit about the boundary saves you time:
 
-- **You want a full ORM with a migration engine.** `nodejs-store` is a *data layer*, not a migration tool. It can **read** a SQL backend's physical structure (`syncSchema` → introspection) but it never writes DDL back. Pair it with your migration tool of choice. There is an optional `generateDdl()` that renders `CREATE TABLE` text from your registered schemas — pure text, it never connects to or writes to the database.
+- **You want a full ORM with a migration engine.** `nodejs-store` is a *data layer*, not a full migration tool. It can **read** a SQL backend's physical structure (`syncSchema` → introspection) but it never invents DDL on its own. It does ship a whitelist migration **orchestrator** — `store.migrate()` diffs two def versions, renders per-dialect SQL and applies it transactionally with a `__schemaMigration` version trail (see "Schema migration (orchestrator)") — and an optional `generateDdl()` that renders `CREATE TABLE` text from your registered schemas (pure text, it never connects to the database by itself). Beyond the whitelist (add table/column/index, type widening), pair it with your migration tool of choice.
 - **You need a type-safe generated client.** Schemas are runtime JSON, not TypeScript types. You get flexibility and cross-language parity (same schema runs in Node and Python), not compile-time type inference.
 - **You only ever use one database and rarely join.** A plain driver (or a single-database ODM/ORM) will be simpler.
 - **You need raw aggregation escape hatches.** `$pipeline` passthrough and `store.aggregate()` were deliberately removed. Use `$condition` / `$group` / `$having` / relations; anything that cannot be safely translated fails **explicitly** rather than silently.
@@ -123,7 +123,7 @@ General positioning, not a benchmark — always verify against each tool's curre
 | Built-in role / field-level RBAC + owner injection | ✅ | ➖ | ➖ (via extensions) | ➖ | ➖ |
 | Read-time computed columns (sync / async / relation-agg) | ✅ | ➖ (getters) | ➖ | ➖ | ➖ |
 | Soft-delete archive table auto-provisioned | ✅ | ➖ | ➖ | ➖ | ➖ |
-| Migration / DDL engine | ➖ (introspection read-only; optional `generateDdl` text) | ➖ | ✅ | ✅ | ✅ |
+| Migration / DDL engine | ➖ (introspection read-only; whitelist `migrate()` orchestrator; optional `generateDdl` text) | ➖ | ✅ | ✅ | ✅ |
 | Static type generation | ➖ (runtime JSON, cross-language parity) | ➖ | ✅ | ⚠️ (decorators + TS) | ✅ |
 | Shared native core across Node & Python | ✅ (Rust `rust-store`) | ➖ | ➖ | ➖ | ➖ |
 
@@ -134,7 +134,7 @@ Positioning only, based on those projects' public documentation at the time of w
 - **vs Mongoose** — Mongoose is MongoDB-only. `nodejs-store` uses a similar MongoDB-style query syntax (`$gt`, `$or`, `$set`, `$inc`) but the same query also runs unchanged against MySQL, SQLite and PostgreSQL.
 - **vs `mongoosql-core`** — the closest in spirit: it also runs Mongoose-style queries on MongoDB, PostgreSQL and MySQL. `nodejs-store` additionally targets SQLite, ships schema-level permissions (role/field whitelists plus `creator` owner-condition injection), read-time computed columns (`fn` / `asyncFn` / relation-`agg`), an auto-provisioned `<Model>Deleted` soft-delete archive, and shares one Rust engine with a Python host so Node.js and Python cannot drift apart.
 - **vs `unsql`** — `unsql` generates SQL from plain JavaScript objects for MySQL, PostgreSQL and SQLite. It does not target MongoDB, and it is a query/CRUD helper rather than a schema-driven data layer with permissions and computed columns.
-- **vs Prisma** — Prisma is a schema DSL plus generated client with a migration engine and compile-time types. `nodejs-store` is a runtime JSON schema with no migration engine (it only *reads* physical structure via introspection, and `generateDdl()` only *renders* `CREATE TABLE` text without touching the database) and no type generation — in exchange for one query dialect spanning a document store and three relational stores.
+- **vs Prisma** — Prisma is a schema DSL plus generated client with a migration engine and compile-time types. `nodejs-store` is a runtime JSON schema with no inline migration engine — introspection only *reads* physical structure, `generateDdl()` only *renders* text, and `migrate()` orchestrates whitelist-only changes (add column/index/table, widening) with a version trail — and no type generation — in exchange for one query dialect spanning a document store and three relational stores.
 - **vs TypeORM / Sequelize / Drizzle** — Sequelize and Drizzle are SQL-only; TypeORM models MongoDB separately from its SQL entities. `nodejs-store` treats MongoDB as the primary dialect and compiles the same GQL to SQL for the other three backends.
 
 Short version: use an ORM when you want **compile-time types and migrations**; use `nodejs-store` when you want **one runtime schema + one query dialect spanning MongoDB and SQL**, with RBAC and computed columns built in.
@@ -399,6 +399,40 @@ sql     = store.generateDdl('postgres', ['Course', 'CourseDeleted']);
 - Every table gets the `__present` sentinel column; `timestamps` models also get `createdAt` / `updatedAt`; the `<collection>_deleted` archive table is generated like any other registered def.
 - Declared `schema.indexes` render as `CREATE [UNIQUE] INDEX idx_<table>_<cols>` (byte-identical across MySQL / PostgreSQL / SQLite). At runtime SQL backends still keep indexes as metadata — the store never executes DDL against the database.
 - MySQL `__present` is `VARCHAR(255)`; a schema whose present-token string would overflow emits a `ddlPresentOverflow` feedback event rather than failing silently.
+
+### Schema migration (orchestrator)
+
+`store.migrate({ backend, source, defs, oldDefs, driver, tenant, env })` orchestrates the whitelist
+migration physically: diff two def versions → per-dialect SQL (`generateMigration`) → execute in one
+transaction per table → record a version row in the built-in `__schemaMigration` table.
+
+```js
+const r = await store.migrate({
+  backend: 'sqlite', source: 'default',
+  defs: { Note: noteV2 },        // {name: defn}, same shape as persistDef
+  oldDefs: null,                 // null → introspect (needs `driver`: the native driver instance,
+                                 //        same convention as syncSchema — the connection view does
+                                 //        not expose it); or pass oldDefs explicitly to skip it
+  driver: db,
+});
+// r = { applied: [{name, from, to, version}], skipped: [{name, reason}] }
+```
+
+- **Idempotent** — the latest `__schemaMigration` row for the same `(tenant, env, backend, name)`
+  is hash-compared (SHA-1 of the stable-serialized defn) *before* diffing; an identical rerun is
+  reported as `skipped: [{name, reason: 'unchanged'}]` and touches nothing.
+- **Whitelist-only** — add table / add column / add index / type widening. Anything else throws
+  `MigrationUnsupported` (a `MetaDefError` subclass) whose message carries a fixed two-step recipe:
+  *"白名单外变更请分两版走：先加新列并回填，确认切换后再于下一版删除旧列"* — no auto-execution, no auto-rollback.
+- **Atomic per table** — the SQL statements and the version row commit or roll back together; a
+  mid-way failure leaves no orphan version row. A multi-table batch is *not* one cross-table
+  transaction — reconcile by `applied` / `skipped` and re-run.
+- **Diff runs in the physical namespace** — introspected keys are physical (`view_count`, snake_case
+  on SQL backends) and physical names are not reversible, so the target defn is translated through
+  the same single-point physical-name function before diffing; introspection-inferred granularity
+  (e.g. SQLite `INTEGER` → `number`) is aligned so a re-run is never mis-read as a change. Type
+  widening (`int→long` etc.) produces DDL on MySQL/PostgreSQL; on SQLite numeric columns have no
+  physical difference, so it reports unchanged.
 
 ## Multi-datasource connections
 
