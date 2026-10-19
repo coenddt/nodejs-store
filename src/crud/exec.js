@@ -364,7 +364,7 @@ async function runAtomicCommands(source, plan) {
   }
   const commands = plan.commands || [];
   if (commands.length === 0) {
-    throw new Error("atomic_commands plan 缺少 commands（禁静默空执行）");
+    throw new Error('atomic_commands plan 缺少 commands（禁静默空执行）');
   }
 
   async function _do() {

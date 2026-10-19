@@ -71,9 +71,9 @@ function _stripBuiltinFields(oldDefn, newDefn) {
  *  同 `introspect/<backend>.js` 既有惯例——introspect 需原生驱动实例，连接视图不暴露） */
 const _PROBE_SQL = {
   sqlite: `SELECT name FROM sqlite_master WHERE type = 'table' AND name = '${_MIGRATION}'`,
-  mysql: `SELECT table_name AS name FROM information_schema.tables`
+  mysql: 'SELECT table_name AS name FROM information_schema.tables'
     + ` WHERE table_schema = DATABASE() AND table_name = '${_MIGRATION}'`,
-  postgres: `SELECT table_name AS name FROM information_schema.tables`
+  postgres: 'SELECT table_name AS name FROM information_schema.tables'
     + ` WHERE table_name = '${_MIGRATION}' AND table_schema = current_schema()`,
 };
 
@@ -137,7 +137,7 @@ function _alignTypes(backend, oldDefn, physNew) {
  * @returns {Promise<{applied: Array<{name, from, to, version}>, skipped: Array<{name, reason}>}>}
  */
 async function migrate({ backend, source, defs, oldDefs = null, driver = null,
-                         tenant = null, env = null } = {}) {
+  tenant = null, env = null } = {}) {
   if (!backend || !source || !defs || typeof defs !== 'object' || Array.isArray(defs)) {
     throw new MetaDefError('migrate: backend/source/defs 必填（defs 为 {name: defn} 对象）');
   }
