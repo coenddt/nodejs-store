@@ -90,9 +90,45 @@ let _cfg = {
   sign: null,
 };
 let _pool = new Map();
+// 命名池注册表（C2）：池名 → Map(kind → provider)。默认池恒名 "default"；
+// _pool 保留为默认池别名（兼容既有引用，禁删/禁改名）
+let _pools = new Map();
 
-/** 配置资源能力；providers 为规格数组 `[{kind, options, priority?}]`；fields 为字段映射 */
+function _buildPool(sub, { strict }) {
+  if (typeof sub !== 'object' || sub === null || Array.isArray(sub)) {
+    throw new Error('configureResource: pools.<名> 须为对象');
+  }
+  if (strict) {
+    // 命名池子形状仅接受 providers 键——schema/fields/store/url/sign 是全局配置，
+    // 池级出现即抛错（禁静默丢弃让用户误以为已按池生效）
+    for (const k of Object.keys(sub)) {
+      if (k !== 'providers') {
+        throw new Error(`configureResource: pools.<名>.${k} 不被接受（${k} 为全局配置不得按池分化；池级仅接受 providers）`);
+      }
+    }
+  }
+  const pool = new Map();
+  (sub.providers || []).forEach((spec, i) => {
+    const p = providers.createProvider(spec.kind, spec.options || {});
+    p.priority = Number.isInteger(spec.priority) ? spec.priority : i;
+    pool.set(spec.kind, p);
+  });
+  return pool;
+}
+
+/**
+ * 配置资源能力。cfg 两种形状（互斥——同 cfg 同时出现 `providers` 与 `pools` 键抛错，禁静默合并）：
+ *  ① 旧形状 `{providers, schema/fields/store/url/sign}` → 等价默认池 "default"（行为与 4.7.x 完全一致）；
+ *  ② 新形状 `{pools: {"<池名>": {providers: [...]}, ...}, schema/...}` → 逐池独立构建
+ *     （同 kind 双凭据 sys/biz 共存互不覆盖）；"default" 为保留池名，新形状中显式使用合法，但与旧形状互斥。
+ *
+ * 返回 `{"<池名>": <pool Map 拷贝>, ...}` 结构视图；模块级 _pool 仍指向默认池
+ * （兼容既有引用；纯命名池未配 "default" 时为空 Map），`poolNames()` 枚举全池。
+ */
 function configure(cfg = {}) {
+  if (cfg.providers && cfg.pools) {
+    throw new Error('configureResource: providers 与 pools 互斥（同一 cfg 只允许一种形状），禁静默合并');
+  }
   _cfg = {
     schema: { ...DEFAULT_SCHEMA, ...(cfg.schema || {}) },
     fields: _parseFields(cfg.fields || {}),
@@ -101,13 +137,33 @@ function configure(cfg = {}) {
     url: cfg.url || {},
     sign: typeof cfg.sign === 'function' ? cfg.sign : null,
   };
-  _pool = new Map();
-  _cfg.providers.forEach((spec, i) => {
-    const p = providers.createProvider(spec.kind, spec.options || {});
-    p.priority = Number.isInteger(spec.priority) ? spec.priority : i;
-    _pool.set(spec.kind, p);
-  });
-  return _pool;
+  _pools = new Map();
+  if (cfg.pools != null) {
+    if (typeof cfg.pools !== 'object' || Array.isArray(cfg.pools) || !Object.keys(cfg.pools).length) {
+      throw new Error('configureResource: pools 须为非空对象');
+    }
+    for (const [name, sub] of Object.entries(cfg.pools)) {
+      _pools.set(name, _buildPool(sub, { strict: true }));
+    }
+  } else {
+    _pools.set('default', _buildPool(cfg, { strict: false }));
+  }
+  _pool = _pools.get('default') || new Map();
+  return Object.fromEntries([..._pools.entries()].map(([k, v]) => [k, new Map(v)]));
+}
+
+/** 已配置池名列表（旧形状配置 → 恒 ['default']；只读快照） */
+function poolNames() {
+  return Array.from(_pools.keys());
+}
+
+/** 取池：null = 默认池；未知池名抛错（禁静默回落默认池） */
+function _requirePool(name) {
+  const key = name || 'default';
+  if (!_pools.has(key)) {
+    throw new Error(`未知资源池: ${key}（已配置: ${Array.from(_pools.keys()).join(', ')}）`);
+  }
+  return _pools.get(key);
 }
 
 /** 当前生效字段映射（深拷贝；只读快照） */
@@ -163,18 +219,19 @@ const _META_GQL = (schema) => {
 };
 
 /** 上传：内容寻址去重 + fan-out 全部 provider + 落元数据 */
-async function put({ bytes, fileName, mime, kind, bind } = {}) {
+async function put({ bytes, fileName, mime, kind, bind, pool } = {}) {
   if (bytes == null) throw new Error('resource.put 需要 bytes');
   const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
   const crud = _crud();
   const F = _cfg.fields;
+  const poolSel = _requirePool(pool);
   const sha1 = _sha1(buf);
   const resourceId = sha1;
   const key = native.resourceContentPath(sha1);
 
   const locations = [];     // 返回用（canonical 键，API 契约不变）
   const locationRows = [];  // 落库用（按映射列名）
-  for (const [backend, p] of _pool) {
+  for (const [backend, p] of poolSel) {
     try {
       await p.put(key, buf, { mime });
       locations.push({ resourceId, backend, key, status: 'ok', priority: p.priority });
@@ -225,8 +282,9 @@ async function put({ bytes, fileName, mime, kind, bind } = {}) {
 async function open(resourceId, opts = {}) {
   const crud = _crud();
   const F = _cfg.fields;
+  const poolSel = _requirePool(opts.pool);
   const rows = await crud.query(_LOC_GQL(_cfg.schema.location), { c0: { [F.location.resourceId]: resourceId } });
-  const order = Array.isArray(opts.order) && opts.order.length ? opts.order : Array.from(_pool.keys());
+  const order = Array.isArray(opts.order) && opts.order.length ? opts.order : Array.from(poolSel.keys());
   const rank = (b) => { const i = order.indexOf(b); return i < 0 ? Number.MAX_SAFE_INTEGER : i; };
   const backendOf = (r) => r[F.location.backend];
   const prioOf = (r) => (F.location.priority ? (r[F.location.priority] ?? 0) : 0);
@@ -236,7 +294,7 @@ async function open(resourceId, opts = {}) {
   for (const loc of sorted) {
     const backend = backendOf(loc);
     if (F.location.status && loc[F.location.status] === 'failed') continue;
-    const p = _pool.get(backend);
+    const p = poolSel.get(backend);
     if (!p) {
       _emitFeedback({
         type: 'resource_location_provider_missing', code: 'resourceLocationProviderMissing',
@@ -284,14 +342,15 @@ async function open(resourceId, opts = {}) {
 }
 
 /** 删：逐副本清字节 + 删 location 行 + 删 Resource 行 */
-async function remove(resourceId) {
+async function remove(resourceId, opts = {}) {
   const crud = _crud();
   const F = _cfg.fields;
+  const poolSel = _requirePool(opts.pool);
   const rows = await crud.query(_LOC_GQL(_cfg.schema.location), { c0: { [F.location.resourceId]: resourceId } });
   const removed = [];
   for (const loc of rows) {
     const backend = loc[F.location.backend];
-    const p = _pool.get(backend);
+    const p = poolSel.get(backend);
     if (!p) continue;
     try {
       await p.remove(loc[F.location.key]);
@@ -312,6 +371,7 @@ async function remove(resourceId) {
 
 /** URL：核心纯拼接 + 可选签名（宿主注入时钟/密钥） */
 async function url(reference, opts = {}) {
+  _requirePool(opts.pool); // 池存在性 fail-fast；URL 模板/签名为全局配置（跨池共享），行为不变
   const cfg = { ..._cfg.url };
   if (opts.vars) cfg.vars = { ...(cfg.vars || {}), ...opts.vars };
   if (_cfg.sign) {
@@ -323,5 +383,7 @@ async function url(reference, opts = {}) {
 
 module.exports = {
   configure, registerProvider, providers: providers_, put, open, remove, url,
-  DEFAULT_SCHEMA, DEFAULT_FIELDS, fields,
+  DEFAULT_SCHEMA, DEFAULT_FIELDS, fields, poolNames,
+  // 公开工厂（providers/index.js 纯工厂的转发导出，签名与返回形状为稳定公开 API，README 承诺）
+  createProvider: providers.createProvider,
 };
