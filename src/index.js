@@ -158,6 +158,29 @@ class Store {
     return crud.upsert(schemaName, condition, data, options, routeOverride);
   }
 
+  // ── 并发原语（C1：仅 SQL 源；Mongo 显式拒绝；时间戳/身份字段由调用方写入） ──
+  /**
+   * 条件领取 N 行并原子置标；返回领到的行（含领取后最新值）
+   *
+   * MySQL/PG 走 `FOR UPDATE SKIP LOCKED` 两步同事务；SQLite 走单条
+   * `UPDATE … RETURNING`；仅 SQL 源（Mongo 显式拒绝）。
+   */
+  async claim(schemaName, filter, update,
+    { limit = 1, sort = null, routeOverride = null } = {}) {
+    return crud.claim(schemaName, filter, update,
+      { limit, sort, routeOverride });
+  }
+
+  /** 条件更新并返回 `{ matched, modified }`（matched = WHERE 命中行数，三后端一致） */
+  async compareAndSet(schemaName, filter, update, { routeOverride = null } = {}) {
+    return crud.compareAndSet(schemaName, filter, update, { routeOverride });
+  }
+
+  /** 租约续期：compareAndSet 组合门面（归属条件由 filter 携带，时间戳由调用方写入） */
+  async renewLease(schemaName, filter, leaseFields, { routeOverride = null } = {}) {
+    return crud.renewLease(schemaName, filter, leaseFields, { routeOverride });
+  }
+
   // ── 结构同步（SQL 数据源：introspect → schemaFromRows → mergeSchema → register） ──
   async syncSchema(opts) {
     return syncSchema(opts);

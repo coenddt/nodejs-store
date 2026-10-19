@@ -20,6 +20,7 @@
  */
 
 const { setConnections, setDb, _nowFor, _ctx, _call, ProfileViolation, _exec, _substitute, resolvePlaceholders } = require('./exec');
+const { claim, compareAndSet, renewLease } = require('./claim');
 const { _generateId, _truthy, _newIdPool } = require('./id');
 const { query, queryOne, queryWithCount, queryFederated } = require('./query');
 const { insert, insertMany, update, updateMany, remove, exists, count } = require('./write');
@@ -41,6 +42,9 @@ module.exports = {
   count,
   mutation,
   upsert,
+  claim,
+  compareAndSet,
+  renewLease,
   ProfileViolation,
   // ── Host 契约件（供跨语言同构契约测试与高级用法；下划线表示内部语义） ──
   _substitute,

@@ -347,6 +347,29 @@ await store.transaction('default', transfer);
 - When `isWrite` is omitted it is inferred from the SQL's first word (SELECT / WITH / EXPLAIN / SHOW / PRAGMA / TABLE count as reads, everything else as a write — defaulting to write is the safe direction); passing it explicitly overrides the inference. Returns `{ rows, affectedRows }`: rows for reads, the affected-row count for writes.
 - `store.executeNative(source, collection, pipeline = [], options = null)` runs a native aggregation pipeline on a Mongo source (the Mongo counterpart of the SQL-side `executeRaw` escape hatch): `pipeline` is a native aggregation pipeline, `options` uses driver-native keys (`allowDiskUse` / `batchSize` / `hint` / `maxTimeMS`..., no host-side whitelist). Inside a transaction / session the session is injected automatically (owned by the transaction; `options.session` cannot override it); resolution always follows the read path, so `$merge` / `$out` write stages require you to open a transaction yourself. Mongo sources only — a SQL source throws `NativeCommandError` pointing to `executeRaw`; the MongoClient form requires a schema-declared database. Returns `{ rows }`.
 
+### Concurrency primitives
+
+Declarative task-claiming and compare-and-swap on top of the same plan → Mongo-command pipeline — the patterns that previously required a raw-SQL escape hatch (`FOR UPDATE SKIP LOCKED` via `executeRaw`) now have first-class methods, so outbox dispatching and leader election no longer need bare SQL:
+
+```js
+const got = await store.claim('Job', { status: 'pending', runAt: { $lte: now } },
+  { claimedBy: 'worker-1', status: 'claimed', leaseUntil: now + 30_000 },
+  { limit: 10, sort: [['runAt', 1]] });   // returns the claimed rows (their latest values)
+
+const { matched, modified } = await store.compareAndSet('Leader',
+  { _id: 'leader-1', term: 7 },           // current-state guard: the CAS condition
+  { term: 8, holder: 'node-a' });         // the write to apply when it matches
+
+await store.renewLease('Leader',
+  { _id: 'leader-1', holder: 'node-a' },  // ownership condition: only the holder renews
+  { leaseUntil: now + 30_000 });
+```
+
+- `store.claim(schemaName, filter, update, { limit = 1, sort = null, routeOverride } = {})` atomically claims up to `limit` rows matching `filter` and applies `update` to exactly those rows in one transaction (`atomic_commands`: every command lands on the same connection, in order). Returns the claimed rows. PostgreSQL uses `SELECT … FOR UPDATE SKIP LOCKED` so concurrent claimers skip locked rows instead of blocking; SQLite compiles the same plan into a single `UPDATE … RETURNING`; **MySQL has no `SKIP LOCKED`-equivalent in one statement for this plan, so the core compiles it as two steps on one connection** (`SELECT _id … FOR UPDATE` → `UPDATE _id IN (…)`), still atomic within the transaction but contenders queue on the lock rather than skipping.
+- `store.compareAndSet(schemaName, filter, update, { routeOverride } = {})` applies `update` only when `filter` still matches the current state; it returns `{ matched, modified }` (both counts). **MySQL matched semantics**: the core pre-reads the matching rows with a locking `SELECT` and drives the `UPDATE` by the returned primary keys, so `matched` is the number of pre-read rows — not MySQL's default "rows changed" count. `renewLease` is `compareAndSet` by another name: the lease-ownership condition (`holder` / `claimedBy`) is part of `filter`, supplied by the caller.
+- Lease bookkeeping fields (`claimedBy` / `leaseUntil` / …) are **caller-owned schema fields**, not built-ins: declare them on the schema, and expiry/cleanup is a plain query on your side.
+- SQL sources only. A Mongo source throws with code `concurrencyPrimitivesSqlOnly` — Mongo has no `SKIP LOCKED`-style claim primitive, and faking one with `findOneAndUpdate` loops would not be atomic under concurrency (explicit refusal, no silent degradation).
+
 ### Session (Unit of Work)
 
 ```js

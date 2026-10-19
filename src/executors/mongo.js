@@ -157,6 +157,16 @@ async function execMongo(db, cmd, session) {
     case 'deleteMany':
       _normFilter(cmd);
       return coll.deleteMany(cmd.filter, _opts(session));
+    case 'claim':
+    case 'compareAndSet': {
+      // 并发原语（C1）仅 SQL 三后端有方言路径：Mongo 无行锁语义等价物，
+      // 禁止静默走通用路径或伪装成功 —— 显式报错并指引改用 SQL 源。
+      // 延迟 require 规避 mongo → datasource → executors → mongo 的循环加载。
+      const { PushdownUnsupportedError } = require('../datasource');
+      throw new PushdownUnsupportedError(
+        cmd.source || '', cmd.kind, ['concurrencyPrimitivesSqlOnly'],
+        ['claim/compareAndSet 仅 SQL 源支持（MongoDB 无行锁等价物）；请使用 SQL 源']);
+    }
     default:
       throw new Error(`未支持的命令: ${cmd.kind}`);
   }
