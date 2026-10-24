@@ -1602,6 +1602,12 @@ not collide — the archive write is upsert-by-`_id`.
 The recycle bin is one GQL query over a real schema. And `remove` with an empty condition is
 rejected outright, so nobody deletes a whole table by accident.
 
+**Opting out.** A schema that must not keep an archive sets `archive: false` at registration — the
+`<Model>Deleted` archive def is then never derived (DDL / migrations skip it too), and `remove()`
+deletes without archiving (`archivedCount: 0`, return shape unchanged). For one-shot control pass
+`remove(cond, null, { archive: false })` to skip the archive for that call only; later default
+calls archive as usual.
+
 ### 17. A minimal web service: identity set once per request
 
 **Scenario.** You want a small REST-ish service where permissions are enforced at the data layer —

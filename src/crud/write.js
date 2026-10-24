@@ -161,8 +161,14 @@ async function updateMany(schemaName, condition, data, routeOverride = null) {
  * 归档命令带 `upsertById`（幂等），重试不再因 _id 冲突整批失败；单一 SQL 源时
  * 归档+删除整体事务化（Mongo / 跨源按顺序执行，非原子边界见 README「事务边界」）。
  * remove 触发链（A5：未声明触发器时无此路径，行为不变）：before = 归档 findCommand
- * 首条（被删文档代表值、全字段）；未删到（docs 空）不触发，与 update 0 行命中语义一致 */
-async function remove(schemaName, condition, routeOverride = null) {
+ * 首条（被删文档代表值、全字段）；未删到（docs 空）不触发，与 update 0 行命中语义一致。
+ * options.archive === false（漉金Core 接入扩展 02）：本次调用跳过归档副作用（删除照常，
+ * 返回结构不变，archivedCount=0）；schema.archive:false 时 core 注册期已不派生归档
+ * 模型，planRemove 无 findCommand，天然无归档。 */
+async function remove(schemaName, condition, routeOverride = null, options = null) {
+  // 归档判定（漉金Core 接入扩展 02）：调用级 options.archive 显式 false → 跳过归档段；
+  // schema 级裁决在 core 注册期（archive:false 不派生归档模型 → planRemove 无 findCommand）
+  const doArchive = !(options && typeof options === 'object' && options.archive === false);
   const out = await _planWithProbe((found, doc) => _call(() =>
     getCore().planRemove(schemaName, condition ?? null, _ctx(), found, doc, routeOverride)));
 
@@ -176,7 +182,7 @@ async function remove(schemaName, condition, routeOverride = null) {
       const preRows = await _exec(pre);
       ids = (preRows || []).filter((d) => d && '_id' in d).map((d) => d._id);
     }
-    if (out.findCommand) {
+    if (doArchive && out.findCommand) {
       docs = await (ids !== null ? fillPreIds(out.findCommand, ids) : _exec(out.findCommand));
       if (docs.length) {
         const arch = _call(() => getCore().planArchiveDocs(schemaName, docs, _nowFor(schemaName), routeOverride));

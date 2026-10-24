@@ -451,9 +451,12 @@ function generateMigration(backend, oldDefn, newDefn) {
     if (ch.op === 'addTable') {
       stmts.push(createTable(newDefn, backend));
       stmts.push(...indexStmts(newDefn, backend));
-      const arch = archiveDefnOf(newDefn);
-      stmts.push(createTable(arch, backend));
-      stmts.push(...indexStmts(arch, backend));
+      // archive:false（漉金Core 接入扩展 02）→ core 不派生归档模型，迁移侧同步跳过
+      if (newDefn.archive !== false) {
+        const arch = archiveDefnOf(newDefn);
+        stmts.push(createTable(arch, backend));
+        stmts.push(...indexStmts(arch, backend));
+      }
     } else if (ch.op === 'addColumn') {
       const ftype = declaredType(ch.field);
       const colType = fieldSqlType(backend, ch.field);
@@ -469,7 +472,11 @@ function generateMigration(backend, oldDefn, newDefn) {
         colSql += ` DEFAULT ${sqlLiteral(deflt)}`;
       }
       stmts.push(`ALTER TABLE ${q(backend, table)} ADD COLUMN ${colSql}`);
-      stmts.push(`ALTER TABLE ${q(backend, `${table}_deleted`)} ADD COLUMN ${colSql}`);
+      // 归档表跟随：不同步则归档 insert（显式拷贝全列）因缺列报错；
+      // archive:false（漉金Core 接入扩展 02）无归档表，跳过
+      if (newDefn.archive !== false) {
+        stmts.push(`ALTER TABLE ${q(backend, `${table}_deleted`)} ADD COLUMN ${colSql}`);
+      }
     } else if (ch.op === 'widenColumn') {
       const colType = fieldSqlType(backend, newDefn.fields[ch.name]);
       if (backend === 'sqlite') {

@@ -138,8 +138,8 @@ class Store {
     return crud.updateMany(schemaName, condition, data, routeOverride);
   }
 
-  async remove(schemaName, condition, routeOverride) {
-    return crud.remove(schemaName, condition, routeOverride);
+  async remove(schemaName, condition, routeOverride, options) {
+    return crud.remove(schemaName, condition, routeOverride, options);
   }
 
   async exists(schemaName, condition, routeOverride) {

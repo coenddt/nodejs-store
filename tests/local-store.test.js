@@ -337,6 +337,59 @@ test('local/exec: store 门面端到端（insert/query 关系/count/update/remov
   }
 });
 
+// ─── 漉金Core接入扩展 02：archive 归档开关（schema 级 / 调用级） ───
+
+test('local/exec: schema archive:false → remove 不归档且不建归档集合', async () => {
+  _sc.register({
+    name: 'ElKeep', collection: 'el_keeps', idPrefix: 'ek_', timestamps: false,
+    archive: false,
+    fields: { title: { type: 'string' } }, relations: {},
+  });
+
+  const dir = tmpDir('arch-off');
+  try {
+    await init(connect({ dir }));
+
+    const p = await store.insert('ElKeep', { title: 'K1' });
+    const r = await store.remove('ElKeep', { _id: p._id });
+    assert.equal(r.deletedCount, 1);
+    assert.equal(r.archivedCount, 0);
+    assert.equal(readSnapshot(dir).elKeeps.length, 0);
+    assert.ok(!('elKeepsDeleted' in readSnapshot(dir)), 'archive:false 不应出现归档集合');
+  } finally {
+    datasource.setConnections({});
+  }
+});
+
+test('local/exec: options {archive:false} → 仅本次跳过，后续默认调用照常归档', async () => {
+  _sc.register({
+    name: 'ElOnce', collection: 'el_onces', idPrefix: 'eo_', timestamps: false,
+    fields: { title: { type: 'string' } }, relations: {},
+  });
+
+  const dir = tmpDir('arch-opt');
+  try {
+    await init(connect({ dir }));
+
+    const a = await store.insert('ElOnce', { title: 'A' });
+    const b = await store.insert('ElOnce', { title: 'B' });
+
+    // 本次调用级跳过：删除照常、归档集合不出现
+    const r1 = await store.remove('ElOnce', { _id: a._id }, null, { archive: false });
+    assert.equal(r1.deletedCount, 1);
+    assert.equal(r1.archivedCount, 0);
+    assert.ok(!('elOncesDeleted' in readSnapshot(dir)), 'options.archive:false 本次不应归档');
+
+    // 后续默认调用照常归档（注册态未被污染 → 「单次」语义）
+    const r2 = await store.remove('ElOnce', { _id: b._id });
+    assert.equal(r2.deletedCount, 1);
+    assert.equal(r2.archivedCount, 1);
+    assert.equal(readSnapshot(dir).elOncesDeleted.length, 1);
+  } finally {
+    datasource.setConnections({});
+  }
+});
+
 // ─── 步骤 7：索引声明告警 + 模块导出 ───────────────────────
 
 test('local/index.js: 声明 indexes → localIndexesIgnored（禁静默）；模块导出 local', async () => {

@@ -163,7 +163,9 @@ function _mirror(defn) {
   // —— 只补 Host 镜像，**不再调用 core.register**：`<Name>Deleted` 已由 core 在
   // register 内自动派生并注册（registry.rs），二次注册会让同名条目再进 core.order，
   // 使 list()/generate_ddl() 出现重复表（对齐 py `schema.register` 的既有处置）。
-  if (!defn._isArchive && !defn.name.endsWith('Deleted')) {
+  // archive:false（漉金Core 接入扩展 02）→ 归档模型在 core 注册期即不派生，
+  // Host 镜像同步跳过（与 core 模型表保持一致，禁出现「core 无归档模型而 Host 有镜像」的中间态）
+  if (!defn._isArchive && !defn.name.endsWith('Deleted') && defn.archive !== false) {
     _schemas[`${defn.name}Deleted`] = {
       name: `${defn.name}Deleted`,
       collection: `${defn.collection || defn.name}_deleted`,
