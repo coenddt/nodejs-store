@@ -134,6 +134,33 @@ test('非法 timestamps 注册即报错（core 校验，行为收紧）', () => 
   );
 });
 
+// ─────────────────────────────────────────────────────────────
+// 扩展守卫：ownerKey 归属键（漉金Core 接入扩展 01）
+// ─────────────────────────────────────────────────────────────
+
+test('ownerKey 自定义键回显镜像；缺省 undefined（零破坏）', () => {
+  _sc.register({
+    name: 'OwnDoc', collection: 'own_docs', ownerKey: '_id',
+    fields: { title: 'string' }, relations: {},
+  });
+  assert.equal(_sc.get('OwnDoc').ownerKey, '_id');
+  _sc.register({
+    name: 'DefaultOwn', collection: 'default_own',
+    fields: { title: 'string' }, relations: {},
+  });
+  assert.equal(_sc.get('DefaultOwn').ownerKey, undefined);
+});
+
+test('非法 ownerKey 注册即报错（core 校验透传）', () => {
+  assert.throws(
+    () => _sc.register({
+      name: 'BadOwn', collection: 'bad_own', ownerKey: '',
+      fields: {}, relations: {},
+    }),
+    /ownerKey/,
+  );
+});
+
 test('feedback sink 回调与默认 stderr（不抛错即可）', () => {
   const events = [];
   feedback.setSink((e) => events.push(e));

@@ -446,7 +446,7 @@ await store.runAsInternal(() => store.remove('Post', { _id: pid }));
 ```
 
 - `super_admin`/`admin`/`internal` 角色放行一切；其他角色按 schema 级与字段级 `read`/`write` 白名单校验；`guest` 永不写。
-- `creator` 是一个伪角色，依据 `doc.createdBy === ctx.userId` 解析；授予它的 schema 会自动在查询上注入属主条件，并在 update/remove 时做属主校验。
+- `creator` 是一个伪角色，依据 `doc.<归属键> === ctx.userId` 解析（归属键由 schema `ownerKey` 声明，缺省 `createdBy`，可自定义如 `_id`）；授予它的 schema 会自动在查询上注入属主条件，并在 update/remove 时做属主校验。
 - 未设置上下文 → 权限校验关闭（向后兼容）。
 - 拒绝访问时抛出 `store.PermissionError`（`status = 403`）。
 
@@ -492,6 +492,7 @@ await store.runAsInternal(() => store.remove('Post', { _id: pid }));
   ],
   read: ['editor', 'viewer'],        // 可选的 schema 级角色白名单
   write: ['editor'],
+  ownerKey: '_id',                   // 可选：`creator` 伪角色的归属键；缺省 'createdBy'
 }
 ```
 
@@ -1482,7 +1483,7 @@ app.listen(3000);
 可以 —— 关系聚合谓词实现 semi/anti-join 而不扇出；SQL 使用 `EXISTS`/`NOT EXISTS`。
 
 **如何实现行级权限？**
-使用 `store.setContext({ userId, roles })` 加上 schema 级的 `read`/`write` 白名单。`creator` 伪角色会自动加入属主校验与属主条件注入。`guest` 永不写。开启 `setRequireContext(true)` 可获得失败即安全的行为。
+使用 `store.setContext({ userId, roles })` 加上 schema 级的 `read`/`write` 白名单。`creator` 伪角色会自动加入属主校验与属主条件注入（归属键由 schema `ownerKey` 声明，缺省 `createdBy`）。`guest` 永不写。开启 `setRequireContext(true)` 可获得失败即安全的行为。
 
 **如何做软删除？**
 每个已注册的模型都会自动获得一个 `<Model>Deleted` 归档集合/表。`store.remove()` 先归档文档，再删除它；重新创建同一个 `_id` 不会冲突，因为归档写入是按 `_id` upsert。
