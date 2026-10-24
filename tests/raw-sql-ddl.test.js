@@ -11,7 +11,7 @@
 const { test, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { store, datasource, feedback } = require('../src');
+const { store, datasource, feedback, init } = require('../src');
 
 beforeEach(() => {
   datasource.setConnections({});
@@ -256,6 +256,7 @@ function fakeTxMongo(captured) {
     db: {
       client,
       collection: (name) => ({
+        listIndexes: () => ({ toArray: async () => [] }),
         aggregate: (pipeline, opts) => {
           captured.calls.push({ name, pipeline, opts });
           return { toArray: async () => [{ n: 1 }] };
@@ -310,6 +311,85 @@ test('executeNative 对非 Mongo 源显式报错', async () => {
     () => store.executeNative('db', 'orders'),
     (e) => e instanceof store.NativeCommandError && /不是 Mongo 源/.test(e.message),
   );
+});
+
+// ─── ①⃗ store.aggregate（schema 名聚合别名，opt-in 默认关闭；03 执行文档）───
+
+test('aggregate 默认关闭：未开启抛 ERR_NATIVE_AGGREGATE_DISABLED', async () => {
+  await init({ db: { collection: () => ({}) } }); // 第二参缺省 → 开关保持 false
+
+  await assert.rejects(
+    () => store.aggregate('Anything', [{ $match: { a: 1 } }]),
+    (e) => e.code === 'ERR_NATIVE_AGGREGATE_DISABLED'
+      && /allowNativeAggregate/.test(e.message),
+  );
+});
+
+test('aggregate 开启后按 schema 解析并转调 executeNative', async () => {
+  store.register({
+    name: 'AggModel',
+    collection: 'agg_models',
+    idPrefix: 'am',
+    datasource: 'db',
+    fields: { a: { type: 'int' } },
+    relations: {},
+  });
+  let captured;
+  const restore = patchExecMongo(async (db, cmd, session) => {
+    captured = { cmd, session };
+    return [{ _id: 'g1', total: 3 }];
+  });
+  try {
+    await init(
+      { db: { collection: () => ({ listIndexes: () => ({ toArray: async () => [] }) }) } },
+      { allowNativeAggregate: true },
+    );
+
+    const out = await store.aggregate(
+      'AggModel',
+      [{ $match: { a: 1 } }, { $group: { _id: '$a', total: { $sum: 1 } } }],
+    );
+
+    // schema 名 → (datasource, collection) 解析正确，管道原样透传（不校验不拦截）
+    assert.deepEqual(captured.cmd, {
+      kind: 'aggregate',
+      collection: 'agg_models',
+      pipeline: [{ $match: { a: 1 } }, { $group: { _id: '$a', total: { $sum: 1 } } }],
+      options: {},
+    });
+    assert.equal(captured.session, null);
+    assert.deepEqual(out, { rows: [{ _id: 'g1', total: 3 }] });
+
+    // 未知 schema 显式报错（fail-explicit，不静默返回空）
+    await assert.rejects(
+      () => store.aggregate('NoSuchModel', []),
+      (e) => e.code === 'ERR_AGGREGATE_SCHEMA' && /NoSuchModel/.test(e.message),
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('aggregate 事务内自动透传 session（复用 executeNative 通道）', async () => {
+  store.register({
+    name: 'AggTx',
+    collection: 'agg_tx',
+    idPrefix: 'at',
+    datasource: 'db',
+    fields: { a: { type: 'int' } },
+    relations: {},
+  });
+  const captured = { calls: [] };
+  const fake = fakeTxMongo(captured);
+  await init({ db: fake.db }, { allowNativeAggregate: true });
+
+  await store.transaction('db', async () => {
+    const out = await store.aggregate('AggTx', [{ $count: 'n' }]);
+    assert.deepEqual(out, { rows: [{ n: 1 }] });
+  });
+
+  assert.equal(captured.calls.length, 1);
+  assert.equal(captured.calls[0].opts.session, fake.txSession);
 });
 
 test('execMongo aggregate 转发原生 options', async () => {

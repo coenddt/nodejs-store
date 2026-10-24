@@ -275,6 +275,36 @@ class Store {
     return datasource.executeNative(source, collection, pipeline, options);
   }
 
+  /**
+   * 以 schema 名发起原生聚合管道（opt-in 逃生舱，默认关闭）
+   *
+   *   - init(connections, { allowNativeAggregate: true }) 显式开启后可用；
+   *     未开启抛 `ERR_NATIVE_AGGREGATE_DISABLED`（含开启方式提示，默认关闭是产品边界）；
+   *   - schemaName → (datasource, collection) 解析后转调 executeNative——session 注入、
+   *     连接复用全部复用既有实现，不另起驱动连接；
+   *   - 不注入权限过滤、不做 computes rehydration（逃生舱语义：调用方自担权限与后处理）；
+   *     管道内容不校验不拦截（$match/$group/$lookup/$facet 均放行，$merge/$out 亦不拦，
+   *     写管道请自行开事务）。
+   */
+  async aggregate(schemaName, pipeline = [], options = null) {
+    if (!_allowNativeAggregate) {
+      const err = new Error(
+        'ERR_NATIVE_AGGREGATE_DISABLED:原生聚合别名未开启——默认关闭是产品边界，'
+        + 'init(connections, { allowNativeAggregate: true }) 显式开启；'
+        + '或改用 GQL $group / $having 归一聚合 / executeNative 直调',
+      );
+      err.code = 'ERR_NATIVE_AGGREGATE_DISABLED';
+      throw err;
+    }
+    if (!schema.has(schemaName)) {
+      const err = new Error(`ERR_AGGREGATE_SCHEMA:未知 schema ${schemaName}`);
+      err.code = 'ERR_AGGREGATE_SCHEMA';
+      throw err;
+    }
+    const m = schema.get(schemaName);
+    return datasource.executeNative(m.datasource || 'default', m.collection, pipeline, options);
+  }
+
   /** 从已注册 schema def 生成指定后端 DDL 文本（纯函数，不连库、不回写；铁律 6） */
   generateDdl(backend, names) {
     return ddl.generate(backend, names);
@@ -702,19 +732,25 @@ async function _createIndexesIfNeeded() {
   }
 }
 
+// ── aggregate opt-in 开关（默认关闭；init 第二参显式开启，见 store.aggregate）──
+let _allowNativeAggregate = false;
+
 /**
  * 初始化 store — 传入数据源连接映射
  *
  *   - 多源：`init({ default: db, mongo_b: client, pg_a: { kind: 'postgres', exec }, ... })`
  *   - 单源简写：`init(db)` / `init(client)`（Mongo db 实例或 MongoClient，自动归一为
  *     `{ default: 连接 }`）
+ *   - 第二参 options：`{ allowNativeAggregate: true }` 开启 `store.aggregate`
+ *     schema 名聚合别名（默认关闭，产品边界；未传或传 false 均保持关闭）
  *
  * 连接按命令的 `source` 路由、`database`（PG 另加 `schema`）定位库（schema 声明）；缺省绑定回落 `default`。
  */
-async function init(connections) {
+async function init(connections, options = null) {
   if (!connections || typeof connections !== 'object') {
     throw new TypeError('init(connections) 需要数据源连接映射（或单个 MongoDB db 实例）');
   }
+  _allowNativeAggregate = !!(options && options.allowNativeAggregate === true);
   datasource.setConnections(connections);
 
   // 自动创建索引（仅 Mongo 源）— 幂等安全
