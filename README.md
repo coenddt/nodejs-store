@@ -253,12 +253,20 @@ Model($condition:@c0,$sort:@s1,$skip:@sk,$limit:@l1) {
 - Object sub-fields use dot notation; relations are declared in the schema (`type: 'many' | 'one'`) and resolved automatically — **do not hand-write `$lookup`**.
 - `many` relations return arrays (`[]` when empty); `one` relations merge into the parent document (`null` when missing).
 - Relation-level `$sort`/`$skip`/`$limit` are **per-parent top-N** (each parent gets its own window; translated to a window function on SQL).
+- Null vs missing is a deliberate three-state contract: `{ field: null }` matches an **explicit null only**; `{ field: { $eq: null } }` matches **null or missing**; `{ field: { $exists: false } }` matches **missing only**.
 
-> **Breaking change**: user `$pipeline` passthrough was removed (raw aggregation escape hatch). A GQL containing `$pipeline` now fails explicitly instead of being silently ignored. `store.aggregate()` returned as an **opt-in** alias — disabled by default, enabled per service with `init(conn, { allowNativeAggregate: true })` (see [Advanced API](#advanced-api)).
+### Upgrading from 4.x to 5.0
+
+> **Breaking:** user `$pipeline` passthrough was removed — a GQL containing `$pipeline` now fails at parse time (`ERR_GQL_PARSE:`) instead of being silently ignored.
+
+- **Reserved field names are gone.** `type` / `read` / `write` / `fields` / `localField` / `foreignField` are valid field names in 5.0.0; on 4.8.0 registering them raised `ERR_NAME_CONFLICT`. Only `_id` and `_score` remain literal reserved names.
+- **`store.aggregate()` did not exist in 4.8.0.** It is restored in 5.0.0 as a strictly opt-in escape hatch (see [Transactions and raw SQL](#transactions-and-raw-sql)): disabled by default (`ERR_NATIVE_AGGREGATE_DISABLED`), enabled with `init(conn, { allowNativeAggregate: true })`.
+- **Null vs missing follows a three-state contract.** Audit the intended form in existing queries: use `{ $eq: null }` for "null or missing", a bare `null` for "explicit null only", and `{ $exists: false }` for "missing only".
+- **`$group` accumulators are still `$count` / `$sum` / `$avg` / `$min` / `$max`.** `$sum: { $cond }`, `$addToSet` and `$last` fail explicitly; rewrite those queries or move the logic to the application layer.
 
 ## Aggregation
 
-Normalized aggregation lives **inside GQL** — no separate API, no raw pipeline.
+Normalized aggregation lives **inside GQL** — no separate query API and no raw pipeline on the normal path. Raw aggregation is reachable only through explicit escape hatches: `store.aggregate()` (opt-in), `executeNative()` and `executeRaw()`.
 
 **Root-level `$group` + `$having`** (GROUP BY / HAVING):
 
@@ -275,7 +283,7 @@ const rows = await store.query(
 );
 ```
 
-- Whitelisted operators: `$count` / `$sum` / `$avg` / `$min` / `$max`.
+- Whitelisted operators: `$count` / `$sum` / `$avg` / `$min` / `$max`. This set is closed: `$sum: { $cond }`, `$addToSet` and `$last` are not supported and fail explicitly.
 - Fixed execution order: `$condition` (WHERE) → `$group` (GROUP BY) → `$having` (HAVING) → `$sort` → `$skip`/`$limit` → projection.
 - Omit `by` (or pass `[]`) for a single all-table group; the empty-input case still returns one row (`$count` → `0`, others → `null`).
 
@@ -349,7 +357,7 @@ await store.transaction('default', transfer);
 - `store.executeRaw(source, sql, params = null, isWrite = null)` runs raw SQL, compiled by the core `rawStmtCompile`. Two styles selected by the `params` type: **positional** (array/null) passes the SQL through as-is with native placeholders (`?` for MySQL / SQLite, `$1..$n` for PostgreSQL); **named** (object) compiles `:name` tokens in the SQL into dialect placeholders (same-name reuse, `::` casts / quotes / comments kept intact; missing or unused names throw `RawSqlError`). SQL sources only — a Mongo source throws `RawSqlError` (`store.RawSqlError`).
 - When `isWrite` is omitted it is inferred from the SQL's first word (SELECT / WITH / EXPLAIN / SHOW / PRAGMA / TABLE count as reads, everything else as a write — defaulting to write is the safe direction); passing it explicitly overrides the inference. Returns `{ rows, affectedRows }`: rows for reads, the affected-row count for writes.
 - `store.executeNative(source, collection, pipeline = [], options = null)` runs a native aggregation pipeline on a Mongo source (the Mongo counterpart of the SQL-side `executeRaw` escape hatch): `pipeline` is a native aggregation pipeline, `options` uses driver-native keys (`allowDiskUse` / `batchSize` / `hint` / `maxTimeMS`..., no host-side whitelist). Inside a transaction / session the session is injected automatically (owned by the transaction; `options.session` cannot override it); resolution always follows the read path, so `$merge` / `$out` write stages require you to open a transaction yourself. Mongo sources only — a SQL source throws `NativeCommandError` pointing to `executeRaw`; the MongoClient form requires a schema-declared database. Returns `{ rows }`.
-- `store.aggregate(schemaName, pipeline, options = null)` is the schema-name twin of `executeNative` — an **opt-in** escape hatch that resolves `schemaName → (datasource, collection)` and delegates to the exact same execution path (session injection and connection reuse included; no extra driver connection). Disabled by default: calls throw `ERR_NATIVE_AGGREGATE_DISABLED` until the service inits with `init(conn, { allowNativeAggregate: true })`. It injects **no permission filtering** and does **no computes re-hydration** — the caller owns both (same escape-hatch semantics as the old mongo-store `aggregate`). The pipeline is passed through unchecked: `$match` / `$group` / `$lookup` / `$facet` all work; `$merge` / `$out` are not blocked but require you to open a transaction yourself. Unknown schema names throw `ERR_AGGREGATE_SCHEMA`.
+- `store.aggregate(schemaName, pipeline, options = null)` is the schema-name twin of `executeNative` (restored in 5.0.0; it does not exist in 4.8.0) — an **opt-in** escape hatch that resolves `schemaName → (datasource, collection)` and delegates to the exact same execution path (session injection and connection reuse included; no extra driver connection). Disabled by default: calls throw `ERR_NATIVE_AGGREGATE_DISABLED` until the service inits with `init(conn, { allowNativeAggregate: true })`. It injects **no permission filtering** and does **no computes re-hydration** — the caller owns both (same escape-hatch semantics as the old mongo-store `aggregate`). The pipeline is passed through unchecked: `$match` / `$group` / `$lookup` / `$facet` all work; `$merge` / `$out` are not blocked but require you to open a transaction yourself. Unknown schema names throw `ERR_AGGREGATE_SCHEMA`.
 
 ### Concurrency primitives
 
@@ -1267,8 +1275,9 @@ const rows = await store.query(
 // rows = [{ status: 'published', n: 12, total: 4800 }, ...]
 ```
 
-**Why it wins.** Normalized aggregation lives inside GQL — no separate aggregate API, no raw
-pipeline, no per-dialect report SQL. The same query is pushed down to all five backends (MongoDB
+**Why it wins.** Normalized aggregation lives inside GQL — no raw pipeline on the normal path
+(raw aggregation is only the opt-in `store.aggregate()` / `executeNative()` / `executeRaw()`
+escape hatch), no per-dialect report SQL. The same query is pushed down to all five backends (MongoDB
 aggregation stages / SQL `GROUP BY ... HAVING`), with a fixed execution order (`$condition` →
 `$group` → `$having` → `$sort` → `$skip`/`$limit` → projection) and a whitelisted operator set
 (`$count` / `$sum` / `$avg` / `$min` / `$max`). To filter parents by an aggregate over a relation

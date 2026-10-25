@@ -11,13 +11,54 @@
   因此不再产生 `profileBlocked` 反馈。
 - 撤销理由：该路径实测会静默绕过投影（只请求 `{ _id }` 时返回全字段）与字段级读权限，
   且计算列不参与 —— 无法作为可描述契约保留。
-- 原生聚合逃生口不变（均为显式入口）：`store.aggregate()`（严格 opt-in，默认禁用，
+- 原生聚合逃生口全部为显式入口：`store.aggregate()`（严格 opt-in，默认禁用，
   `init(conn, { allowNativeAggregate: true })` 开启）、`executeNative()`、`executeRaw()`。
 - 依赖下限：`rust-store-node` 需同步升级到含本次 core 撤销的版本（当前已发布最高为
   4.9.0，未含本变更）。
 - 文档同步：`README.md` / `README.zh-CN.md` / `llms-full.txt` / `SKILL.md` 的
   `$pipeline` 与 `store.aggregate()` 表述改为与代码一致（`aggregate` 为 opt-in 别名，
   不是「已移除」）。
+
+### Added（恢复 `store.aggregate()`，严格 opt-in）
+
+- **`store.aggregate(schemaName, pipeline?, options?)`**：2.0.0 移除后于 5.0.0 恢复
+  （4.8.0 不存在该 API）。按 schema 名解析 `(datasource, collection)` 后转调
+  `executeNative`，复用 session 注入与连接复用，不另起驱动连接。
+- 默认禁用：未开启时抛 `ERR_NATIVE_AGGREGATE_DISABLED`（错误信息含开启方式）；
+  `init(conn, { allowNativeAggregate: true })` 显式开启后可用。未知 schema 抛
+  `ERR_AGGREGATE_SCHEMA`。
+- 逃生舱语义：不注入权限过滤、不做 computes 回填，管道内容不校验；仅 Mongo 源
+  （SQL 源抛 `NativeCommandError` 并指引 `executeRaw`）。
+- 定位：日常查询仍用 GQL `$group` / `$having` 归一聚合；`aggregate` 不是其替代品。
+
+### Behavior notes（5.0.0 行为基线，升级前请对照）
+
+- **字段名保留键全部解除**：随 core 4.9.0 移除 `RESERVED_KEYS`，`type` / `read` /
+  `write` / `fields` / `localField` / `foreignField` 作为字段名在 5.0.0 均可用
+  （4.8.0 注册即抛 `ERR_NAME_CONFLICT`；实测 9 个原失败 schema 在 5.0.0 全部注册成功）。
+  字面保留名仅 `_id`（主键）与 `_score`（向量分数列）。
+- **null / 缺失三态契约**：裸 `{ field: null }` 仅匹配「显式 null」；
+  `{ field: { $eq: null } }` 匹配「显式 null 或字段缺失」；`{ field: { $exists: false } }`
+  仅匹配缺失。三种写法有意区分，互不兜底。
+- **`$group` 累积器白名单不变**：仅 `$count` / `$sum` / `$avg` / `$min` / `$max`；
+  `$sum: { $cond }`、`$addToSet`、`$last` 仍不支持，请求即显式报错（不静默降级）。
+
+### 迁移提示（4.x → 5.0）
+
+1. **`$pipeline`**：4.8.0 仍放行，且会静默绕过投影 / 计算列 / 字段级读权限；5.0.0 改为
+   解析期 `ERR_GQL_PARSE:`。改写为 `$group` / `$having`，或改用显式入口
+   `executeNative()` / `executeRaw()`。
+2. **`store.aggregate()`**：4.8.0 不存在；5.0.0 恢复但默认禁用。升级后需在
+   `init(conn, { allowNativeAggregate: true })` 显式开启，否则每次调用抛
+   `ERR_NATIVE_AGGREGATE_DISABLED`。
+3. **字段名**：4.8.0 中 `type` / `read` / `write` / `fields` / `localField` /
+   `foreignField` 作字段名会抛 `ERR_NAME_CONFLICT`；5.0.0 无需改名，直接注册。
+4. **null 条件**：按上述三态契约逐条核对既有查询 —— 要「null 或缺失」用
+   `{ $eq: null }`，要「仅显式 null」用裸 `null`，要「仅缺失」用 `{ $exists: false }`。
+5. **`$group`**：白名单未扩容；依赖 `$sum: { $cond }` / `$addToSet` / `$last` 的查询
+   需改写，或下沉到应用层。
+6. **依赖**：`rust-store-node` 需升级到含本次 core 变更的版本（当前已发布最高 4.9.0，
+   未含 `$pipeline` 撤销）。
 
 ## 4.9.0 (2026-10-25)
 

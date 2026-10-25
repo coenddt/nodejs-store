@@ -251,12 +251,20 @@ Model($condition:@c0,$sort:@s1,$skip:@sk,$limit:@l1) {
 - 对象的子字段使用点号表示法；关系在 schema 中声明（`type: 'many' | 'one'`）并自动解析 —— **不要手写 `$lookup`**。
 - `many` 关系返回数组（为空时为 `[]`）；`one` 关系会合并进父文档（缺失时为 `null`）。
 - 关系级 `$sort`/`$skip`/`$limit` 是**按父级的 top-N**（每个父级各自取窗口；在 SQL 上翻译为窗口函数）。
+- null 与「缺失」是有意的三态契约：`{ field: null }` 仅匹配**显式 null**；`{ field: { $eq: null } }` 匹配 **null 或缺失**；`{ field: { $exists: false } }` 仅匹配**缺失**。
 
-> **破坏性变更**：用户 `$pipeline` 透传已移除 —— 包含 `$pipeline` 的 GQL 现在在解析期显式失败（`ERR_GQL_PARSE:`），而不再被静默忽略，也不再按档位放行。原生聚合逃生舱只保留显式入口：`store.aggregate()`（严格 opt-in，默认禁用，需 `init(conn, { allowNativeAggregate: true })`）、`executeNative()` 与 `executeRaw()`。
+### 从 4.x 升级到 5.0
+
+> **破坏性变更**：用户 `$pipeline` 透传已移除 —— 包含 `$pipeline` 的 GQL 现在在解析期显式失败（`ERR_GQL_PARSE:`），而不再被静默忽略，也不再按档位放行。
+
+- **保留键已全部解除。** `type` / `read` / `write` / `fields` / `localField` / `foreignField` 在 5.0.0 均可作字段名；4.8.0 下注册即抛 `ERR_NAME_CONFLICT`。字面保留名仅剩 `_id` 与 `_score`。
+- **`store.aggregate()` 在 4.8.0 中不存在。** 5.0.0 恢复为严格 opt-in 逃生舱（见[事务与原生 SQL](#事务与原生-sql)）：默认禁用（`ERR_NATIVE_AGGREGATE_DISABLED`），需 `init(conn, { allowNativeAggregate: true })` 开启。
+- **null 条件遵循三态契约。** 请逐条核对既有查询的意图：要「null 或缺失」用 `{ $eq: null }`，要「仅显式 null」用裸 `null`，要「仅缺失」用 `{ $exists: false }`。
+- **`$group` 累积器仍只支持 `$count` / `$sum` / `$avg` / `$min` / `$max`。** `$sum: { $cond }`、`$addToSet`、`$last` 会显式报错；需改写查询或把逻辑下沉到应用层。
 
 ## 聚合
 
-归一化聚合**内置于 GQL** —— 没有单独 API，没有原生管道。
+归一化聚合**内置于 GQL** —— 日常查询不经过单独的聚合 API、不写原生管道。原生聚合仅通过显式逃生舱可达：`store.aggregate()`（opt-in）、`executeNative()` 与 `executeRaw()`。
 
 **根级 `$group` + `$having`**（GROUP BY / HAVING）：
 
@@ -273,7 +281,7 @@ const rows = await store.query(
 );
 ```
 
-- 白名单算子：`$count` / `$sum` / `$avg` / `$min` / `$max`。
+- 白名单算子：`$count` / `$sum` / `$avg` / `$min` / `$max`。该集合是封闭的：`$sum: { $cond }`、`$addToSet`、`$last` 均不支持，请求即显式报错。
 - 固定执行顺序：`$condition`（WHERE）→ `$group`（GROUP BY）→ `$having`（HAVING）→ `$sort` → `$skip`/`$limit` → projection。
 - 省略 `by`（或传 `[]`）即对全表做单一分组；空输入情况仍返回一行（`$count` → `0`，其余 → `null`）。
 
@@ -345,6 +353,8 @@ await store.transaction('default', transfer);
 
 - `store.transaction(source, fn)` 在单个 SQL 源上开启事务作用域：`fn` 内的每个 `executeRaw` / CRUD 调用都落到该源的事务连接，`commit` / `rollback` 作为一个整体（复用内部的 `runInTransaction`）。Mongo 源按**运行时能力探测**（replica set / sharded）以 session 事务执行；standalone 或探测失败则按原样执行 `fn` 并发 `mongo_transaction_unsupported`（`deployment: standalone|unknown`）—— 绝不假装已原子。不支持事务（未实现 `withTransaction`）的执行器亦按原样执行，并发出一条 `transaction_not_atomic` 反馈（允许降级，绝不静默假装已事务化）。同源嵌套 transaction 会开保存点（内层失败只回滚本层）；句柄无保存点原语时降级并入外层并发 `nested_savepoint_unsupported`。
 - `store.executeRaw(source, sql, params, isWrite)` 执行原生 SQL，绕开 GQL 解析与方言翻译。占位符沿用各后端原生风格：MySQL / SQLite 用 `?`，PostgreSQL 用 `$1..$n`。仅限 SQL 源 —— Mongo 源会抛出 `RawSqlError`（`store.RawSqlError`）。
+- `store.executeNative(source, collection, pipeline, options)` 在 Mongo 源上执行原生聚合管道（SQL 侧 `executeRaw` 的对位逃生舱）：管道原样下发，`options` 使用驱动原生键；事务 / session 内自动注入 session；仅限 Mongo 源 —— SQL 源抛 `NativeCommandError` 并指引 `executeRaw`。返回 `{ rows }`。
+- `store.aggregate(schemaName, pipeline, options)` 是 `executeNative` 的 schema 名版本（5.0.0 恢复；4.8.0 不存在该 API）：解析 `schemaName → (datasource, collection)` 后走同一执行路径。**默认禁用** —— 未用 `init(conn, { allowNativeAggregate: true })` 开启时抛 `ERR_NATIVE_AGGREGATE_DISABLED`；不注入权限过滤、不做 computes 回填；未知 schema 抛 `ERR_AGGREGATE_SCHEMA`。
 - `isWrite=false`（默认）返回 `{ rows, affectedRows }` 含结果集行；`isWrite=true` 返回影响行数。
 
 ### 会话（Session / 工作单元）
@@ -1134,7 +1144,7 @@ const rows = await store.query(
 // rows = [{ status: 'published', n: 12, total: 4800 }, ...]
 ```
 
-**优势所在。** 归一化聚合内嵌在 GQL 中 —— 没有单独的聚合 API、没有原始管道、没有按方言写的报表 SQL。同一条查询被下推到全部五个后端（MongoDB 聚合阶段 / SQL `GROUP BY ... HAVING`），执行顺序固定（`$condition` → `$group` → `$having` → `$sort` → `$skip`/`$limit` → 投影），算子集受白名单约束（`$count` / `$sum` / `$avg` / `$min` / `$max`）。若要按关系的聚合量过滤父记录（「订单数大于 3 的商品」），使用关系聚合谓词 —— 一种 semi/anti-join，在 SQL 上编译为 `EXISTS`/`NOT EXISTS`，在 MongoDB 上编译为 `$lookup`+`$match`，且不扇出：
+**优势所在。** 归一化聚合内嵌在 GQL 中 —— 日常查询不写原生管道（原生聚合仅作 opt-in 逃生舱：`store.aggregate()` / `executeNative()` / `executeRaw()`）、没有按方言写的报表 SQL。同一条查询被下推到全部五个后端（MongoDB 聚合阶段 / SQL `GROUP BY ... HAVING`），执行顺序固定（`$condition` → `$group` → `$having` → `$sort` → `$skip`/`$limit` → 投影），算子集受白名单约束（`$count` / `$sum` / `$avg` / `$min` / `$max`）。若要按关系的聚合量过滤父记录（「订单数大于 3 的商品」），使用关系聚合谓词 —— 一种 semi/anti-join，在 SQL 上编译为 `EXISTS`/`NOT EXISTS`，在 MongoDB 上编译为 `$lookup`+`$match`，且不扇出：
 
 ```js
 await store.query('Product($condition:@c0){ _id, name }', {

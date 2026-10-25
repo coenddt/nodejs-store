@@ -125,6 +125,9 @@ Model($condition:@c0,$sort:@s1,$skip:@sk,$limit:@l1) {
   document (`null` when missing).
 - Relation-level `$sort` / `$skip` / `$limit` are **per-parent top-N** (each parent gets its
   own window; translated to a SQL window function).
+- Null vs missing is a deliberate three-state contract: `{ field: null }` matches an
+  **explicit null only**; `{ field: { $eq: null } }` matches **null or missing**;
+  `{ field: { $exists: false } }` matches **missing only**.
 
 Fixed execution order for grouping queries:
 `$condition` (WHERE) → `$group` (GROUP BY) → `$having` (HAVING) → `$sort` → `$skip`/`$limit` → projection.
@@ -133,11 +136,26 @@ Fixed execution order for grouping queries:
 > A GQL containing `$pipeline` fails explicitly (`ERR_GQL_PARSE:`) instead of being silently ignored.
 > Raw aggregation remains only through explicit entries: `store.aggregate()` (strictly opt-in, disabled by default via `init(conn, { allowNativeAggregate: true })`), `executeNative()` and `executeRaw()`.
 
+### 5.1 Upgrading from 4.x to 5.0
+
+- **Reserved field names are gone.** `type` / `read` / `write` / `fields` / `localField` /
+  `foreignField` are valid field names in 5.0.0; on 4.8.0 registering them raised
+  `ERR_NAME_CONFLICT`. Only `_id` and `_score` remain literal reserved names.
+- **`store.aggregate()` did not exist in 4.8.0.** It is restored in 5.0.0 as a strictly opt-in
+  escape hatch: disabled by default (`ERR_NATIVE_AGGREGATE_DISABLED`), enabled with
+  `init(conn, { allowNativeAggregate: true })`.
+- **Null vs missing follows a three-state contract.** Audit the intended form in existing
+  queries: use `{ $eq: null }` for "null or missing", a bare `null` for "explicit null only",
+  and `{ $exists: false }` for "missing only".
+- **`$group` accumulators are still `$count` / `$sum` / `$avg` / `$min` / `$max`.**
+  `$sum: { $cond }`, `$addToSet` and `$last` fail explicitly; rewrite those queries or move the
+  logic to the application layer.
+
 ---
 
 ## 6. Aggregation
 
-Normalized aggregation lives **inside GQL** — there is no separate aggregate API.
+Normalized aggregation lives **inside GQL** — no separate query API and no raw pipeline on the normal path. Raw aggregation is reachable only through explicit escape hatches: `store.aggregate()` (opt-in), `executeNative()` and `executeRaw()`.
 
 ### 6.1 Root-level `$group` / `$having`
 
@@ -154,7 +172,8 @@ const rows = await store.query(
 );
 ```
 
-- Whitelisted operators: `$count` / `$sum` / `$avg` / `$min` / `$max`.
+- Whitelisted operators: `$count` / `$sum` / `$avg` / `$min` / `$max`. The set is closed:
+  `$sum: { $cond }`, `$addToSet` and `$last` are not supported and fail explicitly.
 - `$count` accepts `'*'` (row count) or a scalar field name (non-null count).
 - Omit `by` (or pass `[]`) for a single all-table group; empty input still returns one row
   (`$count` → `0`, others → `null`).
@@ -231,6 +250,18 @@ Notes:
   `pageSize` is capped at 5000.
 - `updateMany` / `remove` with an **empty condition** (`{}`, `null`, `{ "$and": [] }`) is
   rejected outright — it never falls through to a full-table write.
+
+Raw escape hatches (Mongo only; SQL uses `executeRaw`):
+
+- `store.executeNative(source, collection, pipeline, options)` runs a native aggregation pipeline
+  on a Mongo source; the pipeline is passed through, `options` uses driver-native keys, and inside
+  a transaction/session the session is injected automatically. A SQL source throws
+  `NativeCommandError` pointing to `executeRaw`. Returns `{ rows }`.
+- `store.aggregate(schemaName, pipeline, options)` is the schema-name twin (restored in 5.0.0;
+  it does not exist in 4.8.0): it resolves `schemaName → (datasource, collection)` and delegates to
+  the same path. **Disabled by default** — calls throw `ERR_NATIVE_AGGREGATE_DISABLED` until the
+  service inits with `init(conn, { allowNativeAggregate: true })`. It injects no permission filtering
+  and does no computes re-hydration; an unknown schema throws `ERR_AGGREGATE_SCHEMA`.
 
 ---
 
