@@ -2,7 +2,7 @@
 
 > Lightweight multi-backend data layer for Node.js: pure JSON schemas plus a MongoDB-style GQL tree query dialect that runs on MongoDB, MySQL, SQLite and PostgreSQL, with built-in role-based access control, computed columns and soft-delete.
 
-`nodejs-store` lets a Node.js service define a model once as JSON and query it with a single dialect across MongoDB (native aggregation) and MySQL / PostgreSQL / SQLite (parameterized SQL). Nested relations compile to one native query per backend — no hand-written `$lookup` or JOINs. It is the Node.js host over the shared Rust engine [`rust-store`](https://github.com/coenddt/rust-store) (binding: `rust-store-node`); its Python twin is [`py-store`](https://github.com/coenddt/py-store) (pip `storepy`).
+`nodejs-store` lets a Node.js service define a model once as JSON and query it with a single dialect across MongoDB (native aggregation) and MySQL / PostgreSQL / SQLite (parameterized SQL). Nested relations compile to one native query per backend — no hand-written `$lookup` or JOINs. It is the Node.js host over the shared Rust engine [`rust-store`](https://github.com/coenddt/rust-store) ([Gitee](https://gitee.com/coenddt/rust-store)) (binding: `rust-store-node`); its Python twin is [`py-store`](https://github.com/coenddt/py-store) ([Gitee](https://gitee.com/coenddt/py-store)) (pip `storepy`).
 
 - npm package: `nodejs-store`
 - Runtime: Node.js 18+
@@ -43,5 +43,5 @@
 
 ## Optional
 
-- [py-store (Python twin)](https://github.com/coenddt/py-store): same schemas, same GQL, snake_case API
-- [rust-store (shared Rust core)](https://github.com/coenddt/rust-store): GQL parsing, permissions, computed columns, command planning, SQL dialect translation
+- [py-store (Python twin)](https://github.com/coenddt/py-store) ([Gitee](https://gitee.com/coenddt/py-store)): same schemas, same GQL, snake_case API
+- [rust-store (shared Rust core)](https://github.com/coenddt/rust-store) ([Gitee](https://gitee.com/coenddt/rust-store)): GQL parsing, permissions, computed columns, command planning, SQL dialect translation
