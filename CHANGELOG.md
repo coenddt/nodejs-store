@@ -1,5 +1,24 @@
 # Changelog
 
+## 5.0.0 (2026-10-25)
+
+### Breaking（撤销：用户 `$pipeline` 直通）
+
+- **含 `$pipeline` 的 GQL 现在一律显式报错，不再按档位放行**：撤销「双门禁分离」
+  中 `standard` 档放行 `$pipeline` 的行为（随 core 撤销），统一在解析期抛
+  `ERR_GQL_PARSE:$pipeline 直通已移除（原生聚合请改用 executeNative / execute_raw）`。
+  `text2query` 档原有 `ERR_TEXT2QUERY` 拦截一并消失（解析层更早拦截），
+  因此不再产生 `profileBlocked` 反馈。
+- 撤销理由：该路径实测会静默绕过投影（只请求 `{ _id }` 时返回全字段）与字段级读权限，
+  且计算列不参与 —— 无法作为可描述契约保留。
+- 原生聚合逃生口不变（均为显式入口）：`store.aggregate()`（严格 opt-in，默认禁用，
+  `init(conn, { allowNativeAggregate: true })` 开启）、`executeNative()`、`executeRaw()`。
+- 依赖下限：`rust-store-node` 需同步升级到含本次 core 撤销的版本（当前已发布最高为
+  4.9.0，未含本变更）。
+- 文档同步：`README.md` / `README.zh-CN.md` / `llms-full.txt` / `SKILL.md` 的
+  `$pipeline` 与 `store.aggregate()` 表述改为与代码一致（`aggregate` 为 opt-in 别名，
+  不是「已移除」）。
+
 ## 4.9.0 (2026-10-25)
 
 ### Fixed（严重设计 bug：字段名保留字误伤）

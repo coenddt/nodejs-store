@@ -101,7 +101,7 @@ store.register({ name: 'Order', collection: 'orders', datasource: 'pg_a',
 | `setRequireContext` | `(needCtx = true)` | ✅ | fail-secure 开关 |
 | `setFeedbackSink` | `(fn)` | ✅ | 统一反馈通道；传 `null` 恢复 stderr |
 | `PermissionError` | 原型属性 | ✅ | 拒绝访问时抛（`status = 403`） |
-| `aggregate` | — | ❌ | **已移除**；用户 `$pipeline` 直通亦移除并显式报错 |
+| `aggregate` | `(schemaName, pipeline, options)` | ⚠️ | **严格 opt-in**（默认禁用；`init(conn, { allowNativeAggregate: true })` 开启）；用户 `$pipeline` 直通已移除并显式报错 |
 
 ### 4.3 底层模块
 
@@ -177,7 +177,7 @@ npm run lint            # eslint（零告警门禁）
 5. **默认 fail-open**：未设上下文时权限检查全部放行（向后兼容）。安全敏感宿主启动时 `store.setRequireContext(true)`，此后缺 ctx 抛 `ERR_NO_CONTEXT:...`，内部任务显式 `runAsInternal`。
 6. **`queryWithCount` 接受 `page`/`pageSize`（推荐）或传统 `$skip`/`$limit`**；pageSize 上限 5000。
 7. **`null`/`undefined` 写入前被剥离**；`_id` 不可经 `update` 修改；`createdAt`/`updatedAt` 由框架维护（毫秒，schema `timestamps: 's'` 则为秒）。
-8. **迁移注意（2.0.0 Breaking）**：计算列 `lookup` → `agg`；`store.aggregate()` / 用户 `$pipeline` / `setAllowUserPipeline` 已移除。
+8. **迁移注意（2.0.0 Breaking）**：计算列 `lookup` → `agg`；用户 `$pipeline` / `setAllowUserPipeline` 已移除；`store.aggregate()` 改为**严格 opt-in**（需 `init(conn, { allowNativeAggregate: true })` 显式开启）。
 9. **U1~U4 全局显式报错**：数组字段直接过滤（U1）、对象深度等值过滤（U2）、对象点号路径过滤（U3）/排序（U4）在所有后端统一报错，不静默降级。
 10. **SQL 下推不可翻译时显式抛错**：`PushdownUnsupportedError`（`datasource.js`），并同时走 `feedback` 通道；可捕获后改用 Mongo 源执行该段。
 11. **索引创建失败不阻塞 `init`**，但会经 `feedback.emit({type:'index_create_failed', ...})` 上报——需 `store.setFeedbackSink` 接管才能接入自动闭环。

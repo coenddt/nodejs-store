@@ -108,7 +108,7 @@ MongoDB 是*主方言*：查询以 MongoDB 风格的 GQL 编写，三种关系�
 - **你想要带迁移引擎的完整 ORM。** `nodejs-store` 是*数据层*，不是迁移工具。它可以**读取** SQL 后端的物理结构（`syncSchema` → introspection），但从不把 DDL 写回。请与你自选的迁移工具搭配使用。另有一个可选的 `generateDdl()`，可从已注册 schema 渲染出 `CREATE TABLE` 文本 —— 纯文本，绝不连接或写入数据库。
 - **你需要带类型安全、自动生成的客户端。** schema 是运行时 JSON，而非 TypeScript 类型。你获得的是灵活性与跨语言一致性（同一份 schema 在 Node 与 Python 中都可用），而不是编译期类型推断。
 - **你只用一种数据库，且几乎不做关联。** 直接用裸驱动（或只针对单一数据库的 ODM/ORM）会更简单。
-- **你需要原生聚合逃生舱。** `$pipeline` 透传与 `store.aggregate()` 已被有意移除。请使用 `$condition` / `$group` / `$having` / 关系；任何无法安全翻译的内容都会**显式**失败，而不会静默降级。
+- **你需要原生聚合逃生舱。** 用户 `$pipeline` 透传已移除 —— 含 `$pipeline` 的 GQL 一律在解析期显式失败。原生逃生口只保留显式入口：`store.aggregate()`（严格 **opt-in**，默认禁用，需 `init(conn, { allowNativeAggregate: true })` 显式开启）、`executeNative()`（Mongo 原生聚合）与 `executeRaw()`（原生 SQL）。日常查询请使用 `$condition` / `$group` / `$having` / 关系；任何无法安全翻译的内容都会**显式**失败，而不会静默降级。
 - **你在 SQLite 的高并发热路径上。** SQLite 执行器按设计使用同步的 `better-sqlite3` 驱动 —— 调用会阻塞事件循环。此类场景请优先使用 MySQL / PostgreSQL / MongoDB，或把 SQLite 隔离到独立进程。
 
 ## 与同类方案的对比
@@ -252,7 +252,7 @@ Model($condition:@c0,$sort:@s1,$skip:@sk,$limit:@l1) {
 - `many` 关系返回数组（为空时为 `[]`）；`one` 关系会合并进父文档（缺失时为 `null`）。
 - 关系级 `$sort`/`$skip`/`$limit` 是**按父级的 top-N**（每个父级各自取窗口；在 SQL 上翻译为窗口函数）。
 
-> **破坏性变更**：用户 `$pipeline` 透传与 `store.aggregate()` 已移除（原生聚合逃生舱）。包含 `$pipeline` 的 GQL 现在会显式失败，而不再被静默忽略。
+> **破坏性变更**：用户 `$pipeline` 透传已移除 —— 包含 `$pipeline` 的 GQL 现在在解析期显式失败（`ERR_GQL_PARSE:`），而不再被静默忽略，也不再按档位放行。原生聚合逃生舱只保留显式入口：`store.aggregate()`（严格 opt-in，默认禁用，需 `init(conn, { allowNativeAggregate: true })`）、`executeNative()` 与 `executeRaw()`。
 
 ## 聚合
 

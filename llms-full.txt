@@ -129,8 +129,9 @@ Model($condition:@c0,$sort:@s1,$skip:@sk,$limit:@l1) {
 Fixed execution order for grouping queries:
 `$condition` (WHERE) → `$group` (GROUP BY) → `$having` (HAVING) → `$sort` → `$skip`/`$limit` → projection.
 
-> Removing an escape hatch: `$pipeline` passthrough and `store.aggregate()` were removed.
-> A GQL containing `$pipeline` fails explicitly instead of being silently ignored.
+> Removing an escape hatch: user `$pipeline` passthrough was removed.
+> A GQL containing `$pipeline` fails explicitly (`ERR_GQL_PARSE:`) instead of being silently ignored.
+> Raw aggregation remains only through explicit entries: `store.aggregate()` (strictly opt-in, disabled by default via `init(conn, { allowNativeAggregate: true })`), `executeNative()` and `executeRaw()`.
 
 ---
 
