@@ -310,8 +310,16 @@ function registerSchemaName(tag) {
   return `VectorConformance${suffix}`;
 }
 
-// ─── mongodb（不可达即 skip） ────────────────────────────────
+// ─── mongodb（不可达 / 不支持 $vectorSearch 即 skip） ─────────
 let _mongoClient = null;
+/** $vectorSearch 为 Atlas Search 专属能力：本地 mongod 不支持该聚合阶段
+ *  （31082 SearchNotEnabled / Unrecognized pipeline stage）。探测试探聚合，
+ *  报错即抛出 → 套件走 skip 通道。 */
+async function probeVectorSearch(db) {
+  await db.collection('_vc_probe').aggregate([
+    { $vectorSearch: { queryVector: [0, 0, 0], path: 'embedding', numCandidates: 1, limit: 1 } },
+  ]).toArray();
+}
 defineSuite(
   'mongodb',
   async () => {
@@ -319,11 +327,12 @@ defineSuite(
     try {
       await client.connect();
       await client.db().command({ ping: 1 });
+      await probeVectorSearch(client.db());
       _mongoClient = client;
       return { vc_mongodb: client.db() };
     } catch (e) {
       await client.close().catch(() => {});
-      return `mongodb 实例不可达: ${_errText(e)}`;
+      return `mongodb 实例不可达 / 不支持 $vectorSearch: ${_errText(e)}`;
     }
   },
   async () => {
