@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.9.0 (2026-10-25)
+
+### Fixed（严重设计 bug：字段名保留字误伤）
+
+- **`fields` 键空间恢复完全开放（原初设计）**：随 core 4.9.0 移除 `RESERVED_KEYS`
+  保留键检查——字段名叫 `type` 的合法 schema（如 `fields: { type: { type: 'string',
+  default: 'text' } }`）此前注册即抛 `ERR_NAME_CONFLICT`，现注册 / insert / GQL 查询 /
+  update / remove 全链路可用。内建 `__feedback` 表的事件类别字段正名回 `type`
+  （4.8.x 曾被迫改名 `eventType`，落库列名随之恢复为 `type`）。
+  依赖下限：`rust-store-node ^4.9.0`。
+
 ## 4.4.1 (2026-10-10)
 
 ### Added / Fixed（NoContext 错误档）

@@ -81,10 +81,9 @@ function enableFeedbackTable(store) {
   metadef.ensureBuiltins(); // 幂等（含 __feedback）
   const prev = getSink();
   setSink((event) => {
-    // 事件类别键 `type` 与 field 级契约保留键冲突（core §6.3）→ 落库列名为 `eventType`
-    const { type, ...rest } = event || {};
+    // fields 键空间完全开放、无字段名保留字：事件类别直接落库为 `type` 字段
     const ns = _currentMeta();
-    const row = { ...rest, eventType: type, tenant: ns.tenant || '', env: ns.env || '', now: Date.now() };
+    const row = { ...(event || {}), tenant: ns.tenant || '', env: ns.env || '', now: Date.now() };
     // 在途跟踪：panic 前 flush() 可等待；失败仍走 stderr + 计数（不抛回 emit）
     const p = Promise.resolve(metadef._runInternal(() => store.insert('__feedback', row)))
       .catch((e) => {
