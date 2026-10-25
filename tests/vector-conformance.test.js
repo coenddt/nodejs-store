@@ -401,7 +401,13 @@ defineSuite(
     }
   },
   async () => {
-    if (_pgPool) await _pgPool.end().catch(() => {});
+    if (_pgPool) {
+      // teardown 同步 DROP（含归档表）：不留残留表污染同库的 py postgres
+      // 套件与 real-backends-e2e introspect 整库扫描
+      await _pgPool.query('DROP TABLE IF EXISTS vector_conformance').catch(() => {});
+      await _pgPool.query('DROP TABLE IF EXISTS vector_conformance_deleted').catch(() => {});
+      await _pgPool.end().catch(() => {});
+    }
     _pgPool = null;
   },
 );
