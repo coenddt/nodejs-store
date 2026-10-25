@@ -13,6 +13,8 @@
 `nodejs-store` 让 Node.js 服务通过**单一 schema 定义、单一查询方言**同时对接 MongoDB（原生聚合）、MySQL、PostgreSQL、SQLite 与本地磁盘（local）。嵌套关系会编译为**每个后端一条原生查询** —— 你永远不必手写 `$lookup` 或原生 SQL。
 
 > 也在找 Python 版本？见 [`py-store`](https://github.com/coenddt/py-store)（pip 包 `storepy`）。两者都是共享 Rust 引擎 [`rust-store`](https://github.com/coenddt/rust-store) 之上的薄宿主。
+>
+> **Store 家族（Gitee）：** [`rust-store`](https://gitee.com/coenddt/rust-store)（共享 Rust 核心）· [`nodejs-store`](https://gitee.com/coenddt/nodejs-store)（本仓库 —— Node.js 宿主，npm `nodejs-store`）· [`py-store`](https://gitee.com/coenddt/py-store)（Python 宿主，pip `storepy`）
 
 ---
 
@@ -1527,8 +1529,8 @@ app.listen(3000);
 
 ## 相关项目
 
-- [`py-store`](https://github.com/coenddt/py-store) —— Python asyncio 孪生版（pip `storepy`，`from py_store import init, store`）。
-- [`rust-store`](https://github.com/coenddt/rust-store) —— 共享的 Rust 核心及其 `rust-store-node` / `rust-store-py` 绑定。
+- [`py-store`](https://github.com/coenddt/py-store)（[Gitee](https://gitee.com/coenddt/py-store)）—— Python asyncio 孪生版（pip `storepy`，`from py_store import init, store`）。
+- [`rust-store`](https://github.com/coenddt/rust-store)（[Gitee](https://gitee.com/coenddt/rust-store)）—— 共享的 Rust 核心及其 `rust-store-node` / `rust-store-py` 绑定。
 - `text-to-query` —— 配套技能：把自然语言问题转换为该数据层所需 GQL + params。
 
 ## 框架使用契约

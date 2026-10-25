@@ -11,6 +11,9 @@
 `nodejs-store` lets a Node.js service talk to MongoDB (native aggregation), MySQL, PostgreSQL, SQLite and local disk through a **single schema definition and a single query dialect**. Nested relations compile to **one native query per backend** — you never hand-write `$lookup` or raw SQL.
 
 > Also looking for the Python version? See [`py-store`](https://github.com/coenddt/py-store) (pip `storepy`). Both are thin hosts over the shared Rust engine [`rust-store`](https://github.com/coenddt/rust-store).
+>
+> **Store family on Gitee:** [`rust-store`](https://gitee.com/coenddt/rust-store) (shared Rust core) · [`nodejs-store`](https://gitee.com/coenddt/nodejs-store) (this repo — Node.js host, npm `nodejs-store`) · [`py-store`](https://gitee.com/coenddt/py-store) (Python host, pip `storepy`)
+>
 > 中文文档见 [README.zh-CN.md](README.zh-CN.md)。
 
 **Documentation site:** <https://coenddt.github.io/nodejs-store/> — every scenario walkthrough with runnable code and the engine's exact limits, one indexable page per scenario.
@@ -1793,8 +1796,8 @@ The command throws `PushdownUnsupportedError` **and** emits a structured feedbac
 
 ## Related projects
 
-- [`py-store`](https://github.com/coenddt/py-store) — the Python asyncio twin (pip `storepy`, `from py_store import init, store`).
-- [`rust-store`](https://github.com/coenddt/rust-store) — the shared Rust core and its `rust-store-node` / `rust-store-py` bindings.
+- [`py-store`](https://github.com/coenddt/py-store) ([Gitee](https://gitee.com/coenddt/py-store)) — the Python asyncio twin (pip `storepy`, `from py_store import init, store`).
+- [`rust-store`](https://github.com/coenddt/rust-store) ([Gitee](https://gitee.com/coenddt/rust-store)) — the shared Rust core and its `rust-store-node` / `rust-store-py` bindings.
 - `text-to-query` — a companion skill that turns natural-language questions into GQL + params for this data layer.
 
 ## Framework usage contract
