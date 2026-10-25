@@ -443,9 +443,9 @@ describe('ask L1 · 验收矩阵 T1-T12', () => {
     assert.deepEqual(res.data, _PROJ_DOCS);
   });
 
-  // ── T12 $pipeline 直通（forbid_t2q）→ 回喂重试 ─────────────────
+  // ── T12 $pipeline 直通（core 5.0.0 撤销：解析期一律显式报错）→ 回喂重试 ──
 
-  it('T12: $pipeline 直通被 forbid_t2q 拒绝（feature=$pipeline 直通）→ 回喂重试成功', async () => {
+  it('T12: $pipeline 直通在解析期显式报错（不再按档位放行）→ 回喂重试成功', async () => {
     _reset();
     seedOrders();
     const llm = fakeLlm(
@@ -454,10 +454,10 @@ describe('ask L1 · 验收矩阵 T1-T12', () => {
     );
     const res = await store.ask('自定义管道查询', { llm, ctx: CTX_USER });
     const err = res.attempts[0].error;
-    assert.equal(err.code, 'profileBlocked');
-    assert.equal(err.feature, '$pipeline 直通');
+    assert.equal(err.code, 'planError');
+    assert.ok(err.message.includes('$pipeline 直通已移除'));
     assert.deepEqual(res.data, _PROJ_DOCS);
-    assert.deepEqual(res.events.map((e) => e.code), ['profileBlocked']);
+    assert.deepEqual(res.events.map((e) => e.code), []);
   });
 
   // ── D6 插拔注册表：注册名与客户端两路同一入口 ──────────────────
@@ -649,12 +649,12 @@ describe('conformance · 与 py-store 逐字节一致（GQL / 错误前缀 / 事
     // ① 成功类：py 侧 _GOOD 基线串在本端可执行且投影形状一致
     const ok = await store.query(_GOOD[0], _GOOD[1]);
     assert.deepEqual(ok, _PROJ_DOCS);
-    // ② 档位收缩类：$pipeline 直通 forbid_t2q（与 py test_t12 同输入同 code/feature）
+    // ② 解析期拒绝类：$pipeline 直通（core 5.0.0 撤销，与 py test_t12 同输入）
     _sc.setProfile('text2query');
     permission.setContext(CTX_USER);
     await assert.rejects(
       () => store.query('AkOrder($pipeline:@p0){_id, code}', { p0: [{ $match: {} }] }),
-      (e) => e.name === 'ProfileViolation' && e.message.includes('$pipeline 直通'),
+      (e) => String(e.message).includes('$pipeline 直通已移除'),
     );
     // ③ 计划错误类：8c-2 嵌套关系路径（与 py test_t11 同输入；新 core 已带稳定前缀）
     await assert.rejects(
