@@ -142,6 +142,7 @@ Course($condition:@c0, $group:@g0, $having:@h0, $sort:@s0, $skip:@sk, $limit:@l0
 
 - `fn`（同步）/ `asyncFn`（异步，Host `prepareQuery` → await → `stripQuery` 两段式）/ `agg`（关系聚合，**已归一，取代旧 `lookup`**）。
 - `agg` 形态：`{ $count: '<关系名>' }` 或 `{ $sum|$avg|$min|$max: '<关系>.<字段>' }`；与 `fn`/`asyncFn` 互斥；空集语义 `$count → 0`，其余 `→ null`。
+- `agg` 路径首段二分：命中 relations → 关系聚合（上式）；命中 fields 声明的**数组字段** → 内联数组聚合：`{ $size: '<数组字段>' }` 或 `{ $sum|$avg|$max|$min|$countDistinct: '<数组>.<子字段>' }`——`depends` 须含首段、单级即止；`$count` 仅关系、`$size/$countDistinct` 仅内联；空数组/缺字段 `$size/$sum/$countDistinct → 0`、`$avg/$max/$min → null`；仅 MongoDB/local 可用，SQL 后端显式报错。
 
 ## 6. 多后端 / 方言 / 多数据源
 

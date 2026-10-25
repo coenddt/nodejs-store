@@ -83,8 +83,8 @@ Model($condition:@c0 [,$sort:@s0] [,$skip:@sk] [,$limit:@l] [,$group:@g0] [,$hav
 | `fn` / `asyncFn` | 应用层 | `depends` 依赖字段会自动并入投影 |
 | `agg` | **引擎内联** | schema 声明如 `{ "$count": "lessons" }` / `{ "$sum": "lessons.duration" }`；被请求时才发射聚合 |
 
-- `agg` 白名单：`$count / $sum / $avg / $min / $max`；路径 = 关系名（`$count`）或 `关系名.子字段`。
-- 空集语义：`$count` → `0`；`$sum/$avg/$min/$max` → `null`。
+- `agg` 白名单分两类：关系聚合 `$count / $sum / $avg / $min / $max`（路径 = 关系名或 `关系名.子字段`）；内联数组聚合 `$size / $sum / $avg / $max / $min / $countDistinct`（路径首段须为 fields 声明的**数组字段**且列入 `depends`：`$size` 用数组字段本身，其余用 `数组.子字段`，单级即止）。
+- 空集语义：`$count` → `0`；`$sum/$avg/$min/$max` → `null`；内联数组：`$size/$sum/$countDistinct` → `0`（`$countDistinct` 去重并剔 null），`$avg/$max/$min` → `null`。内联数组聚合仅 MongoDB/local 求值可用，SQL 后端显式报错。
 
 ### 根级 `$group` + `$having`（成组聚合，终结路径）
 

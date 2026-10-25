@@ -478,13 +478,17 @@ await store.runAsInternal(() => store.remove('Post', { _id: pid }));
     _id: 'string',                                        // 简写
     title: { type: 'string', default: '' },
     meta: { type: 'object', default: {}, fields: { ... } },  // 嵌套对象字段
+    bidders: { type: 'array', default: [] },              // 数组字段 —— 内联 agg 目标
   },
   relations: {
     items: { model: 'OrderItem', type: 'many', localField: '_id', foreignField: 'orderId' },
   },
   computes: {
     total: { type: 'float', depends: ['amount'], fn: (d) => d.amount * 1.1 },
-    itemCount: { type: 'int', agg: { $count: 'items' } },
+    itemCount: { type: 'int', agg: { $count: 'items' } },                 // 关系聚合
+    biddersCount: { type: 'int', depends: ['bidders'], agg: { $size: 'bidders' } },
+    maxBid: { type: 'float', depends: ['bidders'], agg: { $max: 'bidders.amount' } },
+    bidderCount: { type: 'int', depends: ['bidders'], agg: { $countDistinct: 'bidders.bidderId' } },
   },
   indexes: [
     { keys: { status: 1 } },
@@ -503,6 +507,24 @@ await store.runAsInternal(() => store.remove('Post', { _id: pid }));
 - 直接对数组字段、整个对象字段或对象点路径做过滤，在任何后端都会被拒绝 —— 请改用 `relations` 建模跨实体语义。
 - 关系谓词仅支持**一层**关系；形如 `orders.items.price` 的路径会被拒绝。
 - 不可读的关系是错误，而不是静默的 `false`。
+
+### 内联数组聚合
+
+`agg` 路径首段命中 fields 声明的**数组字段**（而非关系）时，对文档自身的数组做聚合 —— 编译进同一条管道，不新增查询阶段：
+
+| 算子 | 路径 | 空数组 / 缺字段 |
+|---|---|---|
+| `$size` | 数组字段本身 | `0` |
+| `$sum` | `数组.元素字段` | `0` |
+| `$avg` / `$max` / `$min` | `数组.元素字段` | `null` |
+| `$countDistinct` | `数组.元素字段` | `0` —— 去重并剔除 null 后计数 |
+
+规则（违规在注册期显式失败，绝不静默降级）：
+
+- `depends` 必须包含路径首段字段。
+- 数组元素仅一层：`bidders.amount` 合法；再往数组深层嵌套会被拒绝。
+- `$count` 仅限关系 —— 数组请用 `$size`。
+- 仅 MongoDB 与 local（进程内）求值可用；SQL 后端显式报错。
 
 <!-- SPEC:NAMING-STYLE:BEGIN -->
 ### Naming: freeform definitions, system-directed translation

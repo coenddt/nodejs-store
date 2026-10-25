@@ -539,13 +539,17 @@ a missing context and always passes. `setRequireContext(false)` restores the def
     _id: 'string',                                        // shorthand
     title: { type: 'string', default: '' },
     meta: { type: 'object', default: {}, fields: { ... } },  // nested object fields
+    bidders: { type: 'array', default: [] },              // array field — inline agg target
   },
   relations: {
     items: { model: 'OrderItem', type: 'many', localField: '_id', foreignField: 'orderId' },
   },
   computes: {
     total: { type: 'float', depends: ['amount'], fn: (d) => d.amount * 1.1 },
-    itemCount: { type: 'int', agg: { $count: 'items' } },
+    itemCount: { type: 'int', agg: { $count: 'items' } },                 // relation agg
+    biddersCount: { type: 'int', depends: ['bidders'], agg: { $size: 'bidders' } },
+    maxBid: { type: 'float', depends: ['bidders'], agg: { $max: 'bidders.amount' } },
+    bidderCount: { type: 'int', depends: ['bidders'], agg: { $countDistinct: 'bidders.bidderId' } },
   },
   indexes: [
     { keys: { status: 1 } },
@@ -564,6 +568,25 @@ Boundary rules worth knowing up front (all **fail explicitly**, never silently d
 - Filtering on array fields directly, on a whole object field, or on object dot-paths is rejected on every backend — model cross-entity semantics as `relations` instead.
 - Relation predicates support **one level** of relation; paths like `orders.items.price` are rejected.
 - An unreadable relation is an error, not a silent `false`.
+
+### Inline array aggregation
+
+An `agg` whose first path segment is a declared **array field** (not a relation) aggregates
+over the document's own array — compiled into the same pipeline, no extra query phase:
+
+| Operator | Path | Empty array / missing field |
+|---|---|---|
+| `$size` | the array field itself | `0` |
+| `$sum` | `array.element` | `0` |
+| `$avg` / `$max` / `$min` | `array.element` | `null` |
+| `$countDistinct` | `array.element` | `0` — counts distinct non-null values |
+
+Rules (violations fail at registration, never silently degrade):
+
+- `depends` must include the first path segment field.
+- One level of array element only: `bidders.amount` is valid; nesting further into arrays is rejected.
+- `$count` stays relation-only — use `$size` for arrays.
+- Available on MongoDB and the local (in-process) evaluator; SQL backends reject it explicitly.
 
 <!-- SPEC:NAMING-STYLE:BEGIN -->
 ### Naming: freeform definitions, system-directed translation
