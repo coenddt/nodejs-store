@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.0.2 (2026-10-26)
+
+### Changed（依赖下限：`rust-store-node` ^5.1.0）
+
+- **`rust-store-node` 依赖下限由 `^5.0.0` 提到 `^5.1.0`**：`fields ∩ computes` 同名
+  （计算列覆盖同名字段）的注册放行由 core 5.1.0 提供，Node 宿主自身不做该检测，
+  故必须锁定到含本次 core 变更的绑定版本；lock 中的实际解析版本同步为 5.1.0。
+- 语义（对齐 py-store / go-store）：查询期 `computes` 拥有同名键的输出所有权；
+  写入期 `fields` 声明保留，`$inc` / `$set` 按同名键正常落库。
+- 测试：新增 `tests/fields-computes-same-name.test.js`（注册放行 → 查询输出计算值
+  3（库内原值 7）→ `$inc favoriteCount` 落库 7 → 8）。
+- 无运行时代码改动。
+
 ## 5.0.0 (2026-10-25)
 
 ### Breaking（撤销：用户 `$pipeline` 直通）
