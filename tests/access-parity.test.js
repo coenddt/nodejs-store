@@ -38,7 +38,27 @@ function runJson(cmd, args, opts) {
 const PY_FIXTURE = /FIXTURE_JSON\s*=\s*r?"""([\s\S]*?)"""/;
 const NODE_FIXTURE = /FIXTURE_JSON\s*=\s*String\.raw`([\s\S]*?)`/;
 
-test('accessKeys 对拍：两侧 FIXTURE_JSON 逐字节一致', () => {
+function pythonAvailable() {
+  try {
+    execFileSync('python', ['--version'], { stdio: 'ignore' });
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * 对拍需要「同级 py-store 仓 + 可用 python」；单仓 CI（如 GitHub Actions 只 checkout
+ * nodejs-store）不具备这两个前提，显式跳过并给出原因，不静默、不误报失败。
+ */
+const PARITY_SKIP = !fs.existsSync(PY_SCRIPT)
+  ? `缺少同级 py-store 仓：${PY_SCRIPT}`
+  : !pythonAvailable()
+    ? '缺少可用的 python 解释器'
+    : false;
+const PARITY_OPTS = PARITY_SKIP ? { skip: PARITY_SKIP } : {};
+
+test('accessKeys 对拍：两侧 FIXTURE_JSON 逐字节一致', PARITY_OPTS, () => {
   assert.equal(
     extractFixture(PY_SCRIPT, PY_FIXTURE),
     extractFixture(NODE_SCRIPT, NODE_FIXTURE),
@@ -46,7 +66,7 @@ test('accessKeys 对拍：两侧 FIXTURE_JSON 逐字节一致', () => {
   );
 });
 
-test('accessKeys 对拍：py / node 结果逐条一致（含拒绝路径）', () => {
+test('accessKeys 对拍：py / node 结果逐条一致（含拒绝路径）', PARITY_OPTS, () => {
   const py = runJson('python', [PY_SCRIPT], {
     cwd: PY_ROOT,
     env: {
