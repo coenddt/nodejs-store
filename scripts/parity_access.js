@@ -103,7 +103,7 @@ function sqlFragment(backend) {
   return { text: stmt.text, params: stmt.params };
 }
 
-async function execute(c, fixture) {
+async function execute(c) {
   if (c.op === 'sql') {
     return { name: c.name, ok: true, value: sqlFragment(c.backend) };
   }
@@ -136,7 +136,7 @@ async function main() {
   }
 
   const results = [];
-  for (const c of fixture.cases) results.push(await execute(c, fixture));
+  for (const c of fixture.cases) results.push(await execute(c));
 
   datasource.setConnections({});
   process.stdout.write(`${JSON.stringify({ results })}\n`);
