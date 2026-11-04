@@ -637,7 +637,8 @@ async function executeNative(source, collection, pipeline = [], options = null) 
   const conn = await resolveConnection(source, false);
   if (isSqlConnection(conn)) {
     throw new NativeCommandError(
-      `数据源 ${source} 是 SQL 源（原生 Mongo 命令入口仅支持 mongo；SQL 源请用 executeRaw）`,
+      `数据源 ${source} 是 SQL 源（executeNative 仅接受 Mongo 原生命令，SQL 源请用 executeRaw；`
+      + '按 schema 的 aggregate/query（pipeline 由 core 翻译成方言 SQL）在 SQL 源可用——两者适用源不同）',
     );
   }
   const isTxView = !!conn && conn.kind === 'mongo';

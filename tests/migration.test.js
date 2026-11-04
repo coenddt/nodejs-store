@@ -35,6 +35,19 @@ test('diff：白名单变更检出，恒等不上报', () => {
   assert.ok(!ops.some(([o, n]) => o === 'addColumn' && (n === '_id' || n === 'orderNo')));
 });
 
+test('建表：物理化 defn 已含 deleted_at 时归档表不重复建列', () => {
+  // migrate 先 _physicalDefn（键转 snake），归档表 def 再追加 deletedAt；
+  // 两者都必须收敛到单列（真实链路 duplicate column name 的回归）
+  const defn = {
+    name: 'Doc', collection: 'docs', idPrefix: 'd', timestamps: false,
+    fields: { _id: { type: 'string' }, deleted_at: { type: 'number', default: 0 } },
+  };
+  const stmts = ddl.generateMigration('sqlite', null, defn);
+  const arch = stmts.find((s) => s.includes('CREATE TABLE "docs_deleted"'));
+  assert.ok(arch, '应生成归档表');
+  assert.equal((arch.match(/"deleted_at"/g) || []).length, 1, arch);
+});
+
 test('diff：破坏性变更一律记入 errors', () => {
   const dropped = {
     name: 'Order', collection: 'orders', idPrefix: 'o',
@@ -126,6 +139,22 @@ test('parity 锚：与 py-store/tests/test_migration.py 同输入逐字节一致
     'ALTER TABLE `orders` MODIFY COLUMN `amount` DOUBLE',
     'CREATE INDEX `idx_orders_channel` ON `orders` (`channel` ASC)',
   ]);
+});
+
+test('generate：object 列老表加列禁止 DEFAULT，文案指明「加列 + 回填」', () => {
+  // A5：区分「标量列可随 ADD COLUMN 设 DEFAULT」与「object/vector 列必须加列 + 回填」
+  const objAdd = {
+    name: 'Order', collection: 'orders', idPrefix: 'o', timestamps: false,
+    fields: {
+      ...OLD.fields,
+      meta: { type: 'object', default: { k: 1 }, fields: { k: { type: 'int' } } },
+    },
+    indexes: OLD.indexes,
+  };
+  assert.throws(
+    () => ddl.generateMigration('mysql', OLD, objAdd),
+    (e) => e.message.includes('MIGRATION_UNSUPPORTED') && e.message.includes('加列 + 回填'),
+  );
 });
 
 test('generate 与 register 链路可用（冒烟）', () => {

@@ -126,6 +126,10 @@ const ID_TYPE = ['VARCHAR(64)', 'TEXT', 'TEXT'];
 const ID_AUTO_TYPE = ['INT AUTO_INCREMENT', 'SERIAL', 'INTEGER'];
 const PRESENT_TYPE = ['VARCHAR(255)', 'TEXT', 'TEXT'];
 const TIMESTAMP_FIELDS = ['createdAt', 'updatedAt'];
+// creator 权限隐含归属键（A2）：与 py_store/ddl.py 及 core schema/registry.rs 同款。
+// 写入路径 creator 权限必注入 createdBy，该列必须建；否则 SQL 层 1054 Unknown column。
+const CREATOR_ROLE = 'creator';
+const CREATOR_FIELD = 'createdBy';
 const MYSQL_PRESENT_MAX = 255;
 
 function idx(backend) {
@@ -196,8 +200,35 @@ function columns(defn, backend) {
       if (!cols.some((c) => c[0] === col)) cols.push([col, TYPES.number[i], false, false]);
     }
   }
+  // A2：owner 行控（creator 权限）⇒ 归属键必建（与 timestamps 同款自动补齐；已声明则沿用声明的类型）。
+  // 键名取 ownerKey（缺省 createdBy）。与 py_store/ddl.py 逐字节对齐，并与 core
+  // schema/registry.rs::add_owner_field 同口径。
+  const owner = ownerField(defn);
+  if (owner) {
+    const col = pname(backend, owner);
+    if (!cols.some((c) => c[0] === col)) cols.push([col, TYPES.string[i], false, false]);
+  }
   cols.push(['__present', PRESENT_TYPE[i], false, false]);
   return cols;
+}
+
+/** read/write 是否含 creator 伪角色（决定归属键必建；与 core 同口径） */
+function hasCreatorPermission(defn) {
+  const has = (roles) => Array.isArray(roles) && roles.includes(CREATOR_ROLE);
+  return has(defn.read) || has(defn.write);
+}
+
+/**
+ * owner 行控使用的归属键名；null = 不使用 owner 行控（不补列）。
+ *
+ * ownerKey 缺省 = createdBy；`_id` 是系统主键，DDL 已建，不重复补列。
+ * 与 core schema/registry.rs::add_owner_field 同口径。
+ */
+function ownerField(defn) {
+  if (!hasCreatorPermission(defn)) return null;
+  const declared = defn.ownerKey;
+  const name = typeof declared === 'string' && declared ? declared : CREATOR_FIELD;
+  return name === '_id' ? null : name;
 }
 
 /** MySQL __present VARCHAR(255) 容量校验：超限即告警（不静默） */
@@ -329,10 +360,15 @@ function sqlLiteral(v) {
   throw new Error(`迁移生成：default 仅支持 JSON 标量字面量，收到 ${typeof v}`);
 }
 
-/** 主 def → 归档表 def（列 = 主列 + deletedAt；剔除 _id 自增策略；indexes 继承） */
+/** 主 def → 归档表 def（列 = 主列 + deletedAt；剔除 _id 自增策略；indexes 继承）
+ *
+ * 主 def 可能已声明 deletedAt（camelCase）或已被 `_physicalDefn` 转成 deleted_at
+ * （snake_case）：两种都已存在 → 不再重复追加，否则归档表 CREATE TABLE 会
+ * `duplicate column name: deleted_at`。 */
 function archiveDefnOf(defn) {
   const fields = { ...(defn.fields || {}) };
-  fields.deletedAt = { type: 'number' };
+  const hasDeleted = Object.keys(fields).some((k) => k === 'deletedAt' || k === 'deleted_at');
+  if (!hasDeleted) fields.deletedAt = { type: 'number' };
   if (fields._id && typeof fields._id === 'object') {
     const { strategy, ...rest } = fields._id;
     fields._id = rest;
@@ -467,7 +503,8 @@ function generateMigration(backend, oldDefn, newDefn) {
         if (NON_COLUMN.includes(ftype) || ftype === 'vector') {
           throw new Error(
             `MIGRATION_UNSUPPORTED: 新列 "${ch.name}"（${ftype} 列）不支持 DEFAULT`
-            + '（存量行缺失语义由 __present 哨兵表达；default 仅影响新写入）');
+            + '（建新表可设 default；老表新增列必须「加列 + 回填」两步：先 ADD COLUMN 不带 default，'
+            + '再回填存量行——漏回填的行按新列过滤会全表不可见；存量行缺失语义由 __present 哨兵表达）');
         }
         colSql += ` DEFAULT ${sqlLiteral(deflt)}`;
       }

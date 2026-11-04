@@ -529,6 +529,64 @@ test('ddl 未知字段类型抛错', () => {
   assert.throws(() => store.generateDdl('mysql', ['DdlBad']), /未知/);
 });
 
+test('ddl ownerKey 自定义 + owner 行控补自定义列（三后端）', () => {
+  store.register({
+    name: 'DdlOwnerCustom', collection: 'ddl_owner_custom', idPrefix: 'o', timestamps: false,
+    write: ['creator'], ownerKey: 'creatorId',
+    fields: { _id: { type: 'string' }, title: { type: 'string' } },
+  });
+  const my = store.generateDdl('mysql', ['DdlOwnerCustom']);
+  const pg = store.generateDdl('postgres', ['DdlOwnerCustom']);
+  const lite = store.generateDdl('sqlite', ['DdlOwnerCustom']);
+  assert.ok(my.includes('`creator_id` VARCHAR(255)'), my);
+  assert.ok(pg.includes('"creator_id" TEXT'), pg);
+  assert.ok(lite.includes('"creator_id" TEXT'), lite);
+  assert.ok(!my.includes('created_by'), my);
+  assert.ok(!pg.includes('created_by'), pg);
+});
+
+test('ddl ownerKey 无 owner 行控不补列', () => {
+  store.register({
+    name: 'DdlOwnerNoCtl', collection: 'ddl_owner_noctl', idPrefix: 'o', timestamps: false,
+    ownerKey: 'creatorId', read: ['admin'],
+    fields: { _id: { type: 'string' }, title: { type: 'string' } },
+  });
+  for (const backend of ['mysql', 'postgres', 'sqlite']) {
+    const ddl = store.generateDdl(backend, ['DdlOwnerNoCtl']);
+    assert.ok(!ddl.includes('creator_id'), ddl);
+    assert.ok(!ddl.includes('created_by'), ddl);
+  }
+});
+
+test('ddl creator 权限自动补 created_by 列（三后端）', () => {
+  // A2：与 core schema/registry.rs::add_creator_field 同口径——注册期补字段声明 +
+  // 建表补列，避免写入路径注入 createdBy 时 SQL 1054 Unknown column。
+  store.register({
+    name: 'DdlCreator', collection: 'ddl_creator', idPrefix: 'c', timestamps: false,
+    write: ['creator'],
+    fields: { _id: { type: 'string' }, title: { type: 'string' } },
+  });
+
+  const my = store.generateDdl('mysql', ['DdlCreator']);
+  const pg = store.generateDdl('postgres', ['DdlCreator']);
+  const lite = store.generateDdl('sqlite', ['DdlCreator']);
+
+  assert.ok(my.includes('`created_by` VARCHAR(255)'), my);
+  assert.ok(pg.includes('"created_by" TEXT'), pg);
+  assert.ok(lite.includes('"created_by" TEXT'), lite);
+});
+
+test('ddl creator 权限已声明 createdBy 时不重复建列', () => {
+  store.register({
+    name: 'DdlCreatorDecl', collection: 'ddl_creator_decl', idPrefix: 'c', timestamps: false,
+    read: ['creator'],
+    fields: { _id: { type: 'string' }, createdBy: { type: 'string' } },
+  });
+
+  const sql = store.generateDdl('mysql', ['DdlCreatorDecl']);
+  assert.equal((sql.match(/`created_by`/g) || []).length, 1, sql);
+});
+
 test('ddl __present 超限告警', () => {
   const events = [];
   feedback.setSink((e) => events.push(e));
