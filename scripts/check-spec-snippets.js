@@ -10,11 +10,11 @@ const REPO = {
   carriers: {
     // 名称 -> { file, ids }；ids='*' 表示需含全部三段
     'README.md':            { file: 'README.md',                 ids: '*' },
-    'README.zh-CN.md':      { file: 'README.zh-CN.md',           ids: '*' },
+    'README.en.md':         { file: 'README.en.md',              ids: '*' },
     'llms-full.txt':        { file: 'llms-full.txt',             ids: '*' },
     'ask_knowledge.md':     { file: 'src/ask_knowledge.md',      ids: '*' }, // py: src/py_store/ask_knowledge.md
   },
-  equality: ['README.md', 'README.zh-CN.md', 'llms-full.txt', 'ask_knowledge.md'], // 取等集合（本例全含）
+  equality: ['README.md', 'README.en.md', 'llms-full.txt', 'ask_knowledge.md'], // 取等集合（本例全含）
   ids: ['NAMING-STYLE', 'LOCATION', 'FNREF'],
 };
 

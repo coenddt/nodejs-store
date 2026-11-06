@@ -1,193 +1,407 @@
 # nodejs-store
 
-**The Node.js host of a shared Rust data engine: one JSON schema and one GQL dialect over MongoDB, MySQL, PostgreSQL, SQLite and local disk — with the same answers as the Python host, by construction.**
+**面向 MongoDB、MySQL、SQLite、PostgreSQL 与本地磁盘（local）的统一数据层 —— 用纯 JSON 定义模型，用 MongoDB 风格的 GQL 树语法查询，开箱即得基于角色的访问控制、计算列与软删除。**
 
 ![npm version](https://img.shields.io/npm/v/nodejs-store)
 ![license](https://img.shields.io/npm/l/nodejs-store)
 ![node](https://img.shields.io/node/v/nodejs-store)
-![backends](https://img.shields.io/badge/backends-MongoDB%20%7C%20MySQL%20%7C%20PostgreSQL%20%7C%20SQLite%20%7C%20local-blue)
+![backends](https://img.shields.io/badge/backends-MongoDB%20%7C%20MySQL%20%7C%20SQLite%20%7C%20PostgreSQL%20%7C%20Local-blue)
+![query dialect](https://img.shields.io/badge/query%20dialect-GQL%20(MongoDB--flavoured)-green)
 
-- Schema validation, query planning and permission judgment live in the Rust core, not in this package.
-- Nested relations compile to a fixed number of native queries — at most two when a root window is present — never N+1.
-- Parity with `py-store` is enforced by shared fixtures and a shared scenario corpus, not by review.
+> English: [README.en.md](README.en.md)
 
-## 02:14, one collection, two answers
+`nodejs-store` 让 Node.js 服务通过**单一 schema 定义、单一查询方言**同时对接 MongoDB（原生聚合）、MySQL、PostgreSQL、SQLite 与本地磁盘（local）。嵌套关系会编译为**每个后端一条原生查询** —— 你永远不必手写 `$lookup` 或原生 SQL。
 
-The account page said the course had been unpublished. The Python nightly job, which had just recomputed the same course's revenue, printed `status: "published"`. Both services were reading the same MongoDB collection. Both had a copy of the same `schema.json`. Both sent the same GQL.
+> 也在找 Python 版本？见 [`py-store`](https://github.com/coenddt/py-store)（pip 包 `storepy`）。两者都是共享 Rust 引擎 [`rust-store`](https://github.com/coenddt/rust-store) 之上的薄宿主。
+>
+> **Store 家族（Gitee）：** [`rust-store`](https://gitee.com/coenddt/rust-store)（共享 Rust 核心）· [`nodejs-store`](https://gitee.com/coenddt/nodejs-store)（本仓库 —— Node.js 宿主，npm `nodejs-store`）· [`py-store`](https://gitee.com/coenddt/py-store)（Python 宿主，pip `storepy`）
 
-At 02:14 the Node admin API answered a `creator`-only update with `ERR_NOT_FOUND`; the Python worker answered the same `_id` with a permission error. The on-call engineer spent forty minutes looking for a row that had never been deleted. One service had reduced "no row matching your ownership" to a missing row; the other had reduced "the row you may not touch" to a permission error. The same row fell on different sides of the same question — and there was no database bug anywhere.
+---
 
-That is the failure this repository is built to remove. `nodejs-store` is the Node.js host of a data engine whose schema rules, GQL parser, permission evaluation and command planner exist once, in Rust. `py-store` is the other host. A Node service and a Python worker do not agree because two teams wrote careful code; they agree because there is only one judgment to copy.
+## 目录
 
-## What it actually does
+- [它是什么](#它是什么)
+- [什么时候该用它](#什么时候该用它)
+- [什么时候不该用它](#什么时候不该用它)
+- [与同类方案的对比](#与同类方案的对比)
+- [安装](#安装)
+- [快速开始](#快速开始)
+- [支持的后端](#支持的后端)
+- [特性](#特性)
+- [GQL 树查询](#gql-语法)
+- [聚合](#聚合)
+- [查询与写入 API](#查询与写入-api)
+- [多数据源连接](#多数据源连接)
+- [权限上下文](#权限上下文)
+- [Schema 参考](#schema-参考)
+- [向量检索](#向量检索)
+- [高级 API](#高级-api)
+- [事务边界](#事务边界)
+- [触发器](#触发器)
+- [事务型能力](#事务型能力)
+- [场景事例](#场景事例)
+- [性能](#性能)
+- [常见问题](#常见问题)
+- [相关项目](#相关项目)
+- [框架使用契约](#框架使用契约)
 
-You describe a model as pure JSON — fields, relations, computed columns, indexes, role whitelists, optional owner key. The core turns that description plus a GQL tree query into native commands for the target backend, in a count that does not grow with the number of relations or parent rows. This package supplies what the core deliberately does not: driver IO, request context, callbacks and placeholder substitution.
+---
 
-| Responsibility | Where the decision is made |
-|---|---|
-| Schema: fields, relations, computes, indexes, role lists, owner key | `rust-store` core, reached through `register` |
-| GQL tree query → native commands per backend | core planner; this host routes the command |
-| Permission and row-ownership judgment | core; this host supplies the request context |
-| Defaults, owner injection, timestamps, soft-delete archive | core plans; this host executes |
-| Driver IO, transactions, sessions, callbacks, placeholders | this repository, `src/` |
-| DDL text and whitelist migration | this repository, `ddl.js` and `migrate.js` |
+## 它是什么
 
-There is no second copy of the schema rules or the permission rules in JavaScript. That is the whole architectural bet.
+面向 Node.js 的轻量级、后端无关的数据层。你只需用纯 JSON 描述一次模型（`fields`、`relations`、`computes`、`indexes`、`read`/`write` 角色白名单）。库会据此推导出：
 
-## Key mechanisms
+- **命令规划**（GQL → Mongo 命令 JSON）—— 由 Rust 核心 `rust-store-node` 执行，
+- **方言翻译**（命令 JSON → 参数化 SQL），面向 MySQL / PostgreSQL / SQLite，
+- **权限校验**（schema 级 + 字段级读写、属主条件注入），
+- **计算列**、**软删除归档**，以及**结果还原**（扁平 JOIN 行 → 嵌套文档）。
 
-### 1. One plan, two runtimes
+MongoDB 是*主方言*：查询以 MongoDB 风格的 GQL 编写，三种关系型后端向它适配。这正是让同一份 schema 可同时运行在文档库与三种关系库上的原因。
 
-`rust-store-node` is a napi-rs binding; `rust-store-py` is a PyO3 binding. Both wrap the same `rust-store/core`. The core owns schema validation, GQL parsing, permission evaluation, computed columns, command planning and SQL dialect translation. It never opens a connection.
+### 与 py-store、rust-store 的关系
 
-```mermaid
-sequenceDiagram
-    participant N as Node service
-    participant C as rust-store core
-    participant P as Python service
-    participant D as MongoDB or SQL
-    N->>C: register schema and send GQL
-    C-->>N: Command JSON
-    P->>C: register the same schema and GQL
-    C-->>P: the same Command JSON
-    N->>D: execute through the Node driver
-    P->>D: execute through the Python driver
+```
+                 ┌──────────────────────────────┐
+   Node.js  ──▶  │  nodejs-store (npm, host)    │ -┐
+                 └──────────────────────────────┘  │  rust-store-node (napi-rs)
+                                                   ▼
+                                     ┌───────────────────────────────┐
+                                     │ rust-store/core (pure logic)  │
+                                     │ GQL · permissions · computes  │
+                                     │ command planning · dialects   │
+                                     └───────────────────────────────┘
+                                                   ▲
+                 ┌──────────────────────────────┐  │  rust-store-py (PyO3)
+   Python   ──▶  │  py-store (pip, host)        │ -┘
+                 └──────────────────────────────┘
 ```
 
-The hosts still differ in the places where they must: a JS `undefined` becomes `null` before it crosses the callback bridge, Python's driver returns different numeric types, and each language binds computed-column implementations by its own naming style. Those are IO and language details, not semantic decisions. The planner, and therefore the answer, is shared.
+**Rust 核心**负责 GQL 解析、权限校验、计算列、命令规划与 SQL 方言翻译 —— 它从不接触数据库。**宿主**（`nodejs-store`、`py-store`）负责驱动 IO、回调与占位符替换。因此 Node.js 与 Python 之间不会出现行为漂移：只有一份实现。
 
-### 2. A write that cannot answer in one pass
+## 什么时候该用它
 
-An `update` or `remove` on a `creator`-owned row cannot decide permission before it has seen the row. The core returns a plan with a probe instead of guessing. The host executes the probe, then re-enters the planner with the observed document.
+当以下任一情形符合你的处境时，就该用 `nodejs-store`：
 
-```mermaid
-flowchart LR
-    A[update or remove] --> B{needs a probe}
-    B -->|no| E[plan and execute]
-    B -->|yes| C[read the target row]
-    C --> D{row exists}
-    D -->|no| F[ERR_NOT_FOUND]
-    D -->|yes| G{owner and field rules}
-    G -->|deny| H[original permission text]
-    G -->|allow| I[plan and execute]
-```
+- **一套代码，多个数据库。** 同一服务在开发环境跑 MongoDB、生产环境（或按租户）跑 PostgreSQL，而你不想维护两套数据访问层。
+- **需要嵌套/关系读取，却不想写 `$lookup` 或 JOIN。** Order → items、Course → lessons、User → orders —— 都只在 schema 中声明一次，并在单条查询内解析。
+- **正在构建管理后台或内部 CRUD 服务**，想要 schema 驱动的 CRUD、软删除、计算列与角色校验，而不引入完整 ORM。
+- **需要行级/字段级访问控制。** 按角色的白名单、`guest` 永不写、`creator` 依据 `doc.createdBy` 校验属主，属主条件会自动注入查询。
+- **正在构建 AI/自然语言数据问答层。** 本库在设计时就考虑了 AI 查询宿主：`buildPipeline()` 可在不执行的情况下暴露规划后的查询，降级/不可下推路径会发出结构化反馈事件而非静默失败。参见配套技能 [`text-to-query`](#相关项目)。
+- **正在 MongoDB 与 SQL 之间迁移**，并希望在迁移期保持一套查询语法。
+- **多租户 SaaS。** 一份 schema 定义，N 个租户：把 schema 定位到 `(source, database, schema, collection)`，并在执行时用 `{ source, database, schema }` 覆盖把任意查询/写入重新定向到目标租户。
 
-The three states are deliberate, and they are tested on both hosts:
+典型的具体场景（完整演练见 [`doc/use-cases/`](doc/use-cases/)）：
 
-- **Not probed yet** — the plan is returned with `needsProbe`; nothing is assumed.
-- **Probe missed** — the row is gone (`_id` absent or already deleted) → `ERR_NOT_FOUND:`. This is *not* a 403, and it is not rewritten into a permission message.
-- **Probe hit, access denied** — the row exists but the owner or a field whitelist rejects the write → the original permission text is preserved (`ERR_PERMISSION:ACCESS:…`). `PermissionError` strips the stable prefix; it never replaces the reason.
+| 场景 | nodejs-store 为何合适 |
+| --- | --- |
+| 每租户独立 schema/数据库的多租户 SaaS | 每租户一个 `database` + 运行时路由覆盖，一套 schema |
+| 管理后台 / 内部工具 | schema 驱动 CRUD、软删除、计算列、RBAC |
+| 今天 MongoDB，明天 PostgreSQL | 同一 GQL + 同一 schema，只有数据源变化 |
+| AI 数据问答 / text-to-query 智能体 | 仅规划的 `buildPipeline`、确定性的命令 JSON、反馈事件 |
+| 同一产品中混用 SQL + Mongo | 跨源查询，SQL 原生下推、Mongo 走内存联邦 |
+| 审计友好的 CRUD | 每个 schema 自动获得一个 `<Model>Deleted` 归档表/集合 |
 
-A host that maps both failures to "not found" hides a genuine authorization denial. A host that maps both to 403 sends an engineer hunting for permissions on a deleted row. Keeping the states separate is what makes the 02:14 page actionable.
+## 什么时候不该用它
 
-### 3. The row is complete before it is written
+明确边界能为你省下时间：
 
-Two rules are applied before the document leaves the process, not after it comes back.
+- **你想要带迁移引擎的完整 ORM。** `nodejs-store` 是*数据层*，不是迁移工具。它可以**读取** SQL 后端的物理结构（`syncSchema` → introspection），但从不把 DDL 写回。请与你自选的迁移工具搭配使用。另有一个可选的 `generateDdl()`，可从已注册 schema 渲染出 `CREATE TABLE` 文本 —— 纯文本，绝不连接或写入数据库。
+- **你需要带类型安全、自动生成的客户端。** schema 是运行时 JSON，而非 TypeScript 类型。你获得的是灵活性与跨语言一致性（同一份 schema 在 Node 与 Python 中都可用），而不是编译期类型推断。
+- **你只用一种数据库，且几乎不做关联。** 直接用裸驱动（或只针对单一数据库的 ODM/ORM）会更简单。
+- **你需要原生聚合逃生舱。** 用户 `$pipeline` 透传已移除 —— 含 `$pipeline` 的 GQL 一律在解析期显式失败。原生逃生口只保留显式入口：`store.aggregate()`（严格 **opt-in**，默认禁用，需 `init(conn, { allowNativeAggregate: true })` 显式开启）、`executeNative()`（Mongo 原生聚合）与 `executeRaw()`（原生 SQL）。日常查询请使用 `$condition` / `$group` / `$having` / 关系；任何无法安全翻译的内容都会**显式**失败，而不会静默降级。
+- **你在 SQLite 的高并发热路径上。** SQLite 执行器按设计使用同步的 `better-sqlite3` 驱动 —— 调用会阻塞事件循环。此类场景请优先使用 MySQL / PostgreSQL / MongoDB，或把 SQLite 隔离到独立进程。
 
-**The owner field and its column.** If `read` or `write` contains the `creator` pseudo-role, registration treats the ownership key as a declared field. The key is `ownerKey`, defaulting to `createdBy`; an `_id` owner key adds no column. `generateDdl` emits the column for SQL backends. On write, a falsy owner value is filled from `ctx.userId`. If someone bypasses registration and builds a schema by hand without the field, the write fails with a message naming the missing field — instead of a SQL `1054 Unknown column` from three layers down.
+## 与同类方案的对比
 
-**The schema default.** On the insert path the core applies `DefaultFill::Insert`: only defaults that were explicitly declared, and only where the key is absent. This happens after `_id`, owner and timestamps are injected, so explicit input always wins. Explicit `null` is preserved and lands as SQL `NULL`. Fields without a declared default are not filled with a type zero.
+以下为总体定位，并非基准测试 —— 请始终以各工具当前文档为准。
 
-| Input | Stored value |
-|---|---|
-| `{}` with `default: 'draft'` | `draft` |
-| `{ status: 'published' }` | `published` |
-| `{ status: null }` | `null` |
+| | nodejs-store | Mongoose | Prisma | TypeORM / Sequelize | Drizzle |
+| --- | --- | --- | --- | --- | --- |
+| 主要形态 | JSON schema + GQL 数据层 | ODM（MongoDB） | Schema DSL + 生成的客户端 | 装饰器/实体 ORM | TypeScript SQL 构建器 |
+| 后端 | MongoDB、MySQL、SQLite、PostgreSQL、local | MongoDB | PostgreSQL、MySQL、SQLite、SQL Server、MongoDB、CockroachDB | MySQL、PostgreSQL、SQLite、MSSQL、Oracle（+ MongoDB） | PostgreSQL、MySQL、SQLite、… |
+| 跨 Mongo **与** SQL 的统一查询方言 | ✅（MongoDB 风格 GQL） | ➖（仅 Mongo） | ➖（每个 provider 一个客户端） | ⚠️（Mongo 模型与 SQL 实体不同） | ➖（仅 SQL） |
+| 单条查询内的嵌套关系读取 | ✅ 声明式 relations → `$lookup` / `JOIN` | ✅ `populate()` | ✅ `include` | ✅ relations | ⚠️ 手动 join |
+| 内置角色 / 字段级 RBAC + 属主注入 | ✅ | ➖ | ➖（通过扩展） | ➖ | ➖ |
+| 读时计算列（同步 / 异步 / 关系聚合） | ✅ | ➖（getter） | ➖ | ➖ | ➖ |
+| 自动置备软删除归档表 | ✅ | ➖ | ➖ | ➖ | ➖ |
+| 迁移 / DDL 引擎 | ➖（introspection 只读；可选 `generateDdl` 文本） | ➖ | ✅ | ✅ | ✅ |
+| 静态类型生成 | ➖（运行时 JSON，跨语言一致） | ➖ | ✅ | ⚠️（装饰器 + TS） | ✅ |
+| Node 与 Python 共享原生核心 | ✅（Rust `rust-store`） | ➖ | ➖ | ➖ | ➖ |
 
-The read path keeps the older `DefaultFill::Return` behaviour — type zeros plus defaults — so documents written before this rule still read the way they used to. Applying defaults only on read was the bug that made a list filter on `deletedAt: 0` return nothing: the archive row had `NULL` in the column the filter was reading.
+### 与具体库的差异
 
-### 4. Parity is a test artifact
+仅为定位说明，基于撰写时这些项目的公开文档 —— 请以你自己的需求为准进行核实。
 
-The claim "Node and Python agree" is checked against files, not intentions.
+- **vs Mongoose** —— Mongoose 仅支持 MongoDB。`nodejs-store` 使用类似的 MongoDB 风格查询语法（`$gt`、`$or`、`$set`、`$inc`），但同一条查询也能原样跑在 MySQL、SQLite 与 PostgreSQL 上。
+- **vs `mongoosql-core`** —— 精神上最接近：它同样能在 MongoDB、PostgreSQL 与 MySQL 上运行 Mongoose 风格的查询。`nodejs-store` 还额外面向 SQLite，内置 schema 级权限（角色/字段白名单，外加 `creator` 属主条件注入）、读时计算列（`fn` / `asyncFn` / 关系 `agg`）、自动置备的 `<Model>Deleted` 软删除归档，并与 Python 宿主共享同一个 Rust 引擎，因此 Node.js 与 Python 不会产生漂移。
+- **vs `unsql`** —— `unsql` 从普通 JavaScript 对象为 MySQL、PostgreSQL 与 SQLite 生成 SQL。它不面向 MongoDB，且只是一个查询/CRUD 辅助工具，而非带权限与计算列的 schema 驱动数据层。
+- **vs Prisma** —— Prisma 是 schema DSL 加生成的客户端，配有迁移引擎与编译期类型。`nodejs-store` 是运行时 JSON schema，不承担迁移引擎职责（仅通过 introspection *读取*物理结构，`generateDdl()` 也只*渲染* `CREATE TABLE` 文本而不触碰数据库），也不生成类型 —— 以此换取一套横跨文档库与三种关系库的查询方言。
+- **vs TypeORM / Sequelize / Drizzle** —— Sequelize 与 Drizzle 仅支持 SQL；TypeORM 把 MongoDB 与其 SQL 实体分开建模。`nodejs-store` 以 MongoDB 为主方言，并把同一份 GQL 编译为其余三种后端的 SQL。
 
-| Corpus | Where it lives | What is compared |
-|---|---|---|
-| Host contract | `rust-store/fixtures/host`, 5 JSON files | placeholders, truthy rules, ID pools, callback bridge |
-| `accessKeys` | `scripts/parity_access.js` and its Python twin | byte-identical fixture text, then every result including denials |
-| Denial text | `scripts/parity-deny.js` and its Python twin | rejection messages, byte for byte |
-| Business scenario | `example/course-platform`, 101 cases | MongoDB as oracle, then PostgreSQL, MySQL and SQLite row by row |
+一句话：想要**编译期类型与迁移**就用 ORM；想要**一份运行时 schema + 一套横跨 MongoDB 与 SQL 的查询方言**，并内置 RBAC 与计算列，就用 `nodejs-store`。
 
-The scenario schema is not a copy: `nodejs-store/example/course-platform/schema.json` and the `py-store` file have the same SHA-256. The `manager-transaction` scenario adds 23 more cases. `npm test` runs 54 test files through `node --test`; `npm run test:coverage` enforces 90% statements and lines, 85% functions and 75% branches on `src/`.
-
-## Run it
+## 安装
 
 ```bash
 npm install nodejs-store
 ```
 
-Node.js 18 or newer. The example below is a trimmed version of `example/course-platform/schema.json` and runs on the local disk source, so no database server is needed.
+需要 Node.js 18+，以及一个受支持的后端（MongoDB / MySQL / SQLite / PostgreSQL / 本地磁盘）。
 
-```javascript
-const { init, store, local } = require('nodejs-store');
+## 快速开始
 
+```js
+const { MongoClient } = require('mongodb');
+const { init, store } = require('nodejs-store');
+
+const client = new MongoClient('mongodb://localhost:27017');
+await client.connect();
+await init(client.db('mydb')); // 幂等地为已注册的 schema 创建索引
+
+// 注册 schema（纯 JSON）
 store.register({
-  name: 'Category',
-  collection: 'categories',
-  idPrefix: 'cat',
-  timestamps: false,
-  fields: { name: { type: 'string' }, sort: { type: 'int' } },
-});
-
-store.register({
-  name: 'Course',
-  collection: 'courses',
-  idPrefix: 'c',
-  timestamps: true,
+  name: 'Post',          // GQL 中使用的模型名
+  collection: 'posts',   // 可选，默认等于 name
+  idPrefix: 'PT',        // 字符串 _id：前缀 + base36 时间戳 + 随机串
   fields: {
-    title: { type: 'string' },
+    title: { type: 'string', default: '' },
     status: { type: 'string', default: 'draft' },
-    price: { type: 'float' },
-    categoryId: { type: 'string' },
-  },
-  relations: {
-    category: { model: 'Category', type: 'one', localField: 'categoryId', foreignField: '_id' },
-    lessons: { model: 'Lesson', type: 'many', localField: '_id', foreignField: 'courseId' },
+    tags: { type: 'array', default: [] },
   },
   computes: {
-    lessonCount: { type: 'int', agg: { $count: 'lessons' } },
+    statusLabel: {
+      type: 'string',
+      depends: ['status'],
+      fn: (doc) => (doc.status || '').toUpperCase(),
+    },
   },
+  indexes: [{ keys: { status: 1, createdAt: -1 } }],
 });
 
-store.register({
-  name: 'Lesson',
-  collection: 'lessons',
-  idPrefix: 'l',
-  timestamps: true,
-  fields: { courseId: { type: 'string' }, title: { type: 'string' }, seq: { type: 'int' } },
-});
+// 写入 —— 只写用户数据；默认值在读时填充
+const doc = await store.insert('Post', { title: 'Hello' });
 
-await init({ default: local.connect({ dir: './data' }) });
-
-const cat = await store.insert('Category', { name: 'Backend', sort: 1 });
-const course = await store.insert('Course', {
-  title: 'Rust for Node teams', price: 199, categoryId: cat._id,
-});
-await store.insert('Lesson', { courseId: course._id, title: 'Ownership', seq: 1 });
-
-const [row] = await store.query(
-  'Course($condition:@c0){ _id, title, status, lessonCount, category { name }, lessons { title, seq } }',
-  { c0: { _id: course._id } },
+// 查询 —— GQL 树语法，值通过 @key 从 params 引用
+const items = await store.query(
+  'Post($condition:@c0,$sort:@s1,$limit:@l) { title, status, statusLabel }',
+  { c0: { status: 'draft' }, s1: { createdAt: -1 }, l: 20 },
 );
-
-console.log(row);
-// { _id: 'c…', title: 'Rust for Node teams', status: 'draft', lessonCount: 1,
-//   category: { name: 'Backend' }, lessons: [{ title: 'Ownership', seq: 1 }] }
 ```
 
-The insert never mentioned `status`; the default was written before the row landed. The relation and the aggregate arrived in the same read, not in two follow-up queries.
+同一份 schema、同一条查询可原样跑在 PostgreSQL 上 —— 只有 `init()` 的数据源不同：
 
-The same schema and the same GQL run on a real backend by changing only the connection:
-
-```javascript
-const { init, executors } = require('nodejs-store');
-
-await init({ default: mongoDb });                                            // MongoDB
-await init({ default: executors.createConnection('postgres', pgPool) });     // PostgreSQL
+```js
+await init({ default: { kind: 'postgres', exec } });   // exec：你的 pg 连接池适配器
+const items = await store.query('Post($condition:@c0) { title, status }', { c0: { status: 'draft' } });
 ```
 
-## Normative excerpts
+## 支持的后端
 
-Three contracts are normative — directory-to-location resolution, naming translation, and `fnRef` binding. They are reproduced verbatim here and checked against every carrier in CI (`scripts/check-spec-snippets.js`).
+| 后端 | 说明 |
+| --- | --- |
+| MongoDB | 原生聚合管道（`find`/`aggregate`/`$lookup`） |
+| MySQL | 参数化 SQL，`information_schema` introspection |
+| SQLite | 参数化 SQL，`sqlite_master` + `PRAGMA` introspection。**同步驱动**（`better-sqlite3`）：调用按设计阻塞事件循环 —— 高并发热路径请优先 MySQL/PostgreSQL/MongoDB，或把 SQLite 隔离到专用进程 |
+| PostgreSQL | 参数化 SQL（`$n`），支持 `RETURNING` |
+| local（本地磁盘） | 集合以 JSON 文件落盘，core 本地求值器执行（无 SQL、无驱动依赖）；见[本地磁盘数据源（local）](#本地磁盘数据源local) |
+
+GQL 树查询会编译为每个后端一条原生查询（local 源除外 —— 命令在 core 本地求值器内直接求值）—— 再也不必手写 `$lookup` 或原生 SQL。
+
+### 本地磁盘数据源（local）
+
+零外部服务、零原生 DB 引擎：集合以 JSON 文件落盘，命令在 Rust core 的本地求值器内直接执行（语义与 MongoDB 驱动一致）。
+
+```js
+const { init, local } = require('nodejs-store');
+
+await init({ default: local.connect({ dir: './data/store' }) });
+```
+
+- **用法**：`local.connect({ dir })` 返回连接描述符（`kind: 'local'`），与 Mongo/SQL 连接一样传给 `init()` / `setConnections()`。
+- **落盘格式**：`<dir>/<物理集合名>.json`（文档数组）；写入先写 `.tmp` 中间文件再原子 `rename`。
+- **事务语义**：快照隔离 —— 事务期读写内存快照，`commit()` 整目录落盘、`rollback()` 丢弃，天然原子。
+- **护栏**：单集合上限 100,000 文档（超限显式报错，不静默截断）；不建索引（仅顺序扫描），声明 `schema.indexes` 即发 `local_indexes_ignored` 反馈事件。
+- **并发限制**：仅单进程 —— 进程内写经目录锁串行化；跨进程并发不在 v1 保证范围。
+
+## 特性
+
+- **纯 JSON schema，零代码** —— 一个模型就是一个对象：fields、relations、computes、indexes。
+- **GQL 树查询 → 一条原生查询** —— 嵌套关系在单条查询中解析；再也不必手写 `$lookup`。
+- **归一化聚合** —— 根级 `$group` / `$having` 与关系聚合谓词（semi/anti-join）在同一份 GQL 中，下推到全部五种后端。
+- **读时默认值与计算列** —— 写入只存用户数据；读取时填充默认值并运行 `fn` / `asyncFn` / 关系 `agg` 计算列。
+- **智能持久化** —— `mutation()` 依据 `_id` + 唯一索引自动识别 upsert，并递归填充关系子文档。
+- **内置软删除** —— 每个 schema 自动注册一个 `<Model>Deleted` 归档集合/表；`remove()` 先归档再删除。
+- **权限上下文** —— 基于 `AsyncLocalStorage` 的角色（`super_admin`/`admin`/`guest`/`creator`...）、schema/字段级读写白名单、自动属主条件注入。
+- **多数据源 & 多租户** —— 通过 `(source, database, schema, collection)` 定位 schema；按请求用路由覆盖重新定向。
+- **异步优先，Rust 核心** —— 基于 `mongodb` Node.js 驱动与共享的 Rust 核心（含 SQL 方言）。
+- **mutation 关系谓词** —— `update` / `remove` 按关联表字段过滤，下推到全部五个后端（此前 MongoDB 侧是静默 no-op）。
+- **自增主键** —— `_id` 声明 `{ type: 'int', strategy: 'autoincrement' }` 即用数据库自增整数 ID；做不到自增的场景显式报错。
+- **索引 DDL** —— `schema.indexes` 编译为真实 `CREATE [UNIQUE] INDEX` 语句（按后端、逐字节一致）；生成器仍只产文本。
+
+## GQL 语法
+
+```text
+Model($condition:@c0,$sort:@s1,$skip:@sk,$limit:@l1) {
+  field1, field2, obj.subField,
+  Relation($condition:@c2,$sort:@s3,$limit:@l2) { f3, Nested { f4 } }
+}
+```
+
+- 值来自 params 对象：`{ c0: {...}, s1: {...} }`。
+- 对象的子字段使用点号表示法；关系在 schema 中声明（`type: 'many' | 'one'`）并自动解析 —— **不要手写 `$lookup`**。
+- `many` 关系返回数组（为空时为 `[]`）；`one` 关系会合并进父文档（缺失时为 `null`）。
+- 关系级 `$sort`/`$skip`/`$limit` 是**按父级的 top-N**（每个父级各自取窗口；在 SQL 上翻译为窗口函数）。
+- null 与「缺失」是有意的三态契约：`{ field: null }` 仅匹配**显式 null**；`{ field: { $eq: null } }` 匹配 **null 或缺失**；`{ field: { $exists: false } }` 仅匹配**缺失**。
+
+### 从 4.x 升级到 5.0
+
+> **破坏性变更**：用户 `$pipeline` 透传已移除 —— 包含 `$pipeline` 的 GQL 现在在解析期显式失败（`ERR_GQL_PARSE:`），而不再被静默忽略，也不再按档位放行。
+
+- **保留键已全部解除。** `type` / `read` / `write` / `fields` / `localField` / `foreignField` 在 5.0.0 均可作字段名；4.8.0 下注册即抛 `ERR_NAME_CONFLICT`。字面保留名仅剩 `_id` 与 `_score`。
+- **`store.aggregate()` 在 4.8.0 中不存在。** 5.0.0 恢复为严格 opt-in 逃生舱（见[事务与原生 SQL](#事务与原生-sql)）：默认禁用（`ERR_NATIVE_AGGREGATE_DISABLED`），需 `init(conn, { allowNativeAggregate: true })` 开启。
+- **null 条件遵循三态契约。** 请逐条核对既有查询的意图：要「null 或缺失」用 `{ $eq: null }`，要「仅显式 null」用裸 `null`，要「仅缺失」用 `{ $exists: false }`。
+- **`$group` 累积器仍只支持 `$count` / `$sum` / `$avg` / `$min` / `$max`。** `$sum: { $cond }`、`$addToSet`、`$last` 会显式报错；需改写查询或把逻辑下沉到应用层。
+
+## 聚合
+
+归一化聚合**内置于 GQL** —— 日常查询不经过单独的聚合 API、不写原生管道。原生聚合仅通过显式逃生舱可达：`store.aggregate()`（opt-in）、`executeNative()` 与 `executeRaw()`。
+
+**根级 `$group` + `$having`**（GROUP BY / HAVING）：
+
+```js
+const rows = await store.query(
+  'Course($condition:@c0,$group:@g0,$having:@h0,$sort:@s0,$limit:@l0){ status, n, total }',
+  {
+    c0: { status: { $ne: 'deleted' } },
+    g0: { by: ['status'], agg: { n: { $count: '*' }, total: { $sum: 'price' } } },
+    h0: { n: { $gt: 1 } },
+    s0: { total: -1 },
+    l0: 20,
+  },
+);
+```
+
+- 白名单算子：`$count` / `$sum` / `$avg` / `$min` / `$max`。该集合是封闭的：`$sum: { $cond }`、`$addToSet`、`$last` 均不支持，请求即显式报错。
+- 固定执行顺序：`$condition`（WHERE）→ `$group`（GROUP BY）→ `$having`（HAVING）→ `$sort` → `$skip`/`$limit` → projection。
+- 省略 `by`（或传 `[]`）即对全表做单一分组；空输入情况仍返回一行（`$count` → `0`，其余 → `null`）。
+
+**关系聚合谓词（semi / anti-join）** —— 按关系的聚合过滤父级，而不会发生行扇出：
+
+```js
+await store.query('Product($condition:@c0,$sort:@s0){ _id, name }', {
+  c0: {
+    $and: [
+      { status: 'onSale' },
+      { orders: { $count: { $gt: 3 } } },                                  // 订单数 > 3
+      { $not: { orders: { $sum: { $of: 'amount', $gt: 10000 } } } },       // 不是大客户
+    ],
+  },
+  s0: { name: 1 },
+});
+```
+
+在 SQL 上翻译为 `EXISTS` / `NOT EXISTS`，在 MongoDB 上翻译为 `$lookup` + `$match`。
+
+**关系滚动计算列** —— 在 schema 中声明一次，按名称请求：
+
+```js
+computes: {
+  itemCount: { type: 'int', agg: { $count: 'items' } },       // 关系为空时为 0
+  itemsTotal: { type: 'float', agg: { $sum: 'items.qty' } },  // 关系为空时为 null
+}
+```
+
+## 查询与写入 API
+
+```js
+const items  = await store.query(gql, params);            // Array
+const one    = await store.queryOne(gql, params);         // object | null
+const page   = await store.queryWithCount(gql, params);   // { items, total, hasMore, page, pageSize }（pageSize 上限 5000）
+const exists = await store.exists('Post', { _id: pid });
+const n      = await store.count('Post', { status: 'active' });
+
+const doc    = await store.insert('Post', { ... });       // 自动 _id / createdAt / updatedAt
+const docs   = await store.insertMany('Post', [{ ... }, ...]);
+await store.update('Post', { _id: pid }, { status: 'live' });      // 普通字段 → $set
+await store.update('Post', { _id: pid }, { $inc: { views: 1 } });  // 以 '$' 开头的键作为操作符透传
+await store.updateMany('Post', { type: t }, { status: 'live' });
+const r      = await store.remove('Post', { _id: pid });  // 先归档到 <collection>_deleted
+await store.mutation('Post', { ... });                    // 智能 upsert + 递归关系子文档
+await store.upsert('Post', { code: 'A1' }, { ... });      // 显式条件的 upsert（不做关系处理）
+```
+
+注意：
+
+- `null`/`undefined` 值在持久化前会被剔除；`_id` 无法通过 `update` 修改。
+- `createdAt`/`updatedAt`（毫秒）由框架维护 —— 不要手动设置。
+- `queryWithCount` 接受 `page`/`pageSize`（推荐）或传统的 `$skip`/`$limit` 参数。
+- 带**空条件**（`{}`、`null`、`{ "$and": [] }`）的 `updateMany` / `remove` 会被直接拒绝 —— 它绝不会退化为全表写入。
+
+### 事务与原生 SQL
+
+```js
+async function transfer() {
+  const rows = await store.executeRaw(
+    'default', 'SELECT * FROM accounts WHERE _id = ? FOR UPDATE', [accId]);
+  await store.executeRaw(
+    'default', 'UPDATE accounts SET balance = ? WHERE _id = ?', [newBalance, accId],
+    true);
+}
+
+await store.transaction('default', transfer);
+```
+
+- `store.transaction(source, fn)` 在单个 SQL 源上开启事务作用域：`fn` 内的每个 `executeRaw` / CRUD 调用都落到该源的事务连接，`commit` / `rollback` 作为一个整体（复用内部的 `runInTransaction`）。Mongo 源按**运行时能力探测**（replica set / sharded）以 session 事务执行；standalone 或探测失败则按原样执行 `fn` 并发 `mongo_transaction_unsupported`（`deployment: standalone|unknown`）—— 绝不假装已原子。不支持事务（未实现 `withTransaction`）的执行器亦按原样执行，并发出一条 `transaction_not_atomic` 反馈（允许降级，绝不静默假装已事务化）。同源嵌套 transaction 会开保存点（内层失败只回滚本层）；句柄无保存点原语时降级并入外层并发 `nested_savepoint_unsupported`。
+- `store.executeRaw(source, sql, params, isWrite)` 执行原生 SQL，绕开 GQL 解析与方言翻译。占位符沿用各后端原生风格：MySQL / SQLite 用 `?`，PostgreSQL 用 `$1..$n`。仅限 SQL 源 —— Mongo 源会抛出 `RawSqlError`（`store.RawSqlError`）。
+- `store.executeNative(source, collection, pipeline, options)` 在 Mongo 源上执行原生聚合管道（SQL 侧 `executeRaw` 的对位逃生舱）：管道原样下发，`options` 使用驱动原生键；事务 / session 内自动注入 session；仅限 Mongo 源 —— SQL 源抛 `NativeCommandError` 并指引 `executeRaw`。返回 `{ rows }`。
+- `store.aggregate(schemaName, pipeline, options)` 是 `executeNative` 的 schema 名版本（5.0.0 恢复；4.8.0 不存在该 API）：解析 `schemaName → (datasource, collection)` 后走同一执行路径。**默认禁用** —— 未用 `init(conn, { allowNativeAggregate: true })` 开启时抛 `ERR_NATIVE_AGGREGATE_DISABLED`；不注入权限过滤、不做 computes 回填；未知 schema 抛 `ERR_AGGREGATE_SCHEMA`。
+- `isWrite=false`（默认）返回 `{ rows, affectedRows }` 含结果集行；`isWrite=true` 返回影响行数。
+
+### 会话（Session / 工作单元）
+
+```js
+await store.session(async (s) => {
+  await s.insert('Order', { ... });
+  await s.update('Account', cond, { ... });
+  await s.executeRaw('pg_main', 'SELECT ... FOR UPDATE', [1]);
+});
+```
+
+- 会话内同一 SQL 源的**全部命令落到同一事务连接**：退出统一提交，异常统一回滚；
+- **惰性开事务**：会话内没有任何命令时不占用连接；
+- **跨源写 fail-closed**：同一会话内写入了 ≥2 个数据源时，退出先全部回滚再抛
+  `NonAtomicWriteError`（跨源无分布式事务，绝不提交半截）；
+- Mongo 源按**运行时能力探测**（replica set / sharded）事务化；standalone 或探测失败则按原样执行（非原子），并发出一条 `mongo_transaction_unsupported`（`deployment: standalone|unknown`）反馈；
+- 会话可嵌套：内层作用域在已有事务上开保存点（`SAVEPOINT sp_<n>`），退出按成败
+  `RELEASE`（成功）/ `ROLLBACK TO` + `RELEASE`（失败）——**内层失败只回滚内层，外层可继续**；
+  事务句柄未提供保存点原语时降级并入外层，并发出一条 `nested_savepoint_unsupported` 反馈。
+
+### DDL 生成
+
+```js
+let sql = store.generateDdl('mysql');                       // 所有已注册模型
+sql     = store.generateDdl('postgres', ['Course', 'CourseDeleted']);
+```
+
+`store.generateDdl(backend, names)` 把一个已注册 schema def 映射为一条 `CREATE TABLE` —— 是 `syncSchema()`（只*读取*）的逆操作。生成器是**纯文本**：它绝不连接、也绝不写入数据库（铁律 6 依然成立）。
+
+- 只有标量字段成为列；`object` / `array` 字段不建列。
+- 每张表都会获得 `__present` 哨兵列；`timestamps` 模型还会获得 `createdAt` / `updatedAt`；`<collection>_deleted` 归档表与其它已注册 def 一样生成。
+- 已声明的 `schema.indexes` 会渲染为 `CREATE [UNIQUE] INDEX idx_<table>_<cols>`（在 MySQL / PostgreSQL / SQLite 上逐字节一致）。运行期 SQL 后端仍仅把索引保留为元数据 —— 库绝不向数据库执行 DDL。
+- MySQL 的 `__present` 为 `VARCHAR(255)`；若某 schema 的 present 令牌串会超限，则发出 `ddlPresentOverflow` 反馈事件，而非静默失败。
+
+## 多数据源连接
+
+每个 schema 由 `(source, database, schema, collection)` 定位 —— `schema` 仅适用于
+PostgreSQL 源；该落点在 registry 内必须全局唯一（重复注册会抛错，而不是静默错路由）。
+
+- `source` —— `init({...})` 中的连接键（默认 `"default"`）。
+- `database` —— 连接内的数据库：Mongo 库名、PG / MySQL database、SQLite 附加库。
+- `schema` —— PostgreSQL 的 schema（仅 PG 源）；其它后端为 `null`。
+- `collection` —— 表/集合名。
+
+定义**不携带落点字段**：schema 定义文件不声明 `source` / `database` / `schema`（其
+`collection` 只是逻辑表/集合名）。落点由「定义目录布局 + 连接配置」解析：
 
 <!-- SPEC:LOCATION:BEGIN -->
 ### Location: directory semantics + connection config (definitions carry no location)
@@ -201,6 +415,128 @@ A schema definition file contains no location fields (no `source` / `database` /
 - A duplicated `name` within one load batch is an error and the service does not start; re-loading the same `name` across versions bumps its version by 1.
 - Writes are synchronized within a single connection, across the primary plus all links, in one transaction; a write spanning a cross-connection link is explicitly rejected or degraded with a feedback event (never silent).
 <!-- SPEC:LOCATION:END -->
+
+```js
+// 多个 Mongo 服务器：每个连接一个 source
+await init({ mongo_main: db, pg_a: { kind: 'postgres', exec } });
+
+// 同一个 MongoClient 服务多个数据库：选择 database
+await init({ cluster: client });
+store.register({ name: 'User', collection: 'users', datasource: 'cluster', database: 'tenant_42', ... });
+
+// SQL 跨 database 的 join 会原生下推（"db_a"."t" JOIN "db_b"."t"）；
+// 只有 Mongo 的跨库关系会退回内存联邦。
+```
+
+**多租户路由覆盖** —— 一份 schema 定义，N 个租户。任意查询/写入都接受
+一个 `{ source, database, schema }` 覆盖参数，在**执行时**把命令重新定向（权限
+与计算列仍按结构 schema 判定）：
+
+```js
+await store.query('User($condition:@c0){...}', params, { database: 'tenant_42' });
+await store.insert('Order', data, { source: 'pg_cluster', database: 'tenant_7' });
+```
+
+**`routeOverride` 是受信的服务端参数** —— 它不做来源校验，因此把用户可控输入
+透传进来，会让调用者把命令重定向到其他租户的 `source`/`database`/`schema`（CWE-639
+授权绕过面）。绝不要把原始请求数据传到这里。
+
+传统的单库用法（`init(db)` + 不含 `datasource`/`database` 的 schema）保持不变：
+命令携带 `source: 'default'`、`database: null`、`schema: null`。
+
+## 权限上下文
+
+```js
+// 每个请求设置一次（在中间件/路由层）
+store.setContext({ userId: uid, roles: ['editor'] });
+
+// 嵌套安全的作用域角色
+store.scopedRoles(['viewer'], () => store.query(gql, params));
+
+// 内部/定时任务 —— 绕过权限校验
+await store.runAsInternal(() => store.remove('Post', { _id: pid }));
+```
+
+- `super_admin`/`admin`/`internal` 角色放行一切；其他角色按 schema 级与字段级 `read`/`write` 白名单校验；`guest` 永不写。
+- `creator` 是一个伪角色，依据 `doc.<归属键> === ctx.userId` 解析（归属键由 schema `ownerKey` 声明，缺省 `createdBy`，可自定义如 `_id`）；授予它的 schema 会自动在查询上注入属主条件，并在 update/remove 时做属主校验。
+- 未设置上下文 → 权限校验关闭（向后兼容）。
+- 拒绝访问时抛出 `store.PermissionError`（`status = 403`）。
+
+### 失败即安全模式（可选开启）
+
+"无上下文"既可能表示*系统调用*，也可能表示*调用方忘记设置上下文* —— 默认情况下
+后者会静默通过所有校验（fail-open，为向后兼容而保留）。对安全性敏感的宿主，
+可在启动时一次性开启上下文强制要求：
+
+```js
+store.setRequireContext(true);
+// 此后每个没有上下文的查询/写入都会抛出 `ERR_NO_CONTEXT:...`
+// 内部任务必须显式声明：
+await store.runAsInternal(() => store.remove('Post', { _id: pid }));
+```
+
+`runAsInternal` 会把该次调用标记为 `{ internal: true }`，其语义与"缺失上下文"
+不同，且总是放行。`setRequireContext(false)` 恢复默认行为。
+
+## Schema 参考
+
+```js
+{
+  name: 'Order',
+  collection: 'orders',
+  idPrefix: 'OD',
+  timestamps: true,                  // 默认：自动维护 createdAt/updatedAt（毫秒）
+  fields: {
+    _id: 'string',                                        // 简写
+    title: { type: 'string', default: '' },
+    meta: { type: 'object', default: {}, fields: { ... } },  // 嵌套对象字段
+    bidders: { type: 'array', default: [] },              // 数组字段 —— 内联 agg 目标
+  },
+  relations: {
+    items: { model: 'OrderItem', type: 'many', localField: '_id', foreignField: 'orderId' },
+  },
+  computes: {
+    total: { type: 'float', depends: ['amount'], fn: (d) => d.amount * 1.1 },
+    itemCount: { type: 'int', agg: { $count: 'items' } },                 // 关系聚合
+    biddersCount: { type: 'int', depends: ['bidders'], agg: { $size: 'bidders' } },
+    maxBid: { type: 'float', depends: ['bidders'], agg: { $max: 'bidders.amount' } },
+    bidderCount: { type: 'int', depends: ['bidders'], agg: { $countDistinct: 'bidders.bidderId' } },
+  },
+  indexes: [
+    { keys: { status: 1 } },
+    { keys: { code: 1 }, options: { unique: true } },
+  ],
+  read: ['editor', 'viewer'],        // 可选的 schema 级角色白名单
+  write: ['editor'],
+  ownerKey: '_id',                   // 可选：`creator` 伪角色的归属键；缺省 'createdBy'
+}
+```
+
+类型：`string | int | long | float | double | boolean | array | object | date | any`。
+
+几条需要提前知道的边界规则（全部**显式失败**，绝不静默降级）：
+
+- 直接对数组字段、整个对象字段或对象点路径做过滤，在任何后端都会被拒绝 —— 请改用 `relations` 建模跨实体语义。
+- 关系谓词仅支持**一层**关系；形如 `orders.items.price` 的路径会被拒绝。
+- 不可读的关系是错误，而不是静默的 `false`。
+
+### 内联数组聚合
+
+`agg` 路径首段命中 fields 声明的**数组字段**（而非关系）时，对文档自身的数组做聚合 —— 编译进同一条管道，不新增查询阶段：
+
+| 算子 | 路径 | 空数组 / 缺字段 |
+|---|---|---|
+| `$size` | 数组字段本身 | `0` |
+| `$sum` | `数组.元素字段` | `0` |
+| `$avg` / `$max` / `$min` | `数组.元素字段` | `null` |
+| `$countDistinct` | `数组.元素字段` | `0` —— 去重并剔除 null 后计数 |
+
+规则（违规在注册期显式失败，绝不静默降级）：
+
+- `depends` 必须包含路径首段字段。
+- 数组元素仅一层：`bidders.amount` 合法；再往数组深层嵌套会被拒绝。
+- `$count` 仅限关系 —— 数组请用 `$size`。
+- 仅 MongoDB 与 local（进程内）求值可用；SQL 后端显式报错。
 
 <!-- SPEC:NAMING-STYLE:BEGIN -->
 ### Naming: freeform definitions, system-directed translation
@@ -231,29 +567,988 @@ Computed columns live at the schema top level, `computes: { <key>: { type, fn | 
 - Every declared `fnRef` must have an implementation, otherwise the service fails to start with `ERR_FN_MISSING`.
 <!-- SPEC:FNREF:END -->
 
-## Boundaries
+## 向量检索
 
-- **You need generated types and a migration engine.** Schemas are runtime JSON; there is no TypeScript client generation. `migrate()` is whitelist-only — add table, add column, add index, widen a type — and anything else raises `MigrationUnsupported` with a two-step recipe. Pair it with your own migration tool beyond that.
-- **SQLite sits on a hot, highly concurrent path.** The SQLite executor uses the synchronous `better-sqlite3` driver by design; a call blocks the event loop. Use MySQL, PostgreSQL or MongoDB there, or isolate SQLite in its own process.
-- **You need arbitrary native pipelines as the normal path.** User `$pipeline` passthrough was removed and fails at parse time. `store.aggregate()` exists only behind `init(connections, { allowNativeAggregate: true })`, and inline array aggregation is explicitly rejected on SQL backends.
-- **You want a large collection on the local disk source.** The local evaluator caps a collection at 100,000 documents, keeps no indexes (sequential scan only) and serializes writes inside one process. It is a test and single-node source, not a shared store.
-- **Your data is flat, single-backend, and you never relate anything.** A plain driver will be simpler; the value here starts when a schema, a relation or a role rule has to be shared.
+向量就是带维度与度量声明的普通字段值：你产出 embedding，存储负责持久化、排序并回传评分。
+库内不内置任何 embedding 模型。
 
-## In the family
+### schema 声明
 
-This is the Node.js host; its upstream is the engine and its peer is the Python host: [`rust-store`](https://github.com/coenddt/rust-store) (core and native bindings) · [`py-store`](https://github.com/coenddt/py-store) (Python host, pip `storepy`) · [`store-api`](https://github.com/coenddt/store-api) (HTTP layer) · [`store-mcp`](https://github.com/coenddt/store-mcp) (AI tool surface). The same code is mirrored on Gitee under [`coenddt`](https://gitee.com/coenddt).
-
-## One picture
-
-```mermaid
-graph TB
-    S[JSON schema plus GQL] --> C[rust-store core]
-    C --> N[nodejs-store host]
-    C --> P[py-store host]
-    N --> M[MongoDB]
-    N --> Q[MySQL or PostgreSQL or SQLite]
-    N --> L[local disk]
-    P --> M
-    P --> Q
-    P --> L
+```js
+{
+  name: 'Artwork',
+  collection: 'artworks',
+  fields: {
+    title: { type: 'string', default: '' },
+    caption: { type: 'string', default: '' },
+    embedding: { type: 'vector', dim: 1024, metric: 'cosine' },  // 'cosine' | 'l2' | 'ip'
+    embeddingHash: { type: 'string', default: '' },               // 可选：回填摘要
+  },
+  indexes: [
+    // 声明原生近似索引意图（pgvector / Atlas Search）
+    { keys: { embedding: 'vector' }, options: { metric: 'cosine', method: 'hnsw' } },
+  ],
+}
 ```
+
+- `type: 'vector'` 必须声明整数 `dim` 与 `metric: 'cosine' | 'l2' | 'ip'` 之一；`dim` / `metric`
+  非法在**注册期**即报错，不拖到查询期。
+- 两个上限不可混用：**存储**上限 16000 维；**原生索引**上限更低且分后端——pgvector HNSW /
+  IVFFlat 为 2000 维，MongoDB Atlas `vectorSearch` 为 4096 维。DDL 生成对超限索引显式报错，
+  不静默跳过。
+- 向量索引项只接受单字段：`{ keys: { <字段>: 'vector' }, options: { ... } }`；选项为
+  `metric`、`method`（`hnsw` | `ivfflat` | `flat`）与 Atlas 的 `indexName`。
+- 向量为 `null` 的行（含迁移前存量行）不参与评分。
+
+### 查询算子
+
+```js
+const rows = await store.query(
+  'Artwork($condition:@c){ _id, title, _score }',
+  { c: { embedding: { $near: { $vector: [0.12, -0.03 /* ... */], $limit: 10 } } } },
+);
+```
+
+- `$near` 只接受三个键：`$vector`（必填查询向量）、`$limit`（必填 TopK，正整数）、
+  `$minScore`（可选，`_score` 下限）。其他键一律拒绝。
+- `metric` 由字段声明决定，**不是** `$near` 的参数。三种度量统一为「越大越相似」：
+  `cosine` 为余弦相似度，`ip` 为内积，`l2` 为 `1 / (1 + 欧氏距离)`。
+- 过滤条件写在同一个 `$condition` 内、与 `$near` 同级并列，例如
+  `{ status: 'public', embedding: { $near: { ... } } }`。
+- `_score` 按需投影：必须在投影里显式写出；不含 `$near` 的查询永不返回 `_score` 键。
+- 向量长度与 `dim` 不符、零向量、缺 `$limit` 在**所有后端**都报错。
+
+### 降级语义
+
+`store.capabilities().vector` 为静态能力报告：`{ supported, native, backend, metrics, maxDim }`。
+
+- `native: true` 表示该目标能跑近似索引（pgvector 已安装，或声明了 Atlas Search 向量索引）。
+  `native` 是目标的**静态**属性，不会因为某次查询回退而改变。
+- 没有原生索引时——MySQL、未启用 `vec0` 的 SQLite、未声明 Atlas Search 索引的自建 MongoDB，
+  以及嵌入式 `local` / `memory` 载体——查询仍按**应用层精确检索**执行，同时宿主记录
+  `vector_degraded` 降级事件。降级必须可观测，禁止静默。
+- PostgreSQL 带过滤（`$condition` 内除 `$near` 还有条件）回退为精确扫描：pgvector 近似索引
+  属后过滤，会破坏 ACL 与 TopK 正确性。
+- 三种观测方式：`store.withDegradedScope(fn)` 作用域内读 `store.degradedStatus()`；反馈通道的
+  `vector_degraded` 事件；`store-api` 的 `x-store-degraded` 响应头。事件字段为
+  `type / code / layer / backend / field / metric / message / hint`。
+
+### 迁移步骤
+
+- 存量表不会被隐式改列。须显式加列并重新注册字段：`generateMigration(...)` 产出
+  `ALTER TABLE ... ADD COLUMN embedding vector(1024)`（vector 列不接受 `DEFAULT`；存量行在回填前
+  保持 `null`）。
+- 已存在字段的 `dim` / `metric` 变更不作为迁移支持——须显式重建列与其索引。
+- 回填用 `store.reindexVectors(schema, { field, hashField, sourceFields, embed })`：按 `_id`
+  锚点分页（不用 `skip`），对 `sourceFields` 做 `sha256` 摘要，只对摘要变化的行重新 embed。
+  `force: true` 全量重算；`dryRun: true` 只报告不调 `embed`。向量与摘要同一次 update 写入。
+- 增量场景用 `store.registerVectorReindex(cfg)` 注入 `<Schema>.vectorReindex` 触发器，按需刷新
+  单行。
+- DDL 生成只打印索引语句，存储从不执行它。大表须在业务外执行（PostgreSQL 用
+  `CREATE INDEX CONCURRENTLY`）。
+
+## 高级 API
+
+以下所有内容都可从导出的 `store` 单例或其重导出的模块访问。以 `?` 为前缀的选项
+是可选的。
+
+### `store.buildPipeline(gql, params?)`
+
+底层解析 —— 将 GQL 编译为命令计划而**不执行它**，返回
+`{ tokens, ast, pipeline, projection }`。适用于调试查询形状、断言下推行为，
+或构建自定义工具（例如必须在运行前展示并校验计划的 AI 查询智能体）。
+此处**不会**应用权限 / 计算列。
+
+```js
+const plan = store.buildPipeline('Post($condition:@c0){ title }', { c0: { status: 'draft' } });
+console.log(plan.pipeline);
+```
+
+### `store.syncSchema(opts)`
+
+把一个 SQL 后端的物理结构拉取进 registry
+（`introspect → schemaFromRows → mergeSchema(overlay) → register`）。它只**读取**
+结构 —— 从不把 DDL 写回数据库。
+
+| 选项 | 类型 | 含义 |
+| --- | --- | --- |
+| `backend` | `'mysql' \| 'postgres' \| 'sqlite'` | 必填 |
+| `driver` | object | 必填；建议使用只读账号 |
+| `introspectOptions` | object | 透传给 introspection（例如 PG 的 `schema`） |
+| `overlay` | `Array` | 叠加合并的本地 schemaJSON（权限 / 计算列 / 覆盖） |
+| `datasource` | string | 把所有合并后的 def 绑定到该 source |
+| `database` | string | 把所有合并后的 def 绑定到该 database |
+| `registerDefs` | boolean（默认 `true`） | `false` = 返回 defs 但不注册 |
+
+返回合并后的 `schemaJSON[]`。
+
+```js
+const defs = await store.syncSchema({
+  backend: 'postgres', driver: pgPool, overlay: [Post], datasource: 'pg_a',
+});
+```
+
+### `store.setFeedbackSink(fn)`
+
+接管用于兜底 / 降级 / 拦截事件的统一反馈通道。sink 接收一个事件对象；传入
+`null`（或非函数）则回退到默认的 stderr 打印器。
+
+```js
+store.setFeedbackSink((e) => logger.warn({ code: e.code }, e.hint));
+// 事件形状：{ type, code, layer, message, hint, ... }
+//   type   federation_degraded | sql_pushdown_unsupported | ...
+//   code   crossSourceSort | pushdownUnsupported | ...
+//   layer  federation | dialect | ...
+```
+
+不可下推的命令还会抛出 `PushdownUnsupportedError` —— 捕获它即可把该片段
+改投到某个 Mongo 源重跑。
+
+### `store.ask(question, opts)`
+
+AI 问数——自然语言查询（L1，只读）。问题与一份按权限过滤的 schema 摘要
+（`store.describeForAi`）一起交给可插拔的 LLM，LLM 必须返回唯一的
+`{"gql","params"}` JSON 对象；该查询再经加固的 `text2query` 档位规划并执行
+（只读、行数/深度硬限、路由覆盖禁用）。结构化失败会回喂 LLM 重试（至多
+`maxRetries` 轮）；耗尽抛 `AskExhausted`——问数失败就是失败，不静默降级、
+不返回空结果。
+
+LLM 输出永远当不可信输入：护栏（档位、上下文强制、只读）在服务端硬编码，
+模型不可触达。
+
+| 参数 | 类型 | 含义 |
+| --- | --- | --- |
+| `llm` | `string \| Function` | 必填；注册名（见下方 [`llm` 注册表](#llm-注册表)）或符合 `async (messages) => string` 协议的客户端 |
+| `ctx` | object | 必填；服务端构造的用户上下文 `{ userId, roles }`；缺失直接拒绝（fail-secure），且上下文绝不进入任何 LLM 消息 |
+| `maxRetries` | number（默认 `3`） | 失败后的最大重试次数（总尝试 ≤ `1 + maxRetries`） |
+| `knowledge` | string | 覆盖 system prompt 知识文本（缺省用包内 `ask_knowledge.md`） |
+
+返回 `AskResult` `{ data, attempts, events }`。每次尝试为
+`{ llmRaw, gql, params, rows }`——成功轮不含任何 `error` 键；失败轮携带
+`{ error: { code, message } }`，`code` ∈ `badLlmOutput`、`profileBlocked`、
+`permissionDenied`、`planError`。LLM 客户端自身故障（`LlmError`：网络 /
+HTTP 状态 / 空 content）原样穿透——链路故障显式失败，不重试。
+
+```js
+const { llm } = require('nodejs-store');
+
+llm.registerLlm('deepseek', llm.makeOpenaiCompat({
+  baseUrl: 'https://api.deepseek.com/v1',
+  model: 'deepseek-chat',
+  apiKey: process.env.DEEPSEEK_API_KEY,
+}));
+
+const result = await store.ask('我最近 10 笔订单的金额合计是多少？', {
+  llm: 'deepseek',
+  ctx: { userId: 'u1', roles: ['viewer'] },
+});
+console.log(result.data);                 // 查询结果行
+console.log(result.attempts.at(-1).gql);  // 模型产出的 GQL
+```
+
+> `text2query` 档位是进程级 core 单例：同一进程内并发调用 `ask()` 会互相串扰。
+> 请在进程内串行化问数，或每个任务独享进程/worker。
+
+### `store.describeForAi(ctx?)`
+
+输出给 LLM prompt 用的权限过滤 schema 摘要——紧凑 JSON 数组，每模型一条
+`{ name, fields, relations, computes }`。无上下文时仅暴露模型名与字段名
+（不暴露类型细节，防探针）。有上下文时，模型/字段/关系/计算列按调用者角色过滤
+（`canRead` / `readableFields` / `readableRelations` / `readableComputes`），
+归档表（`*Deleted`）排除，运维细节（indexes / datasource / location）不进 prompt。
+
+```js
+const summary = store.describeForAi({ userId: 'u1', roles: ['viewer'] });
+// [{ name: 'Order', fields: { _id: 'string', code: 'string', ... }, relations: { ... }, computes: { ... } }]
+```
+
+原生绑定未导出 `readableComputes` 判决时，配置了 `read` 白名单的计算列会保守
+排除出摘要，并 emit `askSummaryComputeSkipped` 反馈事件——宁缺勿泄。
+
+### `llm` 注册表
+
+可插拔 LLM 客户端，不内置任何 SDK。客户端就是一个函数
+`async (messages: Array<{ role, content }>) => string`：
+
+```js
+const { llm } = require('nodejs-store');
+
+llm.registerLlm('deepseek', client);  // 同名重复注册 → 报错
+llm.getLlm('deepseek');               // 未注册 → 报错
+
+llm.makeOpenaiCompat({                // OpenAI 兼容通用工厂（全局 fetch，零依赖），
+  baseUrl, model, apiKey,             // 覆盖 DeepSeek / OpenAI / Moonshot / Ollama 等
+  jsonMode: true,                     // false → 不传 response_format（prompt 约定 + 严格解析回喂）
+  effort: 'low',                      // null → 不传 reasoning_effort
+  maxTokens: 4096,
+  timeoutMs: 90000,
+});
+```
+
+客户端故障抛 `LlmError`（`.detail` 结构化，`code` ∈ `llmNetworkError`、
+`llmHttpError`、`llmEmptyContent`、`llmJsonPromptMissing`）；`store.ask`
+对其原样穿透。
+
+### 底层模块
+
+该包会重导出其构建模块，供高级宿主使用：
+
+```js
+const {
+  init, store, Store,
+  PermissionError,              // 拒绝访问时抛出（status = 403）
+  PushdownUnsupportedError,     // 命令无法安全下推时抛出
+  datasource, schema, permission, crud, executors, feedback, introspect,
+  syncSchema,                   // 与 store.syncSchema 是同一函数
+} = require('nodejs-store');
+
+// introspect.run(backend, driver, options) → 归一化结构行
+const rows = await introspect.run('mysql', pool, {});
+
+// executors.createConnection(kind, driver, options) → SQL 数据源描述符 { kind, exec }
+await init({ default: db, pg_a: executors.createConnection('postgres', pgPool) });
+```
+
+- `schema` / `permission` / `feedback` / `datasource` 暴露的是 `store`
+  单例所委托的同一批函数（例如 `datasource.setConnections`、`datasource.hasConnection`、
+  `datasource.isSql`、`datasource.runInTransaction`）。
+- **多租户路由覆盖** —— 把 `{ source, database, schema }` 作为任意
+  查询/写入的最后一个参数传入，见 [多数据源连接](#多数据源连接)。
+
+## 事务边界
+
+| 场景 | 原子性 |
+|---|---|
+| 单命令 API（`insert` / `insertMany` / `updateMany` / `upsert` / `remove` / `count` / `exists`） | 单 SQL 源内天然原子（单条 SQL）；Mongo 单文档原子 |
+| `store.transaction(source, fn)` | 单 SQL 源内原子：作用域内所有命令同连接、同事务；同源嵌套开保存点（内层失败只回滚本层） |
+| `store.session(...)` | 会话内单 SQL 源**跨多次调用**原子；跨源写被显式拦截（`NonAtomicWriteError`） |
+| 无会话的跨源多写 | 非原子（无 2PC / Saga 支持），按数据源顺序执行，并经反馈通道声明 `nonAtomic`（事件 `non_atomic_write`，含涉及源） |
+| Mongo 多步写 | replica set / sharded：单 Mongo 源原子（session 事务）；standalone：非原子并显式声明 `mongo_transaction_unsupported` |
+| 工作流 run（`runWorkflow`） | 单源 run **跨步骤**整体原子（外层 `runAtomic` 包住步骤循环、内层 mutation 嵌套并入）；多源 / 源预扫失败按顺序执行并经反馈通道声明非原子 |
+| 触发链（schema `triggers`，insert / update 事件） | 与源写同一 `runAtomic` 包络：单源**真事务**（同事务回滚）；触及第二数据源按顺序执行并声明 `non_atomic_write`；`store.session()` 内对跨源写 fail-closed |
+
+- **Mongo 源**：会话内按运行时能力探测结果事务化；不可事务（standalone / 探测失败）按原样执行，
+  并发出 `mongo_transaction_unsupported` 反馈（`deployment: standalone|unknown`）（允许降级，绝不静默假装已事务化）；
+- **未实现 `openTransaction` 的 SQL 执行器**：会话内按原样执行，并发出
+  `session_not_atomic` 反馈（允许降级，绝不静默假装已事务化）；
+- **未实现 `withTransaction` 的 SQL 执行器**：`store.transaction` / 顶层原子包络内按原样执行，
+  并发出 `transaction_not_atomic` 反馈（与 `session_not_atomic` 对称，允许降级，绝不静默假装已事务化）；
+- **归档幂等**：`remove` 的归档采用按 `_id` upsert 的语义，因此部分失败后的重试不会再因 `_id` 重复而失败。
+- 读一致性：只有在显式会话内的多条读才共享同一事务连接；会话外读不额外开启事务。
+- **跨源写（非会话）**：一次写调用涉及 ≥2 个数据源时**无法原子**，按顺序执行，并发出一条
+  `non_atomic_write` 反馈（`code: nonAtomic`，含涉及源列表）——允许降级、禁止静默。
+  把写收敛到单源，或放入 `store.session()` 内（后者对跨源写直接 fail-closed）。
+
+## 触发器
+
+schema 声明式触发链：写事件（`insert` / `update` / `remove`）由 Rust 核心在规划期展开为有序副作用步骤（`plan.triggers`），宿主在源写同一原子包络内依次执行。声明形态（`triggers` 三类键 + T 字段表）与占位符语法以 rust-store README「触发器」章节为准；core 侧展开输出跨端逐字节一致（`rust-store/fixtures/triggers/cases.json` golden 守护）。
+
+**回调装配**（`src/crud/triggers.js`）：
+
+```js
+store.setTriggerFn('grantPoints', async (args, ctx, { store }) => {
+  await store.update('User', { _id: args.userId }, { $inc: { points: args.amount } });
+});
+store.assertTriggerFnsCovered(defns); // 启动期：schema 声明的 fnRef 缺实现 ⇒ ERR_TRIGGER_FN_MISSING
+```
+
+**执行语义**：
+
+- **命中判定** —— update 事件先判 `onFields 值真的变化`（结构深比较，no-op 抑制——值未变不触发）→ 再判 `when`（`eq/ne/gt/gte/lt/lte/in/and/or/not`）；insert 事件无 before，跳过字段级检查；`remove` 以归档（删除前）文档为根。系统字段（`createdAt` / `updatedAt` / `deletedAt`）不进触发器探针投影，其变化天然不触发。
+- **占位符** —— `{{root.*}}`（变化后值）/ `{{before.*}}`（变化前值）/ `{{now}}` 只做整值替换；内嵌拼接显式报 `ERR_TRIGGER_PLACEHOLDER`，禁静默漂移。
+- **去重** —— 同一次顶层调用内 `(step.name, _id)` 只执行一次。
+- **回调式** —— `impl(args, ctx, { store })`；回调内 `store.*` 落到当前事务连接 → 与主写同事务。
+- **定时（cron）** —— `schedule` 事件由宿主定时任务插件（`src/scheduler/index.js`）枚举并复用同一触发链；占位符仅允许 `{{now}}`。
+
+**边界**：单源真事务 / 跨源 `nonAtomic` 声明 / `store.session()` 内跨源 fail-closed（见[事务边界](#事务边界)）；**不支持级联**（触发写不再触发任何触发器）；`updateMany` 不支持字段级触发（显式拒绝，禁静默降级）；命令式步骤 `op: "upsert"` 注册期 `Err`。
+
+## 事务型能力
+
+面向事务型业务场景（订单、库存——写竞争 + 复杂读）的能力增补。完整语义、用法与显式报错清单：
+**[doc/transaction-capabilities.zh-CN.md](doc/transaction-capabilities.zh-CN.md)** ·
+[English](doc/transaction-capabilities.md).
+
+- **mutation 关系谓词** —— `updateMany('Inventory', { product: { category: 'meat' } }, { $inc: { stock: 10 } })`：条件键命中已声明关系即 semi/anti-join，归一为 preCommand（aggregate 取 `_id`）+ `_id $in`。
+- **`$group by` one 关系路径** —— `by: ['product.category']` 编译为 `$lookup`+`$unwind`（Mongo）/ `LEFT JOIN`（SQL）；many 路径显式报错（扇出破坏计数语义）。
+- **自增主键** —— `_id: { type: 'int', strategy: 'autoincrement' }`；PG/SQLite 经 `INSERT…RETURNING` 回读、MySQL 经 insertId；MongoDB 与 `insertMany` 显式报 `AUTOINCREMENT_NOT_SUPPORTED`（禁 ObjectId 静默顶替）。
+- **索引 DDL** —— `schema.indexes`（Mongo 形态）→ `ddl.generate` 产出 `CREATE [UNIQUE] INDEX idx_<表>_<字段>`，MySQL/PostgreSQL/SQLite 三方言逐字节一致。
+- **声明式迁移** —— `ddl.diffDefs(old, new)` + `ddl.generateMigration(backend, old, new)`：白名单制（加表/加列/加索引/类型放宽），纯函数按方言产 SQL；白名单外显式报 `MIGRATION_UNSUPPORTED`。
+
+## 工作流编排（首批）
+
+把「多步数据操作的编排」用数据表达：工作流定义（Workflow defn）是与 schema defn 同构的纯 JSON、
+运行记录（run）落库为内建 schema `__workflowRun`（普通 GQL 即查，可观测性零新接口）。执行是既有
+mutation 步骤序列机制的推广——线性步骤 + 步骤级 `when` 守卫 + fail-fast。引擎落在宿主层
+（`src/workflow.js`），core 零改动；对齐 `py-store/src/py_store/workflow.py`（双宿主输出逐字节
+一致由 parity 锚单测守护）。
+
+```js
+store.registerWorkflow({                   // 注册即静态校验；白名单外显式 Err（WORKFLOW_UNSUPPORTED）
+  name: 'placeOrder',
+  run: ['admin', 'ops'],                   // 三级白名单 read/write/run（run 缺省回退 write）
+  steps: [
+    { op: 'query', as: 'inv',
+      gql: 'Inventory($condition:@c0){_id, stock}',
+      params: { c0: { productId: '{{input.productId}}', warehouse: '{{input.warehouse}}' } } },
+    { op: 'fail', when: { exists: '{{inv._id}}', is: null }, message: '库存记录不存在' },
+    { op: 'fail', when: { lt: '{{inv.stock}}', than: '{{input.qty}}' }, message: '库存不足' },
+    { op: 'mutation', model: 'Inventory',
+      data: { _id: '{{inv._id}}', stock: '{{dec:{{inv.stock}},{{input.qty}}}}' } },
+  ],
+});
+
+const run = await store.runWorkflow('placeOrder', { productId: 'p1', warehouse: 'w1', qty: 30 });
+// run.status ∈ succeeded | failed | rejected | drySucceeded | dryFailed
+// 统一契约：业务失败不抛错，错误在 run.error（失败才有值；succeeded 态恒为 null）
+```
+
+- **步骤白名单**（首批仅三种，白名单外注册即 `WORKFLOW_UNSUPPORTED`）：`query`（store.query；
+  结果单条化，>1 行显式 Err）、`mutation`（store.mutation / upsert，继承其步骤序列与占位符机制）、
+  `fail`（显式业务断言失败：run 记 failed + stepIndex + message）。步骤可选 `when` 守卫
+  （exists / is / eq / ne / lt / lte / gt / gte），不满足记 `skipped`——显式留痕，绝不静默跳过。
+- **占位符**：`{{input.<path>}}`（本次 run 输入）、`{{<as>.<path>}}`（前序步骤结果，必须前向引用）、
+  `{{dec:<a>,<b>}}`（递减）；整值替换保类型、内嵌替换字符串化。gql 内禁占位符（参数走 params
+  绑定，防注入）；数组下标路径不支持（逐行处理请走宿主代码编排）。
+- **权限**：defn 内嵌三级角色白名单（复用四级 RBAC 语义：admin / super_admin 放行、guest 拒绝、
+  internal 放行、creator 按 Missing 通过）；run 继承触发者 Context，每步 query/mutation 都过 core
+  权限判定——工作流是「权限内的一次次普通调用」，不存在超级身份。`requireContext(true)` 开启时
+  无 ctx 拒跑（fail-secure 优先于 dry-run）。rejected 同样落库（拒绝可审计）。
+- **原子性**：单源 run 整体原子（外层 `runAtomic` 包住整个步骤循环，内层 mutation 嵌套并入——
+  任一步失败整体回滚）；多源 / 预扫失败按顺序执行并发反馈事件（`workflow_non_atomic` /
+  `workflow_prescan_failed`，禁静默）。run 记录时序：先落 `running`（进程崩溃可见）→ 步骤事务 →
+  终态在事务外独立提交（业务回滚不影响失败 run 可查）。
+- **dry-run**：`store.runWorkflow(name, input, { dryRun: true })`——query 真实执行（只读安全），
+  mutation / fail 记 `wouldRun`；终态 `drySucceeded | dryFailed`。
+- **run 落库**：`__workflowRun` 由模块加载即自举注册（幂等）；SQL 后端首次启用工作流需执行
+  `ddl.generate(backend, ['__workflowRun'])` 建表（Mongo 无需，首次写入自动建集合）。
+  其 `write` 为显式空名单（普通角色 GQL 篡改 run 审计被 R2 拒绝；模块内部写入走 internal 上下文）。
+
+### 首批明确不做（检出即 Err，边界与能力同权重）
+
+| 不做 | 理由 | 出口 |
+|---|---|---|
+| 循环 / 并行 / 子工作流 / 人工审批 | DAG 与人工等待语义复杂度爆炸；线性 + `when` 覆盖首批场景 | 宿主代码用 store API 编排 |
+| 自动补偿（Saga）/ 自动重试 | 反向操作语义负担大；步骤无自动幂等保证 | 人查 run 记录显式处置 |
+| 步骤级宿主回调 | 任意代码击穿白名单治理 | schema computes（读）/ 宿主代码（写） |
+| 工作流定义存库 / 热更 | 依赖 schema 版本化先行（路线图下一步） | defn 暂与 schema 同模式：代码内 JSON + register |
+| 定时触发 / 事件触发 | 触发器是常驻 IO 职责，属调度层，与「纯编排」正交 | 应用层自行调用 `runWorkflow` |
+| gql 内嵌占位符 / 数组下标路径 | 注入面 / 数组逐行处理语义 | params 绑定 / 宿主代码编排 |
+
+## 场景事例
+
+以下是一批可直接运行的场景，用来展示数据层在哪些地方真正创造价值 —— 每个场景都按
+**业务背景 → 代码 → 结果 → 优势所在** 四段展开，并与手写方案（直接调驱动、手写 SQL、ORM）逐项对照。
+
+### 1. 用 JSON 定义模型直接查询——无需 ORM 样板代码
+
+**业务背景。** 你需要一个带默认值、派生标签和索引的 `Post` 模型。用 ORM 得写实体类、迁移和生成的客户端；这里只写一个 JSON 对象就能开始查询。
+
+```js
+const { init, store, local } = require('nodejs-store');
+
+await init({ default: local.connect({ dir: './data' }) });  // 也可换成任意 Mongo / SQL 连接
+
+store.register({
+  name: 'Post',
+  collection: 'posts',
+  idPrefix: 'PT',
+  timestamps: true,
+  fields: {
+    title: { type: 'string', default: '' },
+    status: { type: 'string', default: 'draft' },
+  },
+  computes: {
+    statusLabel: { type: 'string', depends: ['status'], fn: (d) => d.status.toUpperCase() },
+  },
+  indexes: [{ keys: { status: 1, createdAt: -1 } }],
+});
+
+await store.insert('Post', { title: 'Hello' });
+const items = await store.query(
+  'Post($condition:@c0,$sort:@s1,$limit:@l1){ title, status, statusLabel }',
+  { c0: { status: 'draft' }, s1: { createdAt: -1 }, l1: 20 },
+);
+```
+
+**结果。**
+```js
+// items = [{ title: 'Hello', status: 'draft', statusLabel: 'DRAFT' }]
+```
+存储的文档只保留用户数据（`title`、`status` 以及框架的 `_id` / `createdAt` / `updatedAt`）；`statusLabel` 在读取时计算。
+
+**优势所在。** 一个 JSON 对象取代了典型 ORM 的「实体类 + 迁移 + 生成客户端」，而且 `title` 这类字段不需要声明两次（列和 getter）：默认值在读取时补全、计算列在读取时执行，因此写入永远不携带派生数据。又因为模型是数据而非代码，它可发布、可 diff、可热更新。
+
+### 2. 换后端不动业务代码
+
+**业务背景。** 你在开发环境用 MongoDB，但生产租户要求 PostgreSQL，而你不希望再维护第二套数据访问层。
+
+```js
+const { init, store } = require('nodejs-store');
+
+// 一份 schema，不含任何后端专属字段。
+store.register({
+  name: 'Order',
+  collection: 'orders',
+  idPrefix: 'OD',
+  timestamps: true,
+  fields: {
+    title: { type: 'string', default: '' },
+    status: { type: 'string', default: 'draft' },
+    amount: { type: 'float', default: 0 },
+  },
+  computes: { total: { type: 'float', depends: ['amount'], fn: (d) => d.amount * 1.1 } },
+  indexes: [{ keys: { status: 1, createdAt: -1 } }],
+});
+
+const gql = 'Order($condition:@c0,$sort:@s0){ _id, title, status, total }';
+const params = { c0: { status: 'open' }, s0: { createdAt: -1 } };
+
+// 开发环境：MongoDB —— 一条聚合管道。
+await init({ default: mongoDb });
+const fromMongo = await store.query(gql, params);
+
+// 生产环境：PostgreSQL —— 只换数据源，GQL 完全一致。
+await init({ default: { kind: 'postgres', exec: pgPool } });
+const fromPostgres = await store.query(gql, params);
+```
+
+**结果。** 两次调用返回相同的文档结构 `[{ _id, title, status, total }]`；Mongo 读取是一条聚合管道（`$match` / `$sort`），PostgreSQL 读取是一条参数化 `SELECT ... ORDER BY`。参见 [`doc/use-cases/03`](doc/use-cases/03-mongodb-to-postgres-migration.md)。
+
+**优势所在。** 用 Prisma / TypeORM 你得维护两套客户端/实体；用原始驱动你得重写查询。在这里后端只是 `init()` 的入参 —— schema 不含后端专属字段，同一段 GQL 字符串会被规划并执行到任一后端上。你可以在灰度切换期间让两个数据库并行运行，而 `store.syncSchema({ backend, driver, overlay })` 能把既有 SQL 结构读进同一注册表，让你的权限/计算列叠加其上。
+
+### 3. 一次 GQL 读取替代 N+1 循环
+
+**业务背景。** 某接口列出一页订单，并为每个订单带出它的明细项。朴素写法是循环查询。
+
+```js
+// N+1：列表 1 次查询 + 每个父记录 1 次查询
+const orders = await store.query(
+  'Order($condition:@c0,$sort:@s0,$limit:@l){ _id, code }',
+  { c0: { status: 'open' }, s0: { createdAt: -1 }, l: 20 },
+);
+for (const order of orders) {
+  order.items = await store.query(
+    'OrderItem($condition:@c0,$sort:@s0,$limit:@l){ sku, qty }',
+    { c0: { orderId: order._id }, s0: { qty: -1 }, l: 5 },
+  );   // 20 个父记录 → 21 次往返
+}
+```
+
+在 schema 里声明一次关系，然后在同一次读取里索取它：
+
+```js
+store.register({
+  name: 'Order',
+  collection: 'orders',
+  timestamps: true,
+  fields: { code: { type: 'string', default: '' }, status: { type: 'string', default: 'draft' } },
+  relations: { items: { model: 'OrderItem', type: 'many', localField: '_id', foreignField: 'orderId' } },
+});
+store.register({
+  name: 'OrderItem',
+  collection: 'order_items',
+  fields: { orderId: { type: 'string' }, sku: { type: 'string', default: '' }, qty: { type: 'int', default: 1 } },
+});
+
+const orders = await store.query(
+  'Order($condition:@c0,$sort:@s0){ _id, code, items($sort:@s1,$limit:@l1){ sku, qty } }',
+  { c0: { status: 'open' }, s0: { createdAt: -1 }, s1: { qty: -1 }, l1: 5 },
+);
+```
+
+**结果。** 一次调用返回嵌套文档：
+```js
+// orders = [{ _id, code, items: [{ sku, qty }, ...] }, ...]
+```
+在 MongoDB 上这是一次 `aggregate()`（`$lookup`，并带每个父记录各自的 `$sort`/`$limit`）；在 SQL 上这是一次 `SELECT` 配合 `LEFT JOIN`，施加 `ROW_NUMBER() OVER (PARTITION BY "orderId" ORDER BY "qty" DESC) <= 5`。
+
+**优势所在。** 子查询只声明一次（`relations`），并作为父读取的一部分被解析，因此它不会与父查询脱节，也没有需要手写的东西。两层共享相同的 `$condition`/`$sort`/`$skip`/`$limit` 语义，权限/计算列按层解析。执行次数是固定的，与分页大小无关 —— 没有 N+1。（根的 `$skip`/`$limit` 与关系同时出现时会使用有界的两阶段形态 —— 两次执行，仍不是 N+1。）
+
+### 4. 行级访问：不同角色看到不同数据
+
+**业务背景。** 编辑只能查看和修改自己创建的课程；管理员可以看全部；访客永远不能写。
+
+```js
+const { store, PermissionError } = require('nodejs-store');
+
+store.register({
+  name: 'Course',
+  collection: 'courses',
+  fields: {
+    title: { type: 'string', default: '' },
+    status: { type: 'string', default: 'draft' },
+    createdBy: { type: 'string' },
+  },
+  read: ['admin', 'editor', 'creator'],
+  write: ['admin', 'editor', 'creator'],
+});
+
+// 每个请求一次（中间件层）。
+store.setContext({ userId: req.user.id, roles: req.user.roles });
+
+// 角色为 editor、userId 为 'u1' 时：
+const mine = await store.query('Course($condition:@c0){ _id, title, status }', { c0: {} });
+// → 属主条件 { createdBy: 'u1' } 被自动注入
+```
+
+**结果。** 因为 schema 授予了 `creator`，查询会被注入一个 `createdBy` 条件，于是编辑只能看到自己的行；对不属于自己的行执行 `update` / `remove` 会抛 `PermissionError`（`status = 403`）。`guest` 的写入被直接拒绝，`admin` / `super_admin` 则绕过白名单。
+
+**优势所在。** 行级属主是一句 schema 声明（`read`/`write` 列表里的 `creator`）加每请求一次上下文 —— 没有每个处理器都要记的 `WHERE createdBy = ?` 可写可漏，也没有每接口一段的 `if (user.role)` 阶梯。基于 `AsyncLocalStorage` 的上下文会贯穿嵌套调用，因此请求内发出的任何查询（哪怕来自某个辅助函数）都会获得同样的属主注入。被拒绝是一次带类型的 `PermissionError`（映射为 HTTP 403），而不是静默返回空结果。
+
+### 5. 写一次、随处可读的计算列
+
+**业务背景。** 界面需要课程的课时数和加价后的收入，但你不想存储派生值，也不想在每个接口里重复计算。
+
+```js
+store.register({
+  name: 'Course',
+  collection: 'courses',
+  fields: { price: { type: 'float', default: 0 }, status: { type: 'string', default: 'draft' } },
+  relations: { lessons: { model: 'Lesson', type: 'many', localField: '_id', foreignField: 'courseId' } },
+  computes: {
+    revenue: { type: 'float', depends: ['price'], fn: (d) => d.price * 1.2 },   // 标量 fn
+    lessonCount: { type: 'int', agg: { $count: 'lessons' } },                  // 关系 agg
+  },
+});
+
+const rows = await store.query('Course($condition:@c0){ _id, price, revenue, lessonCount }', { c0: {} });
+```
+
+**结果。**
+```js
+// rows = [{ _id, price: 100, revenue: 120, lessonCount: 7 }, ...]
+```
+没有课时的课程 `lessonCount` 为 `0`；只有 `price` / `status` 被存储。
+
+**优势所在。** 在 schema 里声明一次后，`revenue` / `lessonCount` 就能按名字从任意 GQL 中索取、跨接口复用 —— 无需每接口重算，也没有需要保持同步的反范式列。标量 `fn` 在读取时基于它的 `depends` 执行；关系 `agg` 在同一次查询内把关联行汇总起来，而不把父记录扇出。写入保持干净，因为派生值从不落库。实现按规范化后的 `fnRef` 绑定，因此宿主函数与 schema 无需手写名字即可一致（见[模式参考](#模式参考)中的 `fnRef` 说明）。
+
+### 6. 用聚合替代手写 SQL 报表
+
+**业务背景。** 一个仪表盘需要「按状态统计课程数量与价格总和，只保留课程数大于 1 的状态，按总和从高到低」。
+
+```js
+const rows = await store.query(
+  'Course($condition:@c0,$group:@g0,$having:@h0,$sort:@s0,$limit:@l0){ status, n, total }',
+  {
+    c0: { status: { $ne: 'deleted' } },
+    g0: { by: ['status'], agg: { n: { $count: '*' }, total: { $sum: 'price' } } },
+    h0: { n: { $gt: 1 } },
+    s0: { total: -1 },
+    l0: 20,
+  },
+);
+```
+
+**结果。**
+```js
+// rows = [{ status: 'published', n: 12, total: 4800 }, ...]
+```
+
+**优势所在。** 归一化聚合内嵌在 GQL 中 —— 日常查询不写原生管道（原生聚合仅作 opt-in 逃生舱：`store.aggregate()` / `executeNative()` / `executeRaw()`）、没有按方言写的报表 SQL。同一条查询被下推到全部五个后端（MongoDB 聚合阶段 / SQL `GROUP BY ... HAVING`），执行顺序固定（`$condition` → `$group` → `$having` → `$sort` → `$skip`/`$limit` → 投影），算子集受白名单约束（`$count` / `$sum` / `$avg` / `$min` / `$max`）。若要按关系的聚合量过滤父记录（「订单数大于 3 的商品」），使用关系聚合谓词 —— 一种 semi/anti-join，在 SQL 上编译为 `EXISTS`/`NOT EXISTS`，在 MongoDB 上编译为 `$lookup`+`$match`，且不扇出：
+
+```js
+await store.query('Product($condition:@c0){ _id, name }', {
+  c0: { $and: [{ status: 'onSale' }, { orders: { $count: { $gt: 3 } } }] },
+});
+```
+
+### 7. 自然语言问数——`store.ask` + `describeForAi`
+
+**业务背景。** 客服想直接问「我最近 10 笔订单的总金额是多少？」而不借助查询构造器。
+
+```js
+const { llm, store } = require('nodejs-store');
+
+llm.registerLlm('deepseek', llm.makeOpenaiCompat({
+  baseUrl: 'https://api.deepseek.com/v1',
+  model: 'deepseek-chat',
+  apiKey: process.env.DEEPSEEK_API_KEY,
+}));
+
+const result = await store.ask('Total amount of my last 10 orders?', {
+  llm: 'deepseek',
+  ctx: { userId: 'u1', roles: ['viewer'] },   // 服务端上下文，必填
+});
+console.log(result.data);                 // 查询结果行
+console.log(result.attempts.at(-1).gql);  // 模型产出的 GQL
+```
+
+**结果。** `result` 是一个 `AskResult` `{ data, attempts, events }`；`data` 持有结果行，`attempts.at(-1)` 持有 `{ llmRaw, gql, params, rows }`。如果模型在 `maxRetries` 轮内无法产出合法且被允许的查询，`store.ask` 会抛 `AskExhausted`（携带 `.attempts` / `.events`），而不是返回空数据。
+
+**优势所在。** `describeForAi(ctx)` 喂给模型的是经过权限过滤的 schema 摘要 —— `viewer` 永远看不到它无权读取的模型/字段，归档表被剔除，运维细节（索引 / 数据源 / 位置）从不进入 prompt。护栏（只读的 `text2query` 档位、上下文强制、行/深度上限、关闭路由覆盖）硬编码在服务端，模型无法触达 —— LLM 输出被当作不可信输入。失败的轮次会以结构化方式回馈并重试，因此一次坏生成绝不会被静默变成空结果集。可与「每个接口手写一个 prompt、一个校验器和一个只读 SQL 守卫」对照。
+
+### 8. 用 `local` 磁盘源做隔离测试
+
+**业务背景。** 你想在单元测试里用到完整的 GQL / 关系 / 聚合语义，但不启动任何数据库。
+
+```js
+const { init, local, store } = require('nodejs-store');
+
+await init({ default: local.connect({ dir: './.tmp/store-test' }) });
+
+store.register({ name: 'Post', collection: 'posts', fields: { title: { type: 'string', default: '' } } });
+await store.insert('Post', { title: 'a' });
+const rows = await store.query('Post{ _id, title }', {});
+```
+
+**结果。** 每个集合是 `dir` 下的一个 JSON 文件（例如 `./.tmp/store-test/posts.json`）；读取返回与任何后端相同的文档结构，同一段 GQL 原样运行 —— 无需服务器、无需原生数据库引擎。
+
+**优势所在。** `local` 源是五个后端中真实的一个，因此测试跑的是真正的核心语义（关系、`$group`、权限），无需准备 MongoDB/PostgreSQL，且同一份测试文件只需替换 `init()` 就能对真实后端运行。它的护栏是显式的：每个集合硬上限 100,000 个文档（绝不静默截断）、仅单进程、声明 `indexes` 会发出 `local_indexes_ignored` 反馈事件（它是顺序扫描存储）。
+
+### 9. 把多步业务动作编排为工作流
+
+**业务背景。** 「下单」是一个多步动作 —— 查库存、断言它存在且充足、然后扣减 —— 并且业务失败不能抛错。
+
+```js
+store.registerWorkflow({
+  name: 'placeOrder',
+  run: ['admin', 'ops'],
+  steps: [
+    { op: 'query', as: 'inv',
+      gql: 'Inventory($condition:@c0){ _id, stock }',
+      params: { c0: { productId: '{{input.productId}}', warehouse: '{{input.warehouse}}' } } },
+    { op: 'fail', when: { exists: '{{inv._id}}', is: null }, message: '库存记录不存在' },
+    { op: 'fail', when: { lt: '{{inv.stock}}', than: '{{input.qty}}' }, message: '库存不足' },
+    { op: 'mutation', model: 'Inventory',
+      data: { _id: '{{inv._id}}', stock: '{{dec:{{inv.stock}},{{input.qty}}}}' } },
+  ],
+});
+
+const run = await store.runWorkflow('placeOrder', { productId: 'p1', warehouse: 'w1', qty: 30 });
+```
+
+**结果。**
+```js
+// run = { _id, workflow: 'placeOrder', status: 'succeeded' | 'failed' | 'rejected', steps, error, stepIndex, ... }
+```
+业务失败表达为 `run.status === 'failed'` 并带有可读的 `run.error` 与出错的 `stepIndex` —— 它不会被抛出。在单一数据源上整个步骤循环是原子的，run 记录被持久化到内建的 `__workflowRun` schema，可用普通 GQL 查询。
+
+**优势所在。** 多步动作是纯 JSON，与 schema 定义同构 —— 可发布、可版本化、可审计，而不是一段冗长的过程式处理器。占位符（`{{input.*}}`、`{{<as>.*}}`、`{{dec:a,b}}`）把注入挡在 gql 之外（参数绑定而非字符串拼接），`when` 守卫显式记录 `skipped`（绝不静默跳过），三级 `read`/`write`/`run` 白名单复用同一套 RBAC 语义。`store.runWorkflow(name, input, { dryRun: true })` 会真实执行查询，但把 mutation / fail 记为 `wouldRun`。刻意排除在范围外的能力（循环、人工审批、自动重试）会在注册时以 `WORKFLOW_UNSUPPORTED` 失败，而不是静默降级。
+
+### 10. 在请求层统一 fail-secure
+
+**业务背景。** 一个内部 API 绝不能服务一个忘了设置用户上下文的请求 —— 缺失上下文应当失败，而不是静默通过所有权限检查。
+
+```js
+store.setRequireContext(true);
+
+// 现在每个未设置上下文的查询/写入都会抛错：
+await store.query('Post{ _id, title }', {});
+// → 抛 `ERR_NO_CONTEXT:...`
+
+// 受信的内部任务显式声明自己：
+await store.runAsInternal(() => store.remove('Post', { _id: pid }));
+```
+
+要一次性翻转所有安全开关，使用统一入口：
+```js
+store.secureMode({ adminRoles: ['internal'] });
+// 同时开启：要求上下文 + 未配置白名单关闭 + 定义注册门闸
+```
+
+**结果。** 无上下文的请求快速失败并抛 `ERR_NO_CONTEXT:...`；`runAsInternal` 把调用标记为 `{ internal: true }`（在语义上区别于上下文缺失），并且总是通过。`store.secureMode()` 返回 `{ secure: true }`；`store.relaxMode()` 恢复默认的 fail-open（仅供本地脚本/测试）。
+
+**优势所在。** 「没有上下文」有两种含义 —— 系统调用和忘了设置上下文的调用方。默认 fail-open 会把后者静默当作前者并放行所有检查；一句 `setRequireContext(true)`（或 `secureMode`）把这一区分显式化并变为 fail-closed。没有每个处理器都要记的守卫，因为强制逻辑就在数据层、在每个查询/写入都要经过的唯一卡点上 —— 而内部任务仍可通过显式的 `runAsInternal` 完成。
+
+### 11. 同一个 store 同时挂 MongoDB + MySQL —— 跨源关系
+
+**业务背景。** 用户数据在 MongoDB，他们的订单在 MySQL（不同团队、不同生命周期）。接口需要一次调用拿到「用户连同他的订单」。
+
+```js
+const { init, store, executors } = require('nodejs-store');
+
+store.register({
+  name: 'User', collection: 'users', datasource: 'mongo_main', timestamps: true,
+  fields: { name: { type: 'string', default: '' } },
+  relations: { orders: { model: 'Order', type: 'many', localField: '_id', foreignField: 'userId' } },
+});
+store.register({
+  name: 'Order', collection: 'orders', datasource: 'mysql_main', timestamps: true,
+  fields: {
+    userId: { type: 'string' },
+    code: { type: 'string', default: '' },
+    amount: { type: 'float', default: 0 },
+  },
+});
+
+await init({
+  mongo_main: mongoDb,                                    // MongoClient().db() 实例
+  mysql_main: executors.createConnection('mysql', pool),  // mysql2/promise 连接池
+});
+
+const rows = await store.queryFederated(
+  'User($condition:@c0){ _id, name, orders{ code, amount } }',
+  { c0: {} },
+);
+```
+
+**结果。** 一次调用返回拼接后的形状：
+```js
+// rows = [{ _id, name, orders: [{ code, amount }, ...] }, ...]
+```
+每个数据源各自用原生查询取数（Mongo 聚合 / MySQL SELECT），再在内存中 join；SQL↔SQL 的跨库关系则原生下推（`"db_a"."t" JOIN "db_b"."t"`）。
+
+**优势所在。** 跨源关系与同源关系的声明方式完全一致 —— 手写方案的替代品是「两个驱动 + 手工内存 join」（以及它往往会长出的 N+1）。边界同样是显式声明的：不开会话的跨源*写入*不可能原子，库会顺序执行并发 `non_atomic_write` 反馈事件，绝不假装原子（见[事务边界](#事务边界)）。
+
+### 12. 转账：事务与原生 SQL 同作用域
+
+**业务背景。** 从一个账户扣款、向另一个账户入账。两者要么都提交、要么都不提交，且扣款读取必须锁行。
+
+```js
+const { init, store, executors } = require('nodejs-store');
+await init({ default: executors.createConnection('mysql', pool) });
+
+await store.transaction('default', async () => {
+  const { rows } = await store.executeRaw(
+    'default', 'SELECT balance FROM account WHERE _id = :id FOR UPDATE', { id: 'acc_a' });
+  if (!rows.length || rows[0].balance < 100) throw new Error('insufficient funds');
+  await store.executeRaw(
+    'default', 'UPDATE account SET balance = balance - :amt WHERE _id = :id', { amt: 100, id: 'acc_a' });
+  await store.executeRaw(
+    'default', 'UPDATE account SET balance = balance + :amt WHERE _id = :id', { amt: 100, id: 'acc_b' });
+});
+```
+
+**结果。** 三条语句全部落在同一条事务连接上 —— 正常退出即提交，抛出业务错误即回滚。命名参数 `:name` 会被编译为各方言的原生占位符（`?` / `$1..$n`），同名复用也没问题，SQL 字符串无需手工拼接。
+
+**优势所在。** 原生 SQL 的逃生舱不会把你踢出事务：`transaction(source, fn)` 内的 `executeRaw` 与 CRUD 调用共用同一条连接，`FOR UPDATE` 锁可以和 schema 驱动的写入自由混用。降级必须声明、绝不假装：Mongo standalone 发 `mongo_transaction_unsupported`，未实现 `withTransaction` 的执行器发 `transaction_not_atomic`，同源嵌套作用域走保存点（内层失败只回滚本层）。用裸驱动的话，你得手工把连接对象在每个辅助函数间传来传去。
+
+### 13. 会话（Session / 工作单元）：多次写入、一次收口
+
+**业务背景。** 「下单」要写三处 —— 订单、库存扣减、台账计数。它们构成一个工作单元；部分成功就是 bug。
+
+```js
+await store.session(async (s) => {
+  await s.insert('Order', { code: 'A1', userId: 'u1', amount: 100 });
+  await s.update('Inventory', { productId: 'p1', warehouse: 'w1' }, { $inc: { stock: -1 } });
+  await s.executeRaw('default', 'UPDATE ledger SET ops = ops + 1', null, true);
+});
+// 上面任何一处抛错 → 整个会话回滚；绝不提交半截
+```
+
+**结果。** 回调内的每条命令都落到该数据源的同一条事务连接上，退出时统一提交一次。写了 ≥2 个数据源的会话 fail-closed —— 全部回滚并在退出时抛 `NonAtomicWriteError`（没有分布式事务，就不提交半截的工作单元）。
+
+**优势所在。** 工作单元是环境式的：回调内调用的辅助函数自动加入同一事务，无需把连接对象层层传递（与权限层用的是同一套上下文机制）。惰性开事务意味着没有任何命令的会话不占用连接；嵌套会话开保存点，内层失败只回滚内层、外层可继续。手写版本是「记得把 `conn` 传进每个函数」—— 忘掉其中一个辅助函数的版本，就是部分写入上线的方式。
+
+### 14. 从 schema 生成 DDL：交给迁移工具的起点
+
+**业务背景。** 模型已经用 JSON 定义好；现在想要与之匹配的 `CREATE TABLE` 文本，交给你的迁移工具 —— 或者在测试容器里建出同样的表 —— 又不想给库任何写库权限。
+
+```js
+store.register({
+  name: 'Course', collection: 'courses', idPrefix: 'c_', timestamps: true,
+  fields: {
+    _id: { type: 'string' },
+    title: { type: 'string', default: '' },
+    status: { type: 'string', default: 'draft' },
+    price: { type: 'float', default: 0 },
+  },
+  indexes: [{ keys: { status: 1, createdAt: -1 } }],
+});
+
+const text  = store.generateDdl('sqlite');              // 所有已注册模型
+const mysql = store.generateDdl('mysql', ['Course']);   // 只要一张表
+```
+
+**结果。** 纯文本，一次调用一种方言。SQLite 的输出：
+```sql
+CREATE TABLE "courses" (
+  "_id" TEXT PRIMARY KEY,
+  "title" TEXT,
+  "status" TEXT,
+  "price" REAL,
+  "created_at" INTEGER,
+  "updated_at" INTEGER,
+  "__present" TEXT
+);
+
+CREATE INDEX "idx_courses_status_created_at" ON "courses" ("status" ASC, "created_at" DESC)
+```
+
+**优势所在。** `generateDdl(backend, names)` 是 `syncSchema()` 的逆操作：一个已注册 def → 一条 `CREATE TABLE`（已声明索引附 `CREATE INDEX`），可渲染 mysql / postgres / sqlite 三种方言。它绝不连接、绝不写入数据库 —— 文本归你审阅、版本化并交给自选的迁移工具执行。渲染 SQL 需要显式声明 `_id`（若由库生成 id 还需 `idPrefix`）；`<Model>Deleted` 归档表与其它已注册 def 一样生成。
+
+### 15. 声明式触发器做审计
+
+**业务背景。** `Order` 的每次状态变更、每次删除都要留审计 —— 且与写入本身同事务，没有每个处理器都要记得调用的审计函数。
+
+```js
+store.register({
+  name: 'Order', collection: 'orders', idPrefix: 'o_', timestamps: false,
+  fields: { amount: { type: 'number' }, status: { type: 'string', default: 'draft' } },
+  triggers: {
+    update: [
+      { name: 'audit_status', onFields: ['status'], into: 'AuditLog', op: 'insert',
+        data: { _id: '{{now}}', kind: 'status', ref: '{{root._id}}',
+                prev: '{{before.status}}', next: '{{root.status}}' } },
+    ],
+    remove: [
+      { name: 'audit_remove', into: 'AuditLog', op: 'insert',
+        data: { _id: '{{now}}', kind: 'remove', ref: '{{before._id}}' } },
+    ],
+  },
+});
+store.register({
+  name: 'AuditLog', collection: 'audit_log', idPrefix: 'a_', timestamps: false,
+  fields: { kind: { type: 'string' }, ref: { type: 'string' },
+            prev: { type: 'string' }, next: { type: 'string' } },
+});
+```
+
+**结果。** `store.update('Order', { _id }, { status: 'paid' })` 会把写入与触发器步骤一起规划，宿主在同一原子包络内执行：插入一条 `AuditLog` 行 `{ kind: 'status', ref: <orderId>, prev: 'draft', next: 'paid' }` —— 若写入本身失败，则什么都不会插入。
+
+**优势所在。** 审计是声明在模型旁边的数据：`onFields` 做结构深比较，值未变化就不触发；`{{before.*}}` / `{{root.*}}` / `{{now}}` 只做整值替换（把占位符嵌进字符串会抛 `ERR_TRIGGER_PLACEHOLDER`）；触发器写入与源写入共享同一事务，「改了但没审计」不可能发生。命令式场景用回调触发器（`fnRef` + `store.setTriggerFn`，`assertTriggerFnsCovered` 在启动期校验缺实现即失败）。不级联，`updateMany` 显式拒绝字段级触发器 —— 边界都大声失败，绝不静默。
+
+### 16. 软删除与可查询的归档
+
+**业务背景。** 「删除」必须可撤销、可审计：行离开主表，但保持可查询 —— 供回收站接口和审计导出使用。
+
+```js
+store.register({
+  name: 'Course', collection: 'courses', idPrefix: 'c_', timestamps: true,
+  fields: { title: { type: 'string', default: '' }, price: { type: 'float', default: 0 } },
+});
+
+const r = await store.remove('Course', { _id: 'c_001' });
+// r = { deletedCount: 1, archivedCount: 1 }  —— 行被移入 courses_deleted（附加 deletedAt）
+
+// 归档表是一等 schema：普通 GQL，语义与任何模型相同。
+const tombstones = await store.query(
+  'CourseDeleted($condition:@c0,$sort:@s0){ _id, title, price, deletedAt }',
+  { c0: {}, s0: { deletedAt: -1 } },
+);
+```
+
+**结果。** `remove()` 先把命中的文档归档到自动置备的 `<Model>Deleted` 表/集合（附加 `deletedAt`），然后删除。之后重建相同 `_id` 也不会冲突 —— 归档写入按 `_id` upsert。
+
+**优势所在。** 每个模型免费获得同一种审计友好的删除：不需要为每个模型设计「归档表 + 删除时复制的触发器」组合，也不存在忘记归档的代码路径。回收站就是对一个真实 schema 的一次 GQL 查询。空条件的 `remove` 会被直接拒绝，谁也不会误删整张表。
+
+### 17. 最小 Web 服务：每请求一次设置身份
+
+**业务背景。** 你想要一个小型 REST 风格服务，权限在数据层强制执行 —— 而不是在每个处理器里重复实现。
+
+```js
+const express = require('express');   // 任意框架均可；这是最小示意
+const { init, store, local } = require('nodejs-store');
+
+await init({ default: local.connect({ dir: './data' }) });
+
+const app = express();
+app.use(express.json());
+
+// 每个请求一次：数据层从这里读取身份。
+// （认证中间件负责填充 req.user；游客保留显式的 guest 角色）
+app.use((req, res, next) => {
+  store.setContext({ userId: req.user.id, roles: req.user.roles });
+  next();
+});
+
+app.get('/courses', async (req, res) => {
+  try {
+    const page = await store.queryWithCount(
+      'Course($condition:@c0,$sort:@s0){ _id, title, price }',
+      { c0: {}, s0: { createdAt: -1 }, page: Number(req.query.page) || 0, pageSize: 20 });
+    res.json(page);                    // { items, total, hasMore, page, pageSize }
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });  // PermissionError 自带 status 403
+  }
+});
+
+app.listen(3000);
+```
+
+**结果。** 一个中间件设置 `{ userId, roles }`；任何处理器内（及其 await 的任何调用）的每次 `store.*` 都会按 schema 白名单做权限校验 —— `guest` 永不写、`creator` 的行按属主过滤、拒绝以带类型的错误返回而非空结果。
+
+**优势所在。** 授权位于每个查询/写入都要经过的唯一卡点，因此「在处理器 X 里忘了校验」在结构上不可能发生 —— 处理器里根本不含权限代码。`PermissionError.status = 403` 直接映射为 HTTP 状态；`queryWithCount` 返回分页与总数并带硬性 `pageSize` 上限（5000）；`routeOverride` —— 唯一能把请求重定向到其他租户的参数 —— 被明确文档化为受信服务端输入，绝不透传请求数据。Koa / Fastify 同样只是三行：中间件里设上下文、调用 `store.*`、把错误映射为响应。
+
+## 性能
+
+先给定位：nodejs-store 的性能模型是**把工作推进数据库、在 Rust 里规划一次、只跨一次 FFI 边界**。下方数字来自一台开发机 —— 请把它们当作数量级证据，而非认证基准。
+
+### 本机实测（SQLite，内存库）
+
+环境：2026-10-15，Node v25.1.0，Windows（win32），`better-sqlite3` 内存数据库（同步驱动，零网络），Rust 核心 `rust-store-node` 4.5.0（napi-rs）。方法：读取类用例先预热 1 次再计时 5 次取中位数；插入用例为单次冷跑（同批数据重复插入会撞 `_id`）；每个用例计时前都先断言结果正确性。复跑脚本时两个 201 次查询的用例波动可达 ±25% —— 数量级与比值保持稳定。
+
+| 操作 | 数据量 | 执行次数 | 耗时 | 对比基线 |
+| --- | --- | --- | --- | --- |
+| `insertMany` 批量插入（4 块 × 2,500 行） | 10,000 行 | 4 条语句 | ~253 ms（单次） | ≈ 39,500 行/秒 |
+| 关系树读取 —— 1 条 GQL，200 父 × 10 子 | 2,000 子行 | 1 次查询 | ~56 ms（5 次中位） | 快 2.2× |
+| 手写 N+1 循环（同一数据） | 2,000 子行 | 201 次查询 | ~122 ms（5 次中位） | 基线 |
+| `$group` + `$sum` 聚合（8 组） | 10,000 行 | 1 次查询 | ~5.3 ms（5 次中位） | 快 ~42× |
+| 全量拉回 + JS `reduce`（同一数据） | 10,000 行 | 1 次查询 + JS 循环 | ~225 ms（5 次中位） | 基线 |
+| 关系聚合计算列 `$count`（200 父） | 2,000 子行 | 1 次查询 | ~4.1 ms（5 次中位） | 快 ~9.9× |
+| 逐父 `store.count()` 循环（同一数据） | 2,000 子行 | 201 次查询 | ~41 ms（5 次中位） | 基线 |
+
+怎么读这组数字：
+
+- **嵌入式同步驱动没有网络**，所以 N+1 只贵 2–3×。换到真实网络（MongoDB / MySQL / PostgreSQL —— 每条查询一个网络往返）后，201 次往返对比 1 次会乘上你的 RTT：按每次往返 1 ms 计，就是约 200 ms 纯等待对比 0。结构性收益是固定的执行次数、与分页大小无关（见[事例 3](#3-一次-gql-读取替代-n1-循环)）。
+- **`$group` 的 ~42×** 是模型的另一半：聚合被编译为一条原生 `GROUP BY ... HAVING`，10,000 行数据从不跨越 FFI + JSON 还原边界；reduce 版本则要先把它们全部搬进 JS（见[事例 6](#6-用聚合替代手写-sql-报表)）。
+- **插入吞吐（约 4 万行/秒）**包含单条 SQLite 连接上的 `_id` 生成、时间戳与规划。SQLite 有绑定变量上限（约 32,767），10,000 行的 `insertMany` 必须分块（每次约 2,500 行）—— 这是 SQLite 的限制，不是本库的。
+
+### 既有压测证据（四后端）
+
+仓库自带四后端压测脚本（[scripts/stress.js](scripts/stress.js)）：MongoDB + MySQL + PostgreSQL + SQLite 挂在一条联邦关系上，8 workers × 200 轮 × 5 操作 = 8,000 次操作。其 2026-09-12 报告（[doc/2026-09-12-压测报告.md](doc/2026-09-12-压测报告.md)）记录：**0 错误、整体 637.7 QPS**，跨 3 源联邦读取 **p50 25 ms / p95 48 ms**（项目开发机、`LOCAL_CORE=1`；该组数字属于那个环境，此处未复现）。
+
+### 性能为何是设计出来的
+
+- **Rust 核心下推。** GQL 解析、权限校验、计算列规划与方言翻译都在 Rust（`rust-store-node`，napi-rs）：关系编译为每个后端一条原生查询（`$lookup` / `JOIN` + `ROW_NUMBER`），聚合编译为 `GROUP BY`/`HAVING`，关系谓词编译为 `EXISTS`/`NOT EXISTS` —— 干活的是数据库，不是 JS。
+- **规划一次、执行一次。** FFI 边界只为准入规划而跨（`store.buildPipeline()` 可在不执行的情况下暴露编译后的 `{ tokens, ast, pipeline, projection }`）；此后宿主层只做驱动 IO。
+- **有界的执行次数。** 父+关系的读取是 1 条查询（根级分页时 2 条 —— 有界两阶段形态），绝不是 N+1；子级 `$sort`/`$limit` 在同一条语句内施加。
+- **读时计算列**的代价是每返回行一次函数调用 —— 不是额外查询；`agg` 形态在同一条查询内把关系汇总上来。
+
+### 局限，如实说
+
+- **SQLite 是同步的。** `better-sqlite3` 会阻塞事件循环 —— 高并发热路径请选 MySQL / PostgreSQL / MongoDB（见[什么时候不该用它](#什么时候不该用它)）。
+- **一台机器、一个后端。** 上述全部数字来自本机、内存 SQLite、热缓存。MySQL / PostgreSQL / MongoDB 的服务端数字：**待核实（无本地服务实测）**；SQL 侧的架构性论断（每次读取一条参数化语句）可自行用 `store.buildPipeline()` 验证。
+- **计算列随结果集大小扩展。** 标量 `fn` 对每个返回行执行一次 —— 若 profile 中显形，请少取行或少取计算列。
+- **驱动层面没有魔法。** 连接池大小、SQL 索引（`schema.indexes` 在 SQL 后端仅作元数据；只有 Mongo 源会在 `init()` 时自动建索引）与查询设计仍归你管。
+
+## 常见问题
+
+**如何在 Node.js 中让一份 schema 同时用于 MongoDB 和 PostgreSQL？**
+把 schema 用 JSON 定义一次，用你的数据源调用 `init()`，然后对两者运行同一份 GQL。MongoDB 使用原生聚合；MySQL/PostgreSQL/SQLite 得到参数化 SQL。见[快速开始](#快速开始)。
+
+**如何在不写 `$lookup` 或 JOIN 的情况下查询嵌套/关系数据？**
+在 `relations` 中声明关系（`{ model, type: 'many' | 'one', localField, foreignField }`），并在 GQL 选择集里引用关系名。它在 Mongo 上变成 `$lookup`，在 SQL 上变成 `JOIN`，以嵌套文档返回。
+
+**支持 GROUP BY / COUNT / SUM / AVG 吗？**
+支持 —— 归一化聚合是 GQL 的一部分：根级 `$group` / `$having` 与关系聚合谓词。见[聚合](#聚合)。
+
+**能否按其子文档的聚合过滤父级（"订单数大于 3 的商品"）？**
+可以 —— 关系聚合谓词实现 semi/anti-join 而不扇出；SQL 使用 `EXISTS`/`NOT EXISTS`。
+
+**如何实现行级权限？**
+使用 `store.setContext({ userId, roles })` 加上 schema 级的 `read`/`write` 白名单。`creator` 伪角色会自动加入属主校验与属主条件注入（归属键由 schema `ownerKey` 声明，缺省 `createdBy`）。`guest` 永不写。开启 `setRequireContext(true)` 可获得失败即安全的行为。
+
+**如何做软删除？**
+每个已注册的模型都会自动获得一个 `<Model>Deleted` 归档集合/表。`store.remove()` 先归档文档，再删除它；重新创建同一个 `_id` 不会冲突，因为归档写入是按 `_id` upsert。
+
+**能用于多租户应用吗？**
+可以。把 schema 定位到 `(source, database, schema, collection)`，并按请求传入 `{ source, database, schema }` 路由覆盖。仅把 `routeOverride` 当作受信的服务端输入。
+
+**它会执行迁移吗？**
+不会。`syncSchema()` 只通过 introspection *读取*物理结构（introspect → 合并 overlay → 注册）。schema 变更 / DDL 是你所用迁移工具的职责。若想要一个起点，`store.generateDdl(backend)` 可从已注册 schema 渲染 `CREATE TABLE` 文本 —— 但它只是纯文本生成：绝不执行、也不写入 DDL。
+
+**能否在不运行的情况下查看生成的查询？**
+可以 —— `store.buildPipeline(gql, params)` 返回编译后的计划（`{ tokens, ast, pipeline, projection }`），不执行，也不应用权限/计算列。
+
+**SQL 下推不可行时会发生什么？**
+命令会抛出 `PushdownUnsupportedError`，**并且**通过 `setFeedbackSink` 发出一个结构化反馈事件（`sql_pushdown_unsupported`）。跨源分页/排序的降级会发出 `federation_degraded` 事件。不会有任何静默失败。
+
+**它与 py-store 和 rust-store 是什么关系？**
+`rust-store` 是共享的 Rust 引擎（GQL 解析、权限、计算列、命令规划、SQL 方言翻译 —— 纯逻辑，无 IO）。`nodejs-store`（npm）与 [`py-store`](https://github.com/coenddt/py-store)（pip `storepy`）是它前面的薄宿主：它们负责驱动 IO、回调与占位符替换。Node 与 Python 共享相同的 schema、相同的 GQL、相同的语义。
+
+## 相关项目
+
+- [`py-store`](https://github.com/coenddt/py-store)（[Gitee](https://gitee.com/coenddt/py-store)）—— Python asyncio 孪生版（pip `storepy`，`from py_store import init, store`）。
+- [`rust-store`](https://github.com/coenddt/rust-store)（[Gitee](https://gitee.com/coenddt/rust-store)）—— 共享的 Rust 核心及其 `rust-store-node` / `rust-store-py` 绑定。
+- `text-to-query` —— 配套技能：把自然语言问题转换为该数据层所需 GQL + params。
+
+## 框架使用契约
+
+- 定义层（数据）：模型 / 权限 / 编排 / 接口 —— 一律纯 JSON，可发布、可回滚、可热更。
+- 回调层（代码）：数据源 IO、计算列实现、外部调用、事务 —— 以 `fnRef` 声明、启动时注入；不可序列化，禁止入库。
+- 可观测层：一切降级/拦截/兜底事件落 `__feedback`（可用 GQL 查询），绝不静默。
+
+## 许可证
+
+[MIT](LICENSE)

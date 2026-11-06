@@ -22,24 +22,24 @@
 ## Docs
 
 - [Documentation site](https://coenddt.github.io/nodejs-store/): the scenario walkthroughs as individual, indexable pages — the fastest way in
-- [README](https://github.com/coenddt/nodejs-store#readme): full overview, quick start, GQL syntax, API, schema reference, FAQ
-- [Chinese README](https://github.com/coenddt/nodejs-store/blob/main/README.zh-CN.md): 中文文档
+- [中文 README](https://github.com/coenddt/nodejs-store#readme): 完整概览、快速开始、GQL 语法、API、schema 参考、FAQ
+- [English README](https://github.com/coenddt/nodejs-store/blob/main/README.en.md): full overview, quick start, GQL syntax, API, schema reference, FAQ
 - [Use cases](https://github.com/coenddt/nodejs-store/tree/main/doc/use-cases): scenario walkthroughs (multi-tenant SaaS, AI data-QA, cross-database migration, admin CRUD, avoiding N+1 reads, serverless connection reuse)
 - [Scenario test suite](https://github.com/coenddt/nodejs-store/tree/main/example/course-platform): real-data, four-backend scenario cases (fields, relations, computes, permissions, aggregation, boundaries)
 - [CHANGELOG](https://github.com/coenddt/nodejs-store/blob/main/CHANGELOG.md)
 
 ## Concepts
 
-- [GQL tree syntax](https://github.com/coenddt/nodejs-store#gql-syntax): `Model($condition:@c0,$sort:@s1,$limit:@l){ field, Relation{ f } }`
-- [Aggregation](https://github.com/coenddt/nodejs-store#aggregation): root-level `$group` / `$having`, relation aggregate predicates (semi/anti-join), relation-rolling computed columns
-- [Query & write API](https://github.com/coenddt/nodejs-store#query--write-api): `query`, `queryOne`, `queryWithCount`, `insert`, `update`, `remove`, `mutation`, `upsert`
-- [Permissions](https://github.com/coenddt/nodejs-store#permission-context): `setContext`, `scopedRoles`, `runAsInternal`, fail-secure `setRequireContext(true)`
-- [Multi-datasource & multi-tenant](https://github.com/coenddt/nodejs-store#multi-datasource-connections): `{ source, database, schema, collection }` and route override
-- [Schema reference](https://github.com/coenddt/nodejs-store#schema-reference): fields, relations, computes, indexes, read/write whitelists
-- [Vector search](https://github.com/coenddt/nodejs-store#vector-search): `vector` fields, `$near`, `_score`, `capabilities().vector`, `reindexVectors`
-- [Advanced API](https://github.com/coenddt/nodejs-store#advanced-api): `buildPipeline`, `syncSchema`, `setFeedbackSink`, low-level modules
+- [GQL tree syntax](https://github.com/coenddt/nodejs-store#gql-语法): `Model($condition:@c0,$sort:@s1,$limit:@l){ field, Relation{ f } }`
+- [Aggregation](https://github.com/coenddt/nodejs-store#聚合): root-level `$group` / `$having`, relation aggregate predicates (semi/anti-join), relation-rolling computed columns
+- [Query & write API](https://github.com/coenddt/nodejs-store#查询与写入-api): `query`, `queryOne`, `queryWithCount`, `insert`, `update`, `remove`, `mutation`, `upsert`
+- [Permissions](https://github.com/coenddt/nodejs-store#权限上下文): `setContext`, `scopedRoles`, `runAsInternal`, fail-secure `setRequireContext(true)`
+- [Multi-datasource & multi-tenant](https://github.com/coenddt/nodejs-store#多数据源连接): `{ source, database, schema, collection }` and route override
+- [Schema reference](https://github.com/coenddt/nodejs-store#schema-参考): fields, relations, computes, indexes, read/write whitelists
+- [Vector search](https://github.com/coenddt/nodejs-store#向量检索): `vector` fields, `$near`, `_score`, `capabilities().vector`, `reindexVectors`
+- [Advanced API](https://github.com/coenddt/nodejs-store#高级-api): `buildPipeline`, `syncSchema`, `setFeedbackSink`, low-level modules
 - [AI ask (natural-language query)](https://github.com/coenddt/nodejs-store#storeaskquestion-opts): `store.ask` + `store.describeForAi` + pluggable LLM registry (`makeOpenaiCompat`), guarded by the read-only `text2query` profile
-- [Transactions](https://github.com/coenddt/nodejs-store#transaction-boundary): per-source atomicity guarantees
+- [Transactions](https://github.com/coenddt/nodejs-store#事务边界): per-source atomicity guarantees
 
 ## Optional
 
