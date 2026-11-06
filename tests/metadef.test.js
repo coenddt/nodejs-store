@@ -27,6 +27,22 @@ test('P3：stableStringify 数字与 py 同语义（1.0 → 1）', () => {
   assert.equal(md._stableStringify({ a: 1.5, b: true, 名: '值' }), '{"a":1.5,"b":true,"名":"值"}');
 });
 
+test('跨端对拍：stableStringify 与 py 逐字节同 canonical、同 SHA-1', () => {
+  // 语料在 py-store/tests/fixtures 与 nodejs-store/tests/fixtures 各一份且必须完全一致
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const crypto = require('node:crypto');
+  const cases = JSON.parse(fs.readFileSync(
+    path.join(__dirname, 'fixtures', 'stable-stringify-parity.json'), 'utf8',
+  )).cases;
+  assert.ok(cases.length > 0, '对拍语料不能为空');
+  for (const c of cases) {
+    const got = md._stableStringify(JSON.parse(c.json));
+    assert.equal(got, c.canonical, c.json);
+    assert.equal(crypto.createHash('sha1').update(got, 'utf8').digest('hex'), c.sha1, c.json);
+  }
+});
+
 /** 建内存库 + 建内建 `__schemaDef` 表 → init → 执行 body（每个用例独立库） */
 async function run(body) {
   const db = new Database(':memory:');

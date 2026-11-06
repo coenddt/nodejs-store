@@ -278,3 +278,22 @@ test('P4：toNumber 超出安全整数范围保留原字符串，不静默失真
   assert.equal(toNumber('abc'), 'abc');
   assert.equal(toNumber(''), '');
 });
+
+test('P4：MySQL 开启 supportBigNumbers 后，BIGINT 字符串出参精确保留', () => {
+  // mysql2 默认 supportBigNumbers=false：BIGINT 在驱动层已转成 double（宿主看不到原值）。
+  // 开启 supportBigNumbers 后，超安全范围的 BIGINT 以字符串出参；宿主必须原样保留。
+  const { normalizeRows } = require('../src/executors/_values');
+  const fields = [
+    { name: 'id', columnType: 8 },       // LONGLONG
+    { name: 'n', columnType: 8 },
+    { name: 'label', columnType: 253 },  // VAR_STRING，不得被归一
+  ];
+  const rows = normalizeRows(
+    [{ id: '9223372036854775807', n: '42', label: '9223372036854775807' }],
+    fields,
+    'mysql',
+  );
+  assert.equal(rows[0].id, '9223372036854775807', '超安全范围保留精确字符串');
+  assert.equal(rows[0].n, 42, '安全范围内 BIGINT 仍归一为 number');
+  assert.equal(rows[0].label, '9223372036854775807', '字符串列不参与数值归一');
+});

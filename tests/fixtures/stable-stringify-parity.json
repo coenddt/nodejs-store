@@ -1,0 +1,130 @@
+{
+  "_note": "跨端稳定序列化对拍语料：py-store/tests/fixtures 与 nodejs-store/tests/fixtures 两份必须逐字节相同；canonical 为本项目规范格式（非 JS 语义），sha1 为 canonical 的 UTF-8 SHA-1",
+  "cases": [
+    {
+      "json": "0",
+      "canonical": "0",
+      "sha1": "b6589fc6ab0dc82cf12099d1c2d40ab994e8410c"
+    },
+    {
+      "json": "-0.0",
+      "canonical": "0",
+      "sha1": "b6589fc6ab0dc82cf12099d1c2d40ab994e8410c"
+    },
+    {
+      "json": "1",
+      "canonical": "1",
+      "sha1": "356a192b7913b04c54574d18c28d46e6395428ab"
+    },
+    {
+      "json": "1.0",
+      "canonical": "1",
+      "sha1": "356a192b7913b04c54574d18c28d46e6395428ab"
+    },
+    {
+      "json": "1.5",
+      "canonical": "1.5",
+      "sha1": "aa8f289ebe6d4db1b4a1038b8931ec8c2b5399fb"
+    },
+    {
+      "json": "0.1",
+      "canonical": "0.1",
+      "sha1": "180505679cfe0cca79bae51fdda0296b7cd9c493"
+    },
+    {
+      "json": "0.000001",
+      "canonical": "0.000001",
+      "sha1": "ec006619887f04d66bd62ea972404ad54c9ce75e"
+    },
+    {
+      "json": "1e-7",
+      "canonical": "1e-7",
+      "sha1": "edd591d5998d92a079f758f40a6dba798582b17f"
+    },
+    {
+      "json": "1.5e-5",
+      "canonical": "0.000015",
+      "sha1": "fca917d7ed06adafb44be34b9739e9d5d3e59ee5"
+    },
+    {
+      "json": "100000000000000000000",
+      "canonical": "100000000000000000000",
+      "sha1": "9373a2047ab666d5e662012ddd7a1cb36601e65b"
+    },
+    {
+      "json": "1e16",
+      "canonical": "10000000000000000",
+      "sha1": "f7934ed05b21b3f74643b3360b70cc4e2f8a738b"
+    },
+    {
+      "json": "1.5e16",
+      "canonical": "15000000000000000",
+      "sha1": "af83e75c4b87d0d69245be763b34c201f9dd38ae"
+    },
+    {
+      "json": "1e21",
+      "canonical": "1e21",
+      "sha1": "2e74f61e65420c92f924c43e44c2a117586fb65f"
+    },
+    {
+      "json": "1.23e21",
+      "canonical": "1.23e21",
+      "sha1": "1474bd4ed983a9842daf8907074f704ae03061f9"
+    },
+    {
+      "json": "-1e-7",
+      "canonical": "-1e-7",
+      "sha1": "07b951af690cd868d3f8838161fede335c236a9b"
+    },
+    {
+      "json": "5e-324",
+      "canonical": "5e-324",
+      "sha1": "4dc4af02a148de3e058de8bbcb4ce6fbc8b19772"
+    },
+    {
+      "json": "2.2250738585072014e-308",
+      "canonical": "2.2250738585072014e-308",
+      "sha1": "584abff40a051d12138b0f3e6df58f802285cb5b"
+    },
+    {
+      "json": "1.7976931348623157e308",
+      "canonical": "1.7976931348623157e308",
+      "sha1": "e74c79b842232d629559306fc6b67ecb18009e8a"
+    },
+    {
+      "json": "9007199254740993",
+      "canonical": "9007199254740992",
+      "sha1": "ae5bdfcb11589a9efbc6f2ee5b72d5426d015c0d"
+    },
+    {
+      "json": "-9007199254740993",
+      "canonical": "-9007199254740992",
+      "sha1": "a1b0faf4156558c1c2a77b4db78110226e347e7a"
+    },
+    {
+      "json": "1e400",
+      "canonical": "null",
+      "sha1": "2be88ca4242c76e8253ac62474851065032d6833"
+    },
+    {
+      "json": "0.3333333333333333",
+      "canonical": "0.3333333333333333",
+      "sha1": "0aeba42a893735eeb841a620107a389623e9d8f3"
+    },
+    {
+      "json": "123.456",
+      "canonical": "123.456",
+      "sha1": "8ecf2acc686a468d922d11637d833cfcb9778957"
+    },
+    {
+      "json": "{\"name\":\"Post\",\"fields\":{\"score\":{\"type\":\"number\",\"default\":0.1},\"title\":{\"default\":\"\"}},\"read\":null,\"system\":true,\"indexes\":[{\"keys\":{\"createdAt\":-1}}]}",
+      "canonical": "{\"fields\":{\"score\":{\"default\":0.1,\"type\":\"number\"},\"title\":{\"default\":\"\"}},\"indexes\":[{\"keys\":{\"createdAt\":-1}}],\"name\":\"Post\",\"read\":null,\"system\":true}",
+      "sha1": "abd5f522b87501b4fc89568a13e481bf80b5911a"
+    },
+    {
+      "json": "{\"schemaVersion\":1e-7,\"threshold\":1e-6,\"ratio\":0.5,\"huge\":1e21,\"nested\":{\"b\":[1,2.5,null,true,\"\\u4e2d\\u6587\"]}}",
+      "canonical": "{\"huge\":1e21,\"nested\":{\"b\":[1,2.5,null,true,\"中文\"]},\"ratio\":0.5,\"schemaVersion\":1e-7,\"threshold\":0.000001}",
+      "sha1": "31679a8efa7086290ac666d5c6f5bfeb667b7be4"
+    }
+  ]
+}
