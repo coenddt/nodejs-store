@@ -5,8 +5,8 @@ name: ci
 #   2. 测试 + c8 覆盖率门禁（statements/lines 90、functions 85、branches 75）
 #
 # 说明：rust-store-node（Rust 原生核心）已发布到 npm（2.0.0 起），CI 直接安装该依赖。
-# 本地开发走 LOCAL_CORE=1 兜底（scripts/test.js 自动开启，从相邻 rust-store/
-# core-node/dist 加载）；CI 无相邻仓库，兜底自然失败后回落到 npm 依赖（见 src/core.js）。
+# scripts/test.js 不注入 LOCAL_CORE：CI 与本地默认都从 node_modules 的 npm 依赖加载
+# （与生产同路径）；本地要验相邻 rust-store/core-node/dist 产物须显式 LOCAL_CORE=1。
 #
 # 三库就绪（D2：不静默跳过）：测试套件以真实 MySQL / PostgreSQL / MongoDB 跑
 # real-backends-e2e / federation-e2e / scenario-course-platform，

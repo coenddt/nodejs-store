@@ -9,7 +9,7 @@
  *   网关 reload 即据此让协议面看到新定义。
  *
  * 与本仓其它端到端用例同规：走 store 统一入口 + 内存 SQLite（无需外部服务）。
- * 运行：node scripts/test.js（scripts/test.js 会置 LOCAL_CORE=1）。
+ * 运行：node scripts/test.js（默认加载 node_modules 的 rust-store-node 绑定；验本地产物需 LOCAL_CORE=1）。
  */
 
 const { test } = require('node:test');

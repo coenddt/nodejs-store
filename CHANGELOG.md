@@ -61,6 +61,19 @@
   `bigNumberStrings: true`（把全部 BIGINT/DECIMAL 变字符串）。README 新增「大整数精度
   （BIGINT / DECIMAL）」一节，`tests/sql-executor.test.js` 补 `normalizeRows` 回归用例。
 
+### Docs（绑定二进制版本要求 / 本地验证手段）
+
+- **加载优先级澄清**：`src/core.js` 未设置 `LOCAL_CORE=1`（或 `NODE_ENV=production`）时**只**从
+  npm 依赖 `rust-store-node` 加载（与生产同路径）；仅在 npm 依赖加载失败时才回落相邻
+  `rust-store/core-node/dist/rust-store-node.node`。`scripts/test.js` **不注入** `LOCAL_CORE`
+  （此前 SKILL / CI 注释 / 多个测试文件头声称「自动开启」，已更正）。
+- **发版要求**：`rust-store-node` 包内各平台 `.node` 必须构建自含 core `273bc11`
+  （internal 上下文允许显式写归属键）的提交；否则任何走内建 metadef 落库的路径
+  （`__schemaDef` / `__workflowDef`）会丢 `createdBy`，而现有用例不校验该列，测试仍可能全绿。
+  本地把 `rust-store/core-node/dist/rust-store-node.node` 覆盖到
+  `node_modules/rust-store-node/rust-store-node.win32-x64-msvc.node` **只是验证手段，不提交**
+  （`node_modules` 不入库）；正式修复须由 npm 新版本承载更新后的二进制。
+
 ## 5.1.0 (2026-11-02)
 
 ### Added（feat：`accessKeys` 声明式行级权限）
