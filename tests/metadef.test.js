@@ -99,6 +99,19 @@ test('D2：版本唯一性由行自然键 _id 在存储层保证', async () => {
   });
 });
 
+test('internal 落库保留归属键 createdBy（绑定须含 core 273bc11）', async () => {
+  // 旧 core 无条件剔除归属键：internal 上下文（宿主 metadef 落库）写 createdBy 被丢弃，
+  // 落库行只有 _id。此处按落库结果断言，避免「绑定落后 → 测试仍全绿」的假绿。
+  await run(async () => {
+    const defn = { name: 'OwnerItem', fields: { _id: { type: 'string' }, title: { type: 'string' } } };
+    const row = await md.persistDef(store, defn, { tenant: 't5', env: 'dev', actor: 'u-owner' });
+    assert.equal(row.createdBy, 'u-owner');
+    const back = await store.query('__schemaDef($condition: @c){_id, createdBy}', { c: { _id: row._id } });
+    assert.equal(back.length, 1);
+    assert.equal(back[0].createdBy, 'u-owner');
+  });
+});
+
 test('D1：restoreDefs 从持久化定义重建注册表（同版本幂等）', async () => {
   await run(async () => {
     const defn = { name: 'RestoredItem', fields: { _id: { type: 'string' }, title: { type: 'string' } } };
