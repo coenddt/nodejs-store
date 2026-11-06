@@ -120,29 +120,32 @@ function _pyTypeName(v) {
 }
 
 /**
- * 角色白名单评估（与 core evaluate 同构；新建 run 无属主文档 → creator 按 Missing 通过）。
- * roleList 传 null（缺省）而非 [] 时同样走「无配置」默认行为（py falsy 统一回退语义）。
+ * 角色白名单评估（与 core permission.rs::evaluate 同构；新建 run 无属主文档 → creator 按 Missing 通过）。
+ *
+ * - ctx 缺失 / internal：直通放行（与 core 一致，先于名单判定）；
+ * - 未配置（null/undefined）：缺省姿态 Open → 放行（core 默认 UnconfiguredPolicy::Open）；
+ * - 显式空名单（[]）：显式声明「不允许任何角色」→ 拒绝（对齐 core 2026-11 变更：
+ *   [] 不再并入「未配置」，与 schema read/write 语义对称）；
+ * - 无内置角色硬编码：admin/super_admin 必须写进名单才放行（core 已清单化）。
  */
 function _evaluate(roleList, ctx) {
-  const list = roleList ?? null;
-  if (!list || list.length === 0) {
-    // 空白名单 = 无权限配置 → 默认行为（ctx 缺失放行；internal 放行；guest 拒绝）
-    if (ctx == null) return true;
-    if (ctx.internal) return true;
-    return !(ctx.roles || []).includes('guest');
-  }
   if (ctx == null) return true;
   if (ctx.internal) return true;
+  if (roleList === null || roleList === undefined) return true;
+  if (roleList.length === 0) return false;
   const roles = ctx.roles || [];
-  if (roles.includes('super_admin') || roles.includes('admin')) return true;
   const effective = roles.length ? roles : [ctx.role];
-  if (effective.some((r) => list.includes(r))) return true;
-  return list.includes('creator');
+  return effective.some((r) => roleList.includes(r)) || roleList.includes('creator');
 }
 
-/** run 白名单：显式声明优先；缺省回退 write（§0.6，falsy 统一回退） */
+/**
+ * run 白名单：显式声明优先；缺省回退 write（§0.6）
+ * 显式 [] 不得回退为「未配置」——否则「显式不允许」会被 falsy 判断吞成放行。
+ */
 function _runWhitelist(defn) {
-  return defn.run || defn.write || null;
+  const run = defn.run;
+  if (run !== undefined && run !== null) return run;
+  return defn.write === undefined ? null : defn.write;
 }
 
 // ─── 校验器（注册即静态检查；纯函数，错误全量收集） ──────────────

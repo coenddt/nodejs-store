@@ -86,7 +86,7 @@ A host that maps both failures to "not found" hides a genuine authorization deni
 
 Two rules are applied before the document leaves the process, not after it comes back.
 
-**The owner field and its column.** If `read` or `write` contains the `creator` pseudo-role, registration treats the ownership key as a declared field. The key is `ownerKey`, defaulting to `createdBy`; an `_id` owner key adds no column. `generateDdl` emits the column for SQL backends. On write, a falsy owner value is filled from `ctx.userId`. If someone bypasses registration and builds a schema by hand without the field, the write fails with a message naming the missing field — instead of a SQL `1054 Unknown column` from three layers down.
+**The owner field and its column.** If `read` or `write` contains the `creator` pseudo-role, registration treats the ownership key as a declared field. The key is `ownerKey`, defaulting to `createdBy`; `_id` is rejected at registration (the primary key is system-managed) — declare a dedicated ownership field such as `creatorId`. `generateDdl` emits the column for SQL backends. On write, a falsy owner value is filled from `ctx.userId`. If someone bypasses registration and builds a schema by hand without the field, the write fails with a message naming the missing field — instead of a SQL `1054 Unknown column` from three layers down.
 
 **The schema default.** On the insert path the core applies `DefaultFill::Insert`: only defaults that were explicitly declared, and only where the key is absent. This happens after `_id`, owner and timestamps are injected, so explicit input always wins. Explicit `null` is preserved and lands as SQL `NULL`. Fields without a declared default are not filled with a type zero.
 

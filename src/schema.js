@@ -68,6 +68,11 @@ function _coreFnKey(key, comp) {
 }
 
 /**
+ * 落点键：由 _locOf 显式注入 Location，不进 core 定义（01 起定义零落点）
+ */
+const _LOCATION_KEYS = ['database', 'schema'];
+
+/**
  * 单条 defn 的落点注入（Location）。
  *
  * 发布契约是「定义零落点」；但**既有** defn 仍可能带 `datasource`/`database`/`schema`
@@ -83,15 +88,23 @@ function _locOf(defn) {
   };
 }
 
-/** 生成可跨 FFI 的 schema 定义：fn/asyncFn → true 占位；函数型值剔除 */
+/**
+ * 生成可跨 FFI 的 schema 定义：fn/asyncFn → true 占位；函数型值剔除
+ *
+ * 落点键（database/schema）不属 core 白名单（01 起「定义零落点」）：
+ * 由 _locOf 显式注入 Location 后从定义中剔除，否则 core 注册期会以
+ * 「含未知顶层键」拒绝（既有 defn 兼容由本层承担，core 不再放行）。
+ */
 function _toCoreDefn(defn) {
-  return JSON.parse(JSON.stringify(defn, (key, value) => {
+  const out = JSON.parse(JSON.stringify(defn, (key, value) => {
     if (typeof value === 'function') {
       // fn/asyncFn 声明占位（core 按 `fn: true` 识别）；函数型 default 无法跨 FFI，剔除
       return key === 'fn' || key === 'asyncFn' ? true : undefined;
     }
     return value;
   }));
+  for (const k of _LOCATION_KEYS) delete out[k];
+  return out;
 }
 
 /**

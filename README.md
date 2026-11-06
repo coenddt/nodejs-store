@@ -457,8 +457,9 @@ store.scopedRoles(['viewer'], () => store.query(gql, params));
 await store.runAsInternal(() => store.remove('Post', { _id: pid }));
 ```
 
-- `super_admin`/`admin`/`internal` 角色放行一切；其他角色按 schema 级与字段级 `read`/`write` 白名单校验；`guest` 永不写。
-- `creator` 是一个伪角色，依据 `doc.<归属键> === ctx.userId` 解析（归属键由 schema `ownerKey` 声明，缺省 `createdBy`，可自定义如 `_id`）；授予它的 schema 会自动在查询上注入属主条件，并在 update/remove 时做属主校验。
+- 角色判决统一由 core 执行：命中豁免清单（`setExemptRoles`，默认为空——无 `admin`/`super_admin` 硬编码）或 `{ internal: true }` 上下文放行；其他角色按 schema 级与字段级 `read`/`write` 白名单校验；`guest` 永不写。
+- 白名单的空值语义：**不配置（`null`/缺省）= 缺省 Open**；**显式 `[]` = 显式不允许**（不命中任何角色，只有豁免清单与 internal 直通）。
+- `creator` 是一个伪角色，依据 `doc.<归属键> === ctx.userId` 解析（归属键由 schema `ownerKey` 声明，缺省 `createdBy`，可自定义如 `creatorId`；不得为 `_id` —— 主键由系统管理，注册期即拒绝）。授予它的 schema 会自动在查询上注入属主条件，并在 update/remove 时做属主校验。
 - 未设置上下文 → 权限校验关闭（向后兼容）。
 - 拒绝访问时抛出 `store.PermissionError`（`status = 403`）。
 
@@ -508,7 +509,7 @@ await store.runAsInternal(() => store.remove('Post', { _id: pid }));
   ],
   read: ['editor', 'viewer'],        // 可选的 schema 级角色白名单
   write: ['editor'],
-  ownerKey: '_id',                   // 可选：`creator` 伪角色的归属键；缺省 'createdBy'
+  ownerKey: 'creatorId',             // 可选：`creator` 伪角色的归属键；缺省 'createdBy'，不得为 '_id'。授予 creator 时该键必须在 fields 中声明
 }
 ```
 
@@ -1091,7 +1092,7 @@ const mine = await store.query('Course($condition:@c0){ _id, title, status }', {
 // → 属主条件 { createdBy: 'u1' } 被自动注入
 ```
 
-**结果。** 因为 schema 授予了 `creator`，查询会被注入一个 `createdBy` 条件，于是编辑只能看到自己的行；对不属于自己的行执行 `update` / `remove` 会抛 `PermissionError`（`status = 403`）。`guest` 的写入被直接拒绝，`admin` / `super_admin` 则绕过白名单。
+**结果。** 因为 schema 授予了 `creator`，查询会被注入一个 `createdBy` 条件，于是编辑只能看到自己的行；对不属于自己的行执行 `update` / `remove` 会抛 `PermissionError`（`status = 403`）。`guest` 的写入被直接拒绝；`admin` / `super_admin` 没有内置豁免，必须写进 `read`/`write` 名单（或配进 `setExemptRoles` 的豁免清单）才放行。
 
 **优势所在。** 行级属主是一句 schema 声明（`read`/`write` 列表里的 `creator`）加每请求一次上下文 —— 没有每个处理器都要记的 `WHERE createdBy = ?` 可写可漏，也没有每接口一段的 `if (user.role)` 阶梯。基于 `AsyncLocalStorage` 的上下文会贯穿嵌套调用，因此请求内发出的任何查询（哪怕来自某个辅助函数）都会获得同样的属主注入。被拒绝是一次带类型的 `PermissionError`（映射为 HTTP 403），而不是静默返回空结果。
 
