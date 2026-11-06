@@ -535,6 +535,54 @@ async function execSql(source, connection, cmd) {
   return _execSqlDirect(source, connection, cmd);
 }
 
+/** MySQL 两步化 claim / compareAndSet 的 SQL 文本占位符（core 规划产物；
+ * 领取结果在下一条 stmt 文本中占位，由 `_execClaim` 回填） */
+const _CLAIMED_IDS = '___claimed_ids___';
+
+/** `_id` 列表 → SQL IN **列表字面量**（不含外层括号；core 模板已写作 `IN (___claimed_ids___)`）。
+ *
+ * 单引号转义（`_id` 为框架生成值，转义为防御）。带括号回填后成 `IN (('a','b'))`——
+ * MySQL 视作单个行构造器，与非行操作数比较报 1241。
+ */
+function _renderClaimedIds(ids) {
+  return ids.map((v) => `'${String(v).replace(/'/g, "''")}'`).join(',');
+}
+
+/** 识别 MySQL 两步化 claim / compareAndSet 计划。
+ *
+ * 返回 `[stmt0, stmt1]`；非两步化计划返回 null。PG/SQLite 走单条 UPDATE…RETURNING
+ * 或 IN(子查询)，不出现该形态。
+ */
+function _claimTwoStep(plan) {
+  const stmts = (plan && plan.stmts) || [];
+  if (stmts.length < 2) return null;
+  const text = typeof stmts[1].text === 'string' ? stmts[1].text : '';
+  if (!text.includes(_CLAIMED_IDS)) return null;
+  return [stmts[0], stmts[1]];
+}
+
+/** 执行两步化 claim：先取命中 `_id`，回填 SQL 文本占位符后再执行置标语句。
+ *
+ * 跳过回填会让驱动直接报 `1054 Unknown column '___claimed_ids___'`（禁静默失守）。
+ * 零领取不执行置标语句（与 runAtomicCommands 零领取直接返回空一致）。
+ */
+async function _execClaim(connection, cmd, [first, second]) {
+  const env = await connection.exec({ stmts: [first] });
+  const ids = ((env && env.rows) || [])
+    .filter((r) => r && typeof r === 'object' && '_id' in r)
+    .map((r) => r._id);
+  if (ids.length === 0) {
+    return executors.shapeResult(cmd, { docs: null, rows: [], affectedRows: 0, insertId: null });
+  }
+  const stmt = { ...second, text: second.text.replace(_CLAIMED_IDS, _renderClaimedIds(ids)) };
+  const out = await connection.exec({ stmts: [stmt] });
+  // docs 置 null：首条只取 _id，其 restore 出的残行不能当作完整领取结果
+  // （「docs 直返」分支专为 SQLite UPDATE…RETURNING 设计）
+  return executors.shapeResult(cmd, {
+    docs: null, rows: env.rows, affectedRows: out.affectedRows, insertId: null,
+  });
+}
+
 /** `execSql` 的直通路径（不做向量降级） */
 async function _execSqlDirect(source, connection, cmd) {
   const plan = getCore().dialectTranslate(connection.kind, cmd);
@@ -558,6 +606,8 @@ async function _execSqlDirect(source, connection, cmd) {
       `SQL 数据源 ${source}(${connection.kind}) 的执行器未接入（见执行文档 Phase 4）`,
     );
   }
+  const step = _claimTwoStep(plan);
+  if (step) return _execClaim(connection, cmd, step);
   const out = await connection.exec(plan);
   return executors.shapeResult(cmd, out);
 }
@@ -619,6 +669,18 @@ class NativeCommandError extends Error {
   }
 }
 
+/** 聚合管道是否为写管道：任一阶段含 `$merge` / `$out`（Mongo 的写出口）。
+ *
+ * 写管道必须按写路径解析连接（主库 / 事务连接）——按读路径解析会在主从分离或
+ * 只读连接上报错或落到错误节点（A3）。
+ */
+function pipelineWrites(pipeline) {
+  for (const stage of pipeline || []) {
+    if (stage && typeof stage === 'object' && ('$merge' in stage || '$out' in stage)) return true;
+  }
+  return false;
+}
+
 /**
  * 在指定 Mongo 源上执行原生聚合管道（Host 层逃生口，对标 SQL 侧 executeRaw）
  *
@@ -626,15 +688,15 @@ class NativeCommandError extends Error {
  *     分支），options 为驱动原生透传项（allowDiskUse/batchSize/hint/maxTimeMS…，
  *     宿主不做白名单）；
  *   - 事务 / 会话作用域内自动透传 session（session 由事务强制接管，
- *     options.session 不可覆盖）；统一按读路径解析（isWrite=false），
- *     $merge/$out 写管道请自行开事务；
+ *     options.session 不可覆盖）；连接按管道语义解析：含 $merge/$out 的写管道走
+ *     写路径（主库 / 事务连接），其余按读路径；
  *   - 仅支持 Mongo 源：SQL 源显式报错并指引 executeRaw（绝不静默）；
  *     MongoClient 形态须经 schema 声明 database（mongoDb 既有校验，缺名即报错）；
  *   - 返回 `{ rows }`。
  *   对齐 py_store/datasource.py#execute_native。
  */
 async function executeNative(source, collection, pipeline = [], options = null) {
-  const conn = await resolveConnection(source, false);
+  const conn = await resolveConnection(source, pipelineWrites(pipeline));
   if (isSqlConnection(conn)) {
     throw new NativeCommandError(
       `数据源 ${source} 是 SQL 源（executeNative 仅接受 Mongo 原生命令，SQL 源请用 executeRaw；`
@@ -1006,6 +1068,7 @@ module.exports = {
   execSql,
   executeRaw,
   executeNative,
+  pipelineWrites,
   isWriteCommand,
   currentSession,
   runWithSession,
@@ -1014,4 +1077,9 @@ module.exports = {
   PushdownUnsupportedError,
   RawSqlError,
   NativeCommandError,
+  // parity 锚与内部件（下划线内部语义）
+  _claimTwoStep,
+  _execClaim,
+  _renderClaimedIds,
+  _execSqlDirect,
 };

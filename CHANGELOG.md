@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+### Added（feat：`text` 长文本字段类型）
+
+- `text` → MySQL `MEDIUMTEXT`、PG / SQLite `TEXT`（对齐 py-store 5.3.0）。此前 Node 侧
+  DDL 抛「类型 'text' 未知」，同一 defn 在两仓不能逐字节产出相同 DDL。
+
+### Fixed（fix：内建列清单收口 / 类型对齐 / 迁移 diff parity / 执行路径）
+
+- **D1/D2 迁移的内建列剔除改由 `ddl.builtinFieldNames` 单一来源判定**：此前迁移侧用
+  `timestamps` 真值 + 固定两列，与 DDL 的「未声明即建」口径分叉，且从不剔除归属键；
+  默认 timestamps + creator 权限的表在 SQLite 实机迁移报 `MigrationUnsupported`。
+- **D3 `_alignTypes` 按内省物理族归一**：内省反推 `number` 的列改声明
+  `date`/`datetime`/`bool` 不再被判「非放宽变更」。
+- **P8 `diffDefs` 的 `addColumn` 键集合与 py-store 一致**（`op`/`name`/`field`）。
+- **P9 索引相等判定改用 `_stableStringify`**（键序无关 + JS 数字语义），
+  `JSON.stringify` 键序敏感导致的「同键不同序 → 误判新增索引」消失。
+- **P4 `toNumber` 不再静默失真**：超出 IEEE-754 安全整数范围的整数值保留驱动原始
+  字符串（如 `9223372036854775807`），不再变成 `9223372036854776000`。
+- **A1 node datasource 补齐 MySQL 两步化 claim 的 SQL 文本占位符回填**：先取命中
+  `_id` 再回填置标语句，零领取不执行置标；此前 Node 侧直接把含
+  `___claimed_ids___` 的 SQL 下发驱动（`1054 Unknown column`）。同时 `_renderClaimedIds`
+  不再输出外层括号（core 模板已写作 `IN (___claimed_ids___)`，否则成
+  `IN (('a','b'))`，MySQL 报 1241）。
+- **A3 `executeNative` 识别 `$merge`/`$out` 写管道并按写路径解析连接**（主库 / 事务）。
+
+### Changed（契约：超安全整数出参类型）
+
+- `toNumber` 对超出安全整数范围的整数值返回字符串（精确值），不再返回失真的 number。
+  读 BIGINT 超界列的调用方需知晓该类型分支（JSON 序列化仍为精确数字字面量）。
+
 ## 5.1.0 (2026-11-02)
 
 ### Added（feat：`accessKeys` 声明式行级权限）

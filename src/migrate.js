@@ -22,7 +22,7 @@
 const crypto = require('node:crypto');
 
 const ddl = require('./ddl');
-const { pname } = ddl;
+const { pname, builtinFieldNames } = ddl;
 const introspect = require('./introspect');
 const { core } = require('./schema');
 const { MetaDefError, _stableStringify, _runInternal, _MIGRATION } = require('./metadef');
@@ -53,15 +53,17 @@ function migrationId(tenant, env, backend, name, version) {
 }
 
 /**
- * 内建物理列剔除：introspect→schemaFromRows 拉回的 defn 带 `__present` 哨兵列与
- * timestamps 物理列（宿主 DDL 的 snake_case：`created_at`/`updated_at`；兼容 camelCase），
- * 而用户 defn 不声明它们——不剔则 diff 误报「删除字段不支持」。
- * 注意 schemaFromRows 推断 `timestamps: false`，剔除条件看用户侧 defn 的声明。
+ * 内建物理列剔除：introspect→schemaFromRows 拉回的 defn 带 `__present` 哨兵列与宿主自动
+ * 补齐的 timestamps / 归属键物理列（snake_case；兼容 camelCase）——不剔则 diff 误报
+ * 「删除字段不支持」。
+ *
+ * 剔除清单**不在本文件自设**，一律取 `ddl.builtinFieldNames`（与 DDL 生成共用同一份内建列
+ * 定义）：此前用 `newDefn.timestamps` 真值判断 + 固定两列，与 DDL 的 `!== false` 口径分叉
+ * （D1），且漏掉归属键（D2）。
  */
-function _stripBuiltinFields(oldDefn, newDefn) {
+function _stripBuiltinFields(backend, oldDefn, newDefn) {
   if (!oldDefn || typeof oldDefn !== 'object') return oldDefn;
-  const drop = ['__present'];
-  if (newDefn && newDefn.timestamps) drop.push('created_at', 'updated_at', 'createdAt', 'updatedAt');
+  const drop = newDefn ? builtinFieldNames(newDefn, backend) : ['__present'];
   const fields = { ...oldDefn.fields };
   for (const k of drop) delete fields[k];
   return { ...oldDefn, fields };
@@ -101,11 +103,15 @@ function _physicalDefn(backend, defn) {
 }
 
 const _NUMERIC = new Set(['int', 'long', 'float', 'double', 'number']);
+// 内省反推 `number` 的物理族：SQLite INTEGER 承载 int/long/float/double/date/datetime/bool；
+// MySQL BIGINT 承载 long/number/datetime/date，TINYINT(1)（bool）也反推为 number。
+// old 侧反推为 number 时，new 声明落在同族内不得判「非放宽变更」（D3）。
+const _NUMBER_FAMILY = new Set([..._NUMERIC, 'date', 'datetime', 'bool', 'boolean']);
 
 /**
  * 反推粒度对齐：introspect 反推类型粒度可粗于用户声明（SQLite INTEGER/动态类型 →
- * `number`，承载 int/long/float/double 全域）——old 侧字段为 `number` 时把 new 侧同名
- * 数值字段归一为 `number` 比对（物理层确无差异；MySQL/PG 反推保真不受影响）。
+ * `number`，承载 int/long/float/double/date/datetime/bool 全域）——old 侧字段为 `number` 时
+ * 把 new 侧同名同族字段归一为 `number` 比对（物理层确无差异；MySQL/PG 反推保真不受影响）。
  * 仅同名两侧都有时归一；新加列保留用户类型（DDL 仍按声明产列型）。
  */
 function _alignTypes(backend, oldDefn, physNew) {
@@ -115,7 +121,7 @@ function _alignTypes(backend, oldDefn, physNew) {
     const o = oldFields[k];
     const ot = o && (typeof o === 'object' ? o.type : o);
     const nt = v && typeof v === 'object' ? v.type : v;
-    if (ot === 'number' && _NUMERIC.has(nt)) {
+    if (ot === 'number' && _NUMBER_FAMILY.has(nt)) {
       fields[k] = typeof v === 'object' ? { ...v, type: 'number' } : 'number';
     }
   }
@@ -179,7 +185,8 @@ async function migrate({ backend, source, defs, oldDefs = null, driver = null,
   const applied = [];
   const skipped = [];
   for (const [name, defn] of Object.entries(defs)) {
-    const oldDefn = _stripBuiltinFields(old[name] || (defn.collection && old[defn.collection]) || null, defn);
+    const oldDefn = _stripBuiltinFields(backend,
+      old[name] || (defn.collection && old[defn.collection]) || null, defn);
     // ⑤ 幂等闸（先于 diff）：同 (tenant,env,backend,name) 最新版本行 hash 相同 → skipped
     // 'unchanged'，不 diff——introspect 反推类型粒度（如 SQLite INTEGER→number）与用户声明
     // 粒度（int）不齐，重跑不应进 diff 被误报

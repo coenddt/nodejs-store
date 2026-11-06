@@ -22,11 +22,17 @@ const PG_NUMERIC_OIDS = new Set([20, 21, 23, 700, 701, 1700]);
 /** mysql2 的数值 columnType（DECIMAL/TINY/SHORT/LONG/FLOAT/DOUBLE/LONGLONG/INT24/NEWDECIMAL） */
 const MYSQL_NUMERIC_TYPES = new Set([0, 1, 2, 3, 4, 5, 8, 9, 246]);
 
-/** 字符串数值 → number；非有限数值（如超长整数溢出为 Infinity）保持原样，不静默改值 */
+/** 字符串数值 → number；非有限数值（如超长整数溢出为 Infinity）保持原样，不静默改值。
+ *
+ * 超出 IEEE-754 安全整数范围的整数值（如 BIGINT 的 9223372036854775807）无法无损转
+ * number（会静默变成 ...776000），**保留驱动返回的原始字符串**（精确值），不静默变形；
+ * 小数仍按 number 返回（JS 无更高精度标量可承载，且驱动侧本就以字符串保真输出）。 */
 function toNumber(v) {
   if (typeof v !== 'string' || v === '') return v;
   const n = Number(v);
-  return Number.isFinite(n) ? n : v;
+  if (!Number.isFinite(n)) return v;
+  if (Number.isInteger(n) && !Number.isSafeInteger(n)) return v;
+  return n;
 }
 
 /**

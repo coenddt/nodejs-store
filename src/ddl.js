@@ -27,6 +27,10 @@ const BACKENDS = ['mysql', 'postgres', 'sqlite'];
 // schema 声明类型 → [mysql, postgres, sqlite] 列类型
 const TYPES = {
   string: ['VARCHAR(255)', 'TEXT', 'TEXT'],
+  // 长文本（序列化状态、正文、base64 等数 KB 起步的字符串）：MySQL 用 MEDIUMTEXT（16MB），
+  // 避免调用方只能声明 string 再在建表后手改列型（宿主私改列型即绕过 DDL 真源，见 AGENTS §22）。
+  // PG / SQLite 的 TEXT 本身无长度上限。与 py_store/ddl.py::_TYPES['text'] 逐字节一致。
+  text: ['MEDIUMTEXT', 'TEXT', 'TEXT'],
   int: ['INT', 'INTEGER', 'INTEGER'],
   long: ['BIGINT', 'BIGINT', 'INTEGER'],
   number: ['BIGINT', 'BIGINT', 'INTEGER'],
@@ -161,7 +165,44 @@ function declaredType(fieldDef) {
   return fieldDef && typeof fieldDef === 'object' ? fieldDef.type : fieldDef;
 }
 
-/** 返回 [[name, sqlType, pk, auto]]，顺序：声明的字段（标量 / object·array JSON 列）→ timestamps → __present */
+/** 宿主自动补齐的内建列清单（**DDL 生成与迁移剔除共用的唯一来源**）。
+ *
+ * 返回 [[逻辑名, sqlType]]，顺序：timestamps → 归属键（owner 行控隐含）。
+ * `__present` 与声明字段不在此列（分别由 columns / 调用方处理）。
+ * timestamps 判定与 DDL 同口径：**未声明即建**（`!== false`），而不是真值判断——
+ * 这正是 D1 的根因（迁移剔除曾用真值判断，与 DDL 分叉）。 */
+function implicitColumns(defn, backend) {
+  const i = idx(backend);
+  const out = [];
+  if (defn.timestamps !== false) {
+    for (const ts of TIMESTAMP_FIELDS) out.push([ts, TYPES.number[i]]);
+  }
+  const owner = ownerField(defn);
+  if (owner) out.push([owner, TYPES.string[i]]);
+  return out;
+}
+
+/** 内建物理列名清单（迁移剔除用；与 implicitColumns 同源）。
+ *
+ * 「内建」= 宿主按 schema 声明自动建、但用户未显式声明的列：`__present` 哨兵 +
+ * timestamps + 归属键。用户显式声明了同名字段时**不剔除**（该列已参与字段 diff，
+ * 误剔会被当成「新增列」重复 ADD COLUMN）。同时返回物理名与逻辑名，兼容显式传入
+ * camelCase 形式的 oldDefs。 */
+function builtinFieldNames(defn, backend) {
+  const declared = defn.fields || {};
+  const declaredPhys = new Set(Object.keys(declared).map((k) => pname(backend, k)));
+  const names = ['__present'];
+  for (const [logical] of implicitColumns(defn, backend)) {
+    const phys = pname(backend, logical);
+    if (declaredPhys.has(phys) || Object.prototype.hasOwnProperty.call(declared, logical)) continue;
+    names.push(phys);
+    if (phys !== logical) names.push(logical);
+  }
+  return names;
+}
+
+/** 返回 [[name, sqlType, pk, auto]]，顺序：声明的字段（标量 / object·array JSON 列）→
+ * timestamps → 归属键（owner 行控隐含）→ __present */
 function columns(defn, backend) {
   const i = idx(backend);
   const cols = [];
@@ -194,19 +235,10 @@ function columns(defn, backend) {
   if (!cols.some((c) => c[2])) {
     throw new Error(`DDL 生成：schema "${defn.name}" 缺少 _id 字段`);
   }
-  if (defn.timestamps !== false) {
-    for (const ts of TIMESTAMP_FIELDS) {
-      const col = pname(backend, ts); // createdAt/updatedAt → created_at/updated_at
-      if (!cols.some((c) => c[0] === col)) cols.push([col, TYPES.number[i], false, false]);
-    }
-  }
-  // A2：owner 行控（creator 权限）⇒ 归属键必建（与 timestamps 同款自动补齐；已声明则沿用声明的类型）。
-  // 键名取 ownerKey（缺省 createdBy）。与 py_store/ddl.py 逐字节对齐，并与 core
-  // schema/registry.rs::add_owner_field 同口径。
-  const owner = ownerField(defn);
-  if (owner) {
-    const col = pname(backend, owner);
-    if (!cols.some((c) => c[0] === col)) cols.push([col, TYPES.string[i], false, false]);
+  // 内建列（timestamps → 归属键）统一来自 implicitColumns：已声明则沿用声明列型，不重复补列。
+  for (const [logical, sqlType] of implicitColumns(defn, backend)) {
+    const col = pname(backend, logical);
+    if (!cols.some((c) => c[0] === col)) cols.push([col, sqlType, false, false]);
   }
   cols.push(['__present', PRESENT_TYPE[i], false, false]);
   return cols;
@@ -453,9 +485,12 @@ function diffDefs(oldDefn, newDefn) {
   const indexKeys = (defn) => (defn.indexes || [])
     .filter((ix) => ix && typeof ix === 'object' && ix.keys
       && typeof ix.keys === 'object' && Object.keys(ix.keys).length);
-  const oldIdx = indexKeys(oldDefn);
+  // 索引相等判定用稳定序列化（键序无关 + JS 数字语义），对齐 py diff_defs 的
+  // stable_stringify：JSON.stringify 键序敏感会让「同键不同序」误判为新增索引（P9）。
+  const { _stableStringify } = require('./metadef');
+  const oldIdx = new Set(indexKeys(oldDefn).map(_stableStringify));
   for (const ix of indexKeys(newDefn)) {
-    if (!oldIdx.some((o) => JSON.stringify(o) === JSON.stringify(ix))) {
+    if (!oldIdx.has(_stableStringify(ix))) {
       changes.push({ op: 'addIndex', index: ix });
     }
   }
@@ -537,4 +572,4 @@ function generateMigration(backend, oldDefn, newDefn) {
   return stmts;
 }
 
-module.exports = { generate, diffDefs, generateMigration, pname, ptable };
+module.exports = { generate, diffDefs, generateMigration, pname, ptable, builtinFieldNames };
