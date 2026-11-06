@@ -40,7 +40,7 @@
   `init(conn, { allowNativeAggregate: true })` 开启）、`executeNative()`、`executeRaw()`。
 - 依赖下限：`rust-store-node` 需同步升级到含本次 core 撤销的版本（当前已发布最高为
   4.9.0，未含本变更）。
-- 文档同步：`README.md` / `README.zh-CN.md` / `llms-full.txt` / `SKILL.md` 的
+- 文档同步：`README.md` / `README.en.md` / `llms-full.txt` / `SKILL.md` 的
   `$pipeline` 与 `store.aggregate()` 表述改为与代码一致（`aggregate` 为 opt-in 别名，
   不是「已移除」）。
 
