@@ -207,6 +207,27 @@ const items = await store.query('Post($condition:@c0) { title, status }', { c0: 
 
 GQL 树查询会编译为每个后端一条原生查询（local 源除外 —— 命令在 core 本地求值器内直接求值）—— 再也不必手写 `$lookup` 或原生 SQL。
 
+### 大整数精度（BIGINT / DECIMAL）
+
+`normalizeRows` 只依据列类型把驱动返回的**字符串**数值转回 `number`；超出 IEEE-754 安全整数
+（±(2^53−1)）的整数保留为字符串，不静默变形。各后端的实际边界：
+
+| 后端 | BIGINT 出参 | 说明 |
+| --- | --- | --- |
+| PostgreSQL | 安全范围内 `number`，超出为**字符串**（`pg` 默认把 `int8` 读成字符串，宿主按上述规则归一） | 精确 |
+| MySQL | **默认 `number`**（`mysql2` 默认 `supportBigNumbers=false`，驱动层即把 BIGINT 转成 double） | 超 ±(2^53−1) 时**在驱动内已失真**，宿主拿不到原值 |
+| SQLite | `number`（`better-sqlite3` 直接返回 JS number） | 同样受 double 限制 |
+
+要在 MySQL 下拿到精确 BIGINT，创建 `mysql2` 连接池时开启 **`supportBigNumbers: true`** —— 它只把
+**超出安全范围**的 BIGINT/DECIMAL 读成字符串（安全范围内仍是 `number`，宿主原样保留字符串）：
+
+```js
+const pool = mysql.createPool({ /* ... */, supportBigNumbers: true });
+```
+
+不建议开 `bigNumberStrings: true`：它会把**所有** BIGINT/DECIMAL 都变成字符串，改变全部出参类型。
+Python 宿主（`py-store`）返回 Python `int`，天然精确，无此限制。
+
 ### 本地磁盘数据源（local）
 
 零外部服务、零原生 DB 引擎：集合以 JSON 文件落盘，命令在 Rust core 的本地求值器内直接执行（语义与 MongoDB 驱动一致）。

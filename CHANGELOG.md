@@ -42,6 +42,25 @@
 - `toNumber` 对超出安全整数范围的整数值返回字符串（精确值），不再返回失真的 number。
   读 BIGINT 超界列的调用方需知晓该类型分支（JSON 序列化仍为精确数字字面量）。
 
+### Changed（契约：defn hash 的数值序列化改为项目规范格式）
+
+- `_stableStringify` 的数字输出统一为**本项目的规范格式（不是 JS 语义）**，与 py-store
+  逐字节一致：整值 float → 整数；有限 double 取最短往返位，按 ECMAScript 排版阈值
+  （`1e-6 <= |v| < 1e21` 用普通小数，其余科学记数）；指数**无补零、无 `+`**
+  （`1e21`，不再出现 `1e+21`）；`-0` → `0`；NaN / ±Infinity → `null`。
+  修复此前非整数浮点跨端 hash 分叉（py `1e-07` vs node `1e-7`）导致的 migrate 幂等闸
+  失效。**影响**：历史版本行的 hash 与新算不同，升级后首次 `migrate` 会重新走一次 diff
+  （通常为空变更 `sqls: []`，新增一个版本行）；数据与列型不变。跨端对拍语料见
+  `tests/fixtures/stable-stringify-parity.json`（两仓同内容）。
+
+### Docs（MySQL BIGINT 精度边界）
+
+- 明确 `mysql2` 默认 `supportBigNumbers=false` 时 BIGINT 在**驱动层**即转成 double，
+  宿主 `normalizeRows` 的字符串保真路径不会生效：MySQL 下超 ±(2^53−1) 的整数会失真。
+  推荐在连接池开启 `supportBigNumbers: true`（仅超范围值以字符串出参）；不建议
+  `bigNumberStrings: true`（把全部 BIGINT/DECIMAL 变字符串）。README 新增「大整数精度
+  （BIGINT / DECIMAL）」一节，`tests/sql-executor.test.js` 补 `normalizeRows` 回归用例。
+
 ## 5.1.0 (2026-11-02)
 
 ### Added（feat：`accessKeys` 声明式行级权限）

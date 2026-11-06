@@ -13,6 +13,12 @@
  * 归一**只依据驱动给出的列类型元数据**（`pg` 的 `res.fields[].dataTypeID`、`mysql2` 的
  * `fields[].columnType`），因此**不会**误伤真正的字符串列（如 `_id` / `status`）。
  *
+ * ⚠ MySQL 的 BIGINT 默认**不经过**本函数：`mysql2` 在 `supportBigNumbers=false`（默认）时
+ * 已于驱动层把 BIGINT 转成 JS `number`，超出 ±(2^53−1) 的精度在宿主看到之前就已丢失。
+ * 需要精确值请在连接池开启 `supportBigNumbers: true`（仅超范围值以字符串出参，本函数原样
+ * 保留）；`bigNumberStrings: true` 会把全部 BIGINT/DECIMAL 变成字符串，不推荐。详见 README
+ * 「大整数精度（BIGINT / DECIMAL）」。
+ *
  * 与 py-store 的 `py_store/executors/_values.py`（`Decimal` → 数值）同源同责。
  */
 
