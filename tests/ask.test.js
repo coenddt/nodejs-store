@@ -673,7 +673,8 @@ describe('conformance · 与 py-store 逐字节一致（GQL / 错误前缀 / 事
 function _registerAkSchemas() {
   _sc.register({
     name: 'AkUser', collection: 'ak_users', idPrefix: 'aku', timestamps: true, datasource: SRC,
-    // guest 显式可读模型（read:[] 时 guest 默认禁止），但 role 字段仍 admin 专属 → T8 验证列级过滤
+    // 显式列出 user/guest（core 已统一 read:[] = 显式不允许，不再按「未配置」处理），
+    // 但 role 字段仍 admin 专属 → T8 验证列级过滤
     read: ['user', 'guest'],
     fields: {
       _id: 'string',
@@ -692,7 +693,9 @@ function _registerAkSchemas() {
   });
   _sc.register({
     name: 'AkOrder', collection: 'ak_orders', idPrefix: 'ako', timestamps: true, datasource: SRC,
-    read: [],
+    // 本用例组只验问数编排，不验 schema 级读限制：未配置（null = 缺省 Open）；
+    // 不得写 read:[]（core 语义为「显式不允许」）
+    read: null,
     fields: { _id: 'string', code: 'string', amount: 'float' },
     relations: { items: { model: 'AkOrderItem', type: 'many',
       localField: '_id', foreignField: 'orderId' } },
@@ -700,19 +703,19 @@ function _registerAkSchemas() {
   });
   _sc.register({
     name: 'AkOrderItem', collection: 'ak_order_items', idPrefix: 'aki',
-    timestamps: false, read: [], datasource: SRC,
+    timestamps: false, read: null, datasource: SRC,
     fields: { _id: 'string', sku: 'string', qty: 'int' },
     relations: { stock: { model: 'AkStock', type: 'one', localField: 'sku', foreignField: 'sku' } },
   });
   _sc.register({
     name: 'AkStock', collection: 'ak_stocks', idPrefix: 'aks',
-    timestamps: false, read: [], datasource: SRC,
+    timestamps: false, read: null, datasource: SRC,
     fields: { _id: 'string', sku: 'string', qty: 'int' },
     relations: { owner: { model: 'AkUser', type: 'one', localField: 'ownerId', foreignField: '_id' } },
   });
   _sc.register({
     name: 'AkPost', collection: 'ak_posts', idPrefix: 'akp',
-    timestamps: false, read: [], datasource: SRC,
+    timestamps: false, read: null, datasource: SRC,
     fields: { _id: 'string', title: 'string' },
   });
 }

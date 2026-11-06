@@ -195,6 +195,13 @@ test('D1/D2：默认 timestamps + creator 权限的内建列不得被当作「�
     }
     assert.equal(cols.filter((c) => c === 'created_at').length, 1);
     assert.equal(cols.filter((c) => c === 'created_by').length, 1);
+    // 再迁移（同 defs 重跑）：幂等闸命中 → skipped unchanged，不产生第三次 DDL
+    const r3 = await store.migrate({
+      backend: 'sqlite', source: 'default', defs: { Task: v2 }, oldDefs: null, driver: db,
+    });
+    assert.deepEqual(r3, { applied: [], skipped: [{ name: 'Task', reason: 'unchanged' }] });
+    const n = db.prepare('SELECT count(*) AS n FROM __schemaMigration').get().n;
+    assert.equal(n, 2, `版本行应保持 2 条（got ${n}）`);
   });
 });
 

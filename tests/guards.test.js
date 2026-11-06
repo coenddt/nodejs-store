@@ -140,15 +140,25 @@ test('非法 timestamps 注册即报错（core 校验，行为收紧）', () => 
 
 test('ownerKey 自定义键回显镜像；缺省 undefined（零破坏）', () => {
   _sc.register({
-    name: 'OwnDoc', collection: 'own_docs', ownerKey: '_id',
-    fields: { title: 'string' }, relations: {},
+    name: 'OwnDoc', collection: 'own_docs', ownerKey: 'ownerId',
+    fields: { title: 'string', ownerId: 'string' }, relations: {},
   });
-  assert.equal(_sc.get('OwnDoc').ownerKey, '_id');
+  assert.equal(_sc.get('OwnDoc').ownerKey, 'ownerId');
   _sc.register({
     name: 'DefaultOwn', collection: 'default_own',
     fields: { title: 'string' }, relations: {},
   });
   assert.equal(_sc.get('DefaultOwn').ownerKey, undefined);
+});
+
+test('ownerKey 不得为主键 "_id"（core N1 拒绝，注册期即报错）', () => {
+  assert.throws(
+    () => _sc.register({
+      name: 'OwnIdPk', collection: 'own_id_pk', ownerKey: '_id',
+      fields: { title: 'string' }, relations: {},
+    }),
+    /ownerKey/,
+  );
 });
 
 test('非法 ownerKey 注册即报错（core 校验透传）', () => {

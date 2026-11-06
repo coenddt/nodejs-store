@@ -223,14 +223,22 @@ test('when 取值位三态：inv 无结果时路径取值为 null', () => {
 
 const PERM_CASES = [
   [null, null, true],
-  [null, { roles: ['guest'] }, false],
+  // 未配置（null）= 缺省姿态 Open：core 清单化后不再对 guest 硬拒
+  [null, { roles: ['guest'] }, true],
   [null, { roles: ['user'] }, true],
+  // 显式空名单（[]）= 显式不允许；ctx 缺失 / internal 直通先于名单判定
+  [[], null, true],
+  [[], { roles: ['user'] }, false],
+  [[], { roles: ['admin'] }, false],
+  [[], { internal: true }, true],
   [['ops'], null, true],
   [['ops'], { roles: ['ops'] }, true],
   [['ops'], { roles: ['user'] }, false],
   [['ops'], { roles: ['user', 'ops'] }, true],
-  [['ops'], { roles: ['admin'] }, true],
-  [['ops'], { roles: ['super_admin'] }, true],
+  // 无内置角色硬编码：admin / super_admin 须写进名单才放行（对齐 core 清单化）
+  [['ops'], { roles: ['admin'] }, false],
+  [['ops'], { roles: ['super_admin'] }, false],
+  [['ops'], { roles: ['admin', 'ops'] }, true],
   [['ops'], { roles: ['guest'] }, false],
   [['ops'], { internal: true, roles: ['guest'] }, true],
   [['creator'], { userId: 'u1' }, true],
@@ -247,6 +255,11 @@ test('run 白名单缺省回退 write（对齐 py wf._run_whitelist）', () => {
   assert.deepEqual(workflow._runWhitelist({ write: ['w1'] }), ['w1']);
   assert.deepEqual(workflow._runWhitelist({ run: ['r1'], write: ['w1'] }), ['r1']);
   assert.equal(workflow._runWhitelist({}), null);
+  // 显式空名单 = 显式不允许：不得被 falsy 判断吞成「未配置」
+  assert.deepEqual(workflow._runWhitelist({ run: [] }), []);
+  assert.deepEqual(workflow._runWhitelist({ write: [] }), []);
+  assert.deepEqual(workflow._runWhitelist({ run: [], write: ['w1'] }), []);
+  assert.deepEqual(workflow._runWhitelist({ run: null, write: [] }), []);
 });
 
 // ─── 内建 run 表自举 ─────────────────────────────────────────

@@ -1,7 +1,7 @@
 [
   {
     "name": "User", "collection": "users", "idPrefix": "u", "timestamps": true,
-    "read": [], "write": ["admin"],
+    "read": null, "write": ["admin"],
     "fields": {
       "_id":    { "type": "string" },
       "name":   { "type": "string" },
@@ -22,7 +22,7 @@
   },
   {
     "name": "Category", "collection": "categories", "idPrefix": "cat", "timestamps": false,
-    "read": [], "write": ["admin", "editor"],
+    "read": null, "write": ["admin", "editor"],
     "fields": {
       "_id":      { "type": "string" },
       "name":     { "type": "string" },
