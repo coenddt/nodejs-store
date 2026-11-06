@@ -35,6 +35,29 @@ test('diff：白名单变更检出，恒等不上报', () => {
   assert.ok(!ops.some(([o, n]) => o === 'addColumn' && (n === '_id' || n === 'orderNo')));
 });
 
+test('P8：addColumn 变更对象键集合两端一致（op/name/field）', () => {
+  const plan = ddl.diffDefs(OLD, NEW);
+  const adds = plan.changes.filter((c) => c.op === 'addColumn');
+  assert.ok(adds.length > 0, JSON.stringify(plan));
+  for (const c of adds) assert.deepEqual(Object.keys(c).sort(), ['field', 'name', 'op']);
+});
+
+test('P9：同一索引仅键序不同 → 不得误判为新增', () => {
+  const old = {
+    name: 'Idx', collection: 'idx_t', idPrefix: 'i', timestamps: false,
+    fields: { _id: { type: 'string' }, a: { type: 'string' }, b: { type: 'int' } },
+    indexes: [{ keys: { a: 1, b: -1 }, unique: true }],
+  };
+  const next = {
+    name: 'Idx', collection: 'idx_t', idPrefix: 'i', timestamps: false,
+    fields: old.fields,
+    indexes: [{ unique: true, keys: { b: -1, a: 1 } }],
+  };
+  const plan = ddl.diffDefs(old, next);
+  assert.deepEqual(plan.errors, []);
+  assert.deepEqual(plan.changes.filter((c) => c.op === 'addIndex'), []);
+});
+
 test('建表：物理化 defn 已含 deleted_at 时归档表不重复建列', () => {
   // migrate 先 _physicalDefn（键转 snake），归档表 def 再追加 deletedAt；
   // 两者都必须收敛到单列（真实链路 duplicate column name 的回归）

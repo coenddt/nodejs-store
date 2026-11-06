@@ -260,3 +260,66 @@ test('execMongo 拒绝 claim/compareAndSet（concurrencyPrimitivesSqlOnly）', a
       `execMongo 应拒绝 ${kind}`);
   }
 });
+
+// ── A1：MySQL 两步化 claim 的 SQL 文本占位符由 datasource 回填（对齐 py） ──
+
+function twoStepClaimCmd() {
+  const { getCore } = require('../src/schema');
+  store.register({
+    name: 'ClaimOutboxA1', collection: 'claim_outbox_a1', timestamps: false,
+    fields: { status: { type: 'string' } },
+  });
+  const plan = getCore().planClaim(
+    'ClaimOutboxA1', { status: 'pending' }, { $set: { status: 'claimed' } },
+    [['_id', 1]], 2, 1700000000000, {}, null);
+  return plan.commands[0];
+}
+
+function fakeMysql() {
+  const calls = [];
+  return {
+    calls,
+    conn: {
+      kind: 'mysql',
+      async exec(p) {
+        calls.push(p);
+        for (const s of p.stmts || []) {
+          if (String(s.text || '').includes('___claimed_ids___')) {
+            throw new Error("ER_BAD_FIELD_ERROR: Unknown column '___claimed_ids___' in 'where clause'");
+          }
+        }
+        if (calls.length === 1) {
+          return { rows: [{ _id: 'a1' }, { _id: 'a2' }], affectedRows: 0, insertId: null };
+        }
+        return { rows: [], affectedRows: 2, insertId: null };
+      },
+    },
+  };
+}
+
+test('A1：MySQL 两步化 claim 先取 _id 再回填 SQL 文本占位符', async () => {
+  const datasource = require('../src/datasource');
+  const { calls, conn } = fakeMysql();
+  const out = await datasource._execSqlDirect('default', conn, twoStepClaimCmd());
+  assert.equal(calls.length, 2, '应执行两次：取 _id + 置标');
+  assert.equal(calls[0].stmts.length, 1, '首条只执行取 _id 语句');
+  assert.ok(String(calls[1].stmts[0].text).includes("IN ('a1','a2')"), calls[1].stmts[0].text);
+  assert.deepEqual(out.rows, [{ _id: 'a1' }, { _id: 'a2' }]);
+  assert.equal(out.affectedRows, 2);
+});
+
+test('A1：两步化 claim 零领取不执行置标语句', async () => {
+  const datasource = require('../src/datasource');
+  const calls = [];
+  const conn = {
+    kind: 'mysql',
+    async exec(p) {
+      calls.push(p);
+      return { rows: [], affectedRows: 0, insertId: null };
+    },
+  };
+  const out = await datasource._execSqlDirect('default', conn, twoStepClaimCmd());
+  assert.equal(calls.length, 1);
+  assert.deepEqual(out.rows, []);
+  assert.equal(out.affectedRows, 0);
+});

@@ -151,3 +151,70 @@ test('⑥ 参数校验：oldDefs=null 且缺 driver 显式报错（不静默）'
     );
   });
 });
+
+test('D3：内省反推 number 的 datetime / bool 列不得判「非放宽变更」', async () => {
+  await run(async (db) => {
+    const v1 = {
+      name: 'Post', collection: 'posts', idPrefix: 'p', timestamps: false,
+      fields: {
+        _id: { type: 'string' },
+        publishedAt: { type: 'datetime' },
+        active: { type: 'bool' },
+      },
+    };
+    await store.migrate({ backend: 'sqlite', source: 'default', defs: { Post: v1 }, oldDefs: null, driver: db });
+    const v2 = { ...v1, fields: { ...v1.fields, title: { type: 'string' } } };
+    const r = await store.migrate({ backend: 'sqlite', source: 'default', defs: { Post: v2 }, oldDefs: null, driver: db });
+    assert.deepEqual(r.applied, [{ name: 'Post', from: 1, to: 2, version: 2 }]);
+    const cols = db.prepare("SELECT name FROM pragma_table_info('posts')").all().map((x) => x.name);
+    assert.ok(cols.includes('title'), `title 列应存在（got ${cols}）`);
+    assert.equal(cols.filter((c) => c === 'published_at').length, 1);
+    assert.equal(cols.filter((c) => c === 'active').length, 1);
+  });
+});
+
+function defaultTsCreatorV1() {
+  return {
+    name: 'Task', collection: 'tasks', idPrefix: 't',
+    write: ['creator'],
+    fields: { _id: { type: 'string' }, title: { type: 'string' } },
+  };
+}
+
+test('D1/D2：默认 timestamps + creator 权限的内建列不得被当作「待删字段」', async () => {
+  await run(async (db) => {
+    const v1 = defaultTsCreatorV1();
+    await store.migrate({ backend: 'sqlite', source: 'default', defs: { Task: v1 }, oldDefs: null, driver: db });
+    const v2 = { ...v1, fields: { ...v1.fields, priority: { type: 'int' } } };
+    const r = await store.migrate({ backend: 'sqlite', source: 'default', defs: { Task: v2 }, oldDefs: null, driver: db });
+    assert.deepEqual(r.applied, [{ name: 'Task', from: 1, to: 2, version: 2 }]);
+    const cols = db.prepare("SELECT name FROM pragma_table_info('tasks')").all().map((x) => x.name);
+    assert.ok(cols.includes('priority'), `priority 列应存在（got ${cols}）`);
+    for (const builtin of ['created_at', 'updated_at', 'created_by', '__present']) {
+      assert.ok(cols.includes(builtin), `${builtin} 应保留（got ${cols}）`);
+    }
+    assert.equal(cols.filter((c) => c === 'created_at').length, 1);
+    assert.equal(cols.filter((c) => c === 'created_by').length, 1);
+  });
+});
+
+test('D1/D2 边界：用户显式声明 createdAt / createdBy ⇒ 不剔除（不得重复 ADD COLUMN）', async () => {
+  await run(async (db) => {
+    const v1 = {
+      name: 'Decl', collection: 'decls', idPrefix: 'd',
+      timestamps: false, write: ['creator'],
+      fields: {
+        _id: { type: 'string' },
+        createdAt: { type: 'number' },
+        createdBy: { type: 'string' },
+      },
+    };
+    await store.migrate({ backend: 'sqlite', source: 'default', defs: { Decl: v1 }, oldDefs: null, driver: db });
+    const v2 = { ...v1, fields: { ...v1.fields, note: { type: 'string' } } };
+    const r = await store.migrate({ backend: 'sqlite', source: 'default', defs: { Decl: v2 }, oldDefs: null, driver: db });
+    assert.deepEqual(r.applied, [{ name: 'Decl', from: 1, to: 2, version: 2 }]);
+    const cols = db.prepare("SELECT name FROM pragma_table_info('decls')").all().map((x) => x.name);
+    assert.equal(cols.filter((c) => c === 'created_at').length, 1, `created_at 不得重复（got ${cols}）`);
+    assert.equal(cols.filter((c) => c === 'created_by').length, 1, `created_by 不得重复（got ${cols}）`);
+  });
+});

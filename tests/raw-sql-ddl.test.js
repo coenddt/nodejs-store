@@ -498,6 +498,20 @@ test('ddl 三后端类型映射', () => {
   assert.ok(lite.includes('"at" INTEGER'));
 });
 
+test('ddl text 字段三后端类型映射（对齐 py_store/ddl.py）', () => {
+  store.register({
+    name: 'DdlText', collection: 'ddl_text', idPrefix: 'x', timestamps: false,
+    fields: { _id: { type: 'string' }, payload: { type: 'text' } },
+  });
+  const my = store.generateDdl('mysql', ['DdlText']);
+  const pg = store.generateDdl('postgres', ['DdlText']);
+  const lite = store.generateDdl('sqlite', ['DdlText']);
+
+  assert.ok(my.includes('`payload` MEDIUMTEXT'), `mysql 长文本应为 MEDIUMTEXT（got ${my}）`);
+  assert.ok(pg.includes('"payload" TEXT'), pg);
+  assert.ok(lite.includes('"payload" TEXT'), lite);
+});
+
 test('ddl object/array JSON 列三后端类型映射', () => {
   store.register({
     name: 'DdlJson', collection: 'ddl_json', idPrefix: 'j', timestamps: false,

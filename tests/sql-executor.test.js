@@ -264,3 +264,17 @@ test('openAcquire: mysql2 Pool（getConnection）checkout 并归还', async () =
   await got.release();
   assert.equal(conn.released, true, 'release 应归还池连接');
 });
+
+test('P4：toNumber 超出安全整数范围保留原字符串，不静默失真', () => {
+  const { toNumber } = require('../src/executors/_values');
+  // 改前：Number('9223372036854775807') = 9223372036854776000（静默失真）
+  assert.equal(toNumber('9223372036854775807'), '9223372036854775807');
+  assert.equal(toNumber('-9223372036854775808'), '-9223372036854775808');
+  // 安全范围内仍转 number
+  assert.equal(toNumber('42'), 42);
+  assert.equal(toNumber('9007199254740991'), 9007199254740991);
+  // 小数与非数值保持既有语义
+  assert.equal(toNumber('1.5'), 1.5);
+  assert.equal(toNumber('abc'), 'abc');
+  assert.equal(toNumber(''), '');
+});

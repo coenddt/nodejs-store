@@ -21,6 +21,12 @@ const md = require('../src/metadef');
 
 const _US = '\u001f';
 
+test('P3：stableStringify 数字与 py 同语义（1.0 → 1）', () => {
+  assert.equal(md._stableStringify({ default: 1 }), '{"default":1}');
+  assert.equal(md.sameDefn({ default: 1 }, { default: 1 }), true);
+  assert.equal(md._stableStringify({ a: 1.5, b: true, 名: '值' }), '{"a":1.5,"b":true,"名":"值"}');
+});
+
 /** 建内存库 + 建内建 `__schemaDef` 表 → init → 执行 body（每个用例独立库） */
 async function run(body) {
   const db = new Database(':memory:');

@@ -20,6 +20,35 @@ const assert = require('node:assert/strict');
 const { feedback, schema: _sc } = require('../src');
 const { execMongo } = require('../src/executors/mongo');
 
+// ─── A3：$merge/$out 写管道的连接路由 ─────────────────────
+
+test('A3：$merge/$out 写管道按写路径解析连接', async () => {
+  const datasource = require('../src/datasource');
+  assert.equal(datasource.pipelineWrites([{ $match: {} }, { $out: 'x' }]), true);
+  assert.equal(datasource.pipelineWrites([{ $merge: { into: 'x' } }]), true);
+  assert.equal(datasource.pipelineWrites([{ $match: {} }, { $sort: { a: 1 } }]), false);
+
+  const calls = [];
+  const fakeSession = {
+    async connFor(source, isWrite) {
+      calls.push([source, isWrite]);
+      throw new Error('MARK-resolve');
+    },
+  };
+  await assert.rejects(
+    () => datasource.runWithSession(
+      fakeSession, () => datasource.executeNative('default', 'c', [{ $out: 'x' }])),
+    /MARK-resolve/);
+  assert.deepEqual(calls, [['default', true]], '写管道应按 isWrite=true 解析');
+
+  calls.length = 0;
+  await assert.rejects(
+    () => datasource.runWithSession(
+      fakeSession, () => datasource.executeNative('default', 'c', [{ $match: {} }])),
+    /MARK-resolve/);
+  assert.deepEqual(calls, [['default', false]], '读管道维持 isWrite=false');
+});
+
 /** 捕获下发给原驱动的 filter / pipeline 的 db 桩 */
 function fakeDb () {
   const captured = { filter: null, pipeline: null };
