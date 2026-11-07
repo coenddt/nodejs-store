@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added（新增宿主门面：批量注册 / 注销，供插件 bootstrap 接入）
+
+- `store.registerBatch(items, ctx?)`：`items = [{ defn, location? }]`，`location` 缺省
+  （`null`/`undefined`）时按 defn 内落点字段推导（`_locOf`）；一步透传 core
+  `registerBatch`，原子语义由 core 定（任一失败零副作用）。
+- `store.unregister(name)`：透传 core `Registry::unregister`，幂等（未知 schema 成功），
+  同步清 Host 元数据镜像（含派生 `<Name>Deleted`）；绑定未导出该方法时抛显式 `Error`，
+  不做静默降级。
+- 均为新增公开符号，既有调用路径不变 → 非破坏。
+
 ### Fixed（非破坏子集，5.x 维护分支）
 
 - **迁移内建列剔除同源**：`_stripBuiltinFields` 改取 `ddl.builtinFieldNames`（与 DDL 生成共用

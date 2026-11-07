@@ -372,12 +372,31 @@ function registerBatch(items, ctx) {
   const list = items || [];
   const coreItems = list.map(({ defn, location }) => ({
     defn: _toCoreDefn(defn),
-    location,
+    location: location || _locOf(defn),
   }));
   getCore().registerBatch(coreItems, ctx ?? null);
   for (const { defn } of list) {
     if (defn && !defn.replica) _mirror(defn);
   }
+}
+
+/**
+ * 注销一个 schema（core 幂等：未知 schema 成功，回滚清单可整份重放）。
+ *
+ * 判决唯一在 core（`Registry::unregister`）：主项与归档派生物 `<Name>Deleted`
+ * 一并清理；Host 侧元数据镜像同步移除，使 `has`/`list` 与 core 一致。
+ */
+function unregister(name) {
+  const fn = getCore().unregister;
+  if (typeof fn !== 'function') {
+    throw new Error(
+      '当前 rust-store-node 绑定未导出 Registry.unregister（core 源码已实现，'
+      + '需重建绑定后生效）；无法执行注销，未做任何 Host 镜像改动',
+    );
+  }
+  fn.call(getCore(), name);
+  delete _schemas[name];
+  delete _schemas[`${name}Deleted`];
 }
 
 module.exports = {
@@ -386,6 +405,7 @@ module.exports = {
   getBase,
   register,
   registerBatch,
+  unregister,
   get,
   has,
   list,

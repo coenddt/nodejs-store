@@ -219,3 +219,40 @@ test('crud.setDb: 单库简写等价于 setConnections({ default: db })', () => 
   // 复原：后续测试依赖 facade_src
   store.setConnections({ [SRC]: executors.createConnection('sqlite', createDb()) });
 });
+
+// ─── 7. 批量注册 / 注销门面（插件 bootstrap 接入） ──────────────
+
+function batchDefn(name) {
+  return {
+    name,
+    collection: name.toLowerCase(),
+    idPrefix: 'bx',
+    fields: { _id: { type: 'string' }, title: { type: 'string' } },
+  };
+}
+
+test('registerBatch: 批量可见 + location 缺省推导 + 批内冲突零副作用', () => {
+  const u = Math.random().toString(36).slice(2, 10);
+  const a = `BatchA${u}`;
+  const b = `BatchB${u}`;
+  store.registerBatch([{ defn: batchDefn(a) }, { defn: batchDefn(b), location: null }]);
+  assert.equal(store.has(a), true, '批量注册后 BatchA 应可见');
+  assert.equal(store.has(b), true, 'location 缺省时应按 defn 推导，BatchB 应可见');
+
+  const c = `BatchC${u}`;
+  assert.throws(
+    () => store.registerBatch([{ defn: batchDefn(c) }, { defn: batchDefn(c) }]),
+    '批内同名冲突应抛错',
+  );
+  assert.equal(store.has(c), false, '冲突后应零副作用（不得留下半注册）');
+});
+
+test('unregister: 未知 schema 幂等成功（绑定导出后）', (t) => {
+  const { Registry } = require('rust-store-node');
+  if (typeof Registry.prototype.unregister !== 'function') {
+    t.skip('当前 rust-store-node 绑定未导出 Registry.unregister（core 源码已实现，待重建绑定后生效）');
+    return;
+  }
+  store.unregister('NotRegisteredAnywhere');
+  store.unregister('NotRegisteredAnywhere');
+});
