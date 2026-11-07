@@ -59,6 +59,21 @@ class Store {
     return schema.register(defn, ctx);
   }
 
+  /**
+   * 批量注册（插件 bootstrap 接入门面）：`items = [{defn, location?}]`。
+   *
+   * 原子语义由 core 定：任一失败零副作用。`location` 缺省时按 defn 内落点字段
+   * 推导（`_locOf`），与 `register` 单条路径同构。
+   */
+  registerBatch(items, ctx) {
+    return schema.registerBatch(items, ctx);
+  }
+
+  /** 注销 schema（补偿整份 attempted 清单；未知 schema 幂等成功） */
+  unregister(name) {
+    return schema.unregister(name);
+  }
+
   get(name) {
     return schema.get(name);
   }
