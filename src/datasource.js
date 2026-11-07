@@ -619,6 +619,18 @@ class NativeCommandError extends Error {
   }
 }
 
+/** 聚合管道是否为写管道：任一阶段含 `$merge` / `$out`（Mongo 的写出口）。
+ *
+ * 写管道必须按写路径解析连接（主库 / 事务连接）——按读路径解析会在主从分离或
+ * 只读连接上报错或落到错误节点（A3）。
+ */
+function pipelineWrites(pipeline) {
+  for (const stage of pipeline || []) {
+    if (stage && typeof stage === 'object' && ('$merge' in stage || '$out' in stage)) return true;
+  }
+  return false;
+}
+
 /**
  * 在指定 Mongo 源上执行原生聚合管道（Host 层逃生口，对标 SQL 侧 executeRaw）
  *
@@ -626,15 +638,15 @@ class NativeCommandError extends Error {
  *     分支），options 为驱动原生透传项（allowDiskUse/batchSize/hint/maxTimeMS…，
  *     宿主不做白名单）；
  *   - 事务 / 会话作用域内自动透传 session（session 由事务强制接管，
- *     options.session 不可覆盖）；统一按读路径解析（isWrite=false），
- *     $merge/$out 写管道请自行开事务；
+ *     options.session 不可覆盖）；连接按管道语义解析：含 $merge/$out 的写管道走
+ *     写路径（主库 / 事务连接），其余按读路径；
  *   - 仅支持 Mongo 源：SQL 源显式报错并指引 executeRaw（绝不静默）；
  *     MongoClient 形态须经 schema 声明 database（mongoDb 既有校验，缺名即报错）；
  *   - 返回 `{ rows }`。
  *   对齐 py_store/datasource.py#execute_native。
  */
 async function executeNative(source, collection, pipeline = [], options = null) {
-  const conn = await resolveConnection(source, false);
+  const conn = await resolveConnection(source, pipelineWrites(pipeline));
   if (isSqlConnection(conn)) {
     throw new NativeCommandError(
       `数据源 ${source} 是 SQL 源（executeNative 仅接受 Mongo 原生命令，SQL 源请用 executeRaw；`
@@ -1006,6 +1018,7 @@ module.exports = {
   execSql,
   executeRaw,
   executeNative,
+  pipelineWrites,
   isWriteCommand,
   currentSession,
   runWithSession,

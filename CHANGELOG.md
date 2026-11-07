@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Fixed（非破坏子集，5.x 维护分支）
+
+- **迁移内建列剔除同源**：`_stripBuiltinFields` 改取 `ddl.builtinFieldNames`（与 DDL 生成共用
+  一份内建列清单），修复默认 timestamps / 归属键表迁移被误报「删除字段不支持」（D1/D2）；
+  归档表缺失时补建、存量归档表补内建列（M6）。
+- **迁移 diff 判定**：类型反推族归一（`_NUMBER_FAMILY`，D3）；索引相等判定改稳定序列化
+  （键序无关，P9）；`addColumn` 的 diff 结构去掉 `sqlType` 占位键（P8）。
+- **claim 回填**：`_renderClaimedIds` 生成的 `IN (...)` 去掉多余外层括号（A1）。
+- **写管道连接路由**：`executeNative` 按管道是否含 `$merge`/`$out` 解析连接，写管道走写路径（A3）。
+- **defn hash 数字格式**：`_stableStringify` 数字按项目规范格式（`-0`→`0`、去指数 `+`、
+  非有限→`null`），与 py-store 逐字节一致。
+- **落点键剥离**：`_toCoreDefn` 剔除 `database`/`schema`（由 `_locOf` 注入 Location）。
+- 测试：`tests/migrate.test.js` 22 例全通过。
+
 ## 5.1.0 (2026-11-02)
 
 ### Added（feat：`accessKeys` 声明式行级权限）

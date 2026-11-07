@@ -161,8 +161,24 @@ function _assertSerializable(v, path) {
   }
 }
 
+/**
+ * 数字 → 规范字面量（**本项目的规范格式，不是 JS 语义**）。
+ *
+ * 两宿主逐字节一致是硬约束（同一定义跨端必须同 hash，否则 migrate 幂等闸失效）：
+ * JS `String` 已给「最短往返位 + ECMAScript 排版」，唯一需要归一的是正指数里的 `+`
+ * （`1e+21` → `1e21`）。`-0` → `0`，NaN / ±Infinity → `null`（同 JSON.stringify）。
+ * 完整规则与 py `_canonical_number` 一一对应，跨端语料见
+ * tests/fixtures/stable-stringify-parity.json。
+ */
+function _canonicalNumber(v) {
+  if (!Number.isFinite(v)) return 'null';
+  if (v === 0) return '0';
+  return String(v).replace(/e\+/g, 'e');
+}
+
 /** 稳定序列化（键序无关）：与 py `stable_stringify` 逐字节等价 */
 function _stableStringify(v) {
+  if (typeof v === 'number') return _canonicalNumber(v);
   if (v === null || typeof v !== 'object') return JSON.stringify(v);
   if (Array.isArray(v)) return `[${v.map(_stableStringify).join(',')}]`;
   const keys = Object.keys(v).sort();

@@ -103,6 +103,10 @@ function _physicalDefn(backend, defn) {
 }
 
 const _NUMERIC = new Set(['int', 'long', 'float', 'double', 'number']);
+// 内省反推 `number` 的物理族：SQLite INTEGER 承载 int/long/float/double/date/datetime/bool；
+// MySQL BIGINT 承载 long/number/datetime/date，TINYINT(1)（bool）也反推为 number。
+// old 侧反推为 number 时，new 声明落在同族内不得判「非放宽变更」（D3）。
+const _NUMBER_FAMILY = new Set([..._NUMERIC, 'date', 'datetime', 'bool', 'boolean']);
 
 /**
  * 反推粒度对齐：introspect 反推类型粒度可粗于用户声明（SQLite INTEGER/动态类型 →
@@ -117,7 +121,7 @@ function _alignTypes(backend, oldDefn, physNew) {
     const o = oldFields[k];
     const ot = o && (typeof o === 'object' ? o.type : o);
     const nt = v && typeof v === 'object' ? v.type : v;
-    if (ot === 'number' && _NUMERIC.has(nt)) {
+    if (ot === 'number' && _NUMBER_FAMILY.has(nt)) {
       fields[k] = typeof v === 'object' ? { ...v, type: 'number' } : 'number';
     }
   }

@@ -519,9 +519,12 @@ function diffDefs(oldDefn, newDefn) {
   const indexKeys = (defn) => (defn.indexes || [])
     .filter((ix) => ix && typeof ix === 'object' && ix.keys
       && typeof ix.keys === 'object' && Object.keys(ix.keys).length);
-  const oldIdx = indexKeys(oldDefn);
+  // 索引相等判定用稳定序列化（键序无关 + JS 数字语义），对齐 py diff_defs 的
+  // stable_stringify：JSON.stringify 键序敏感会让「同键不同序」误判为新增索引（P9）。
+  const { _stableStringify } = require('./metadef');
+  const oldIdx = new Set(indexKeys(oldDefn).map(_stableStringify));
   for (const ix of indexKeys(newDefn)) {
-    if (!oldIdx.some((o) => JSON.stringify(o) === JSON.stringify(ix))) {
+    if (!oldIdx.has(_stableStringify(ix))) {
       changes.push({ op: 'addIndex', index: ix });
     }
   }
