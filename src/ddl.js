@@ -582,7 +582,28 @@ function archiveDDL(backend, defn) {
   return [createTable(arch, backend), ...indexStmts(arch, backend)];
 }
 
+/** 补齐缺失内建列的 ALTER 语句（供迁移修复旧版归档表）
+ *
+ * 旧版 `archiveDefnOf` 固定 `timestamps: false`，历史上建出的 `<table>_deleted`
+ * 缺 `created_at` / `updated_at`（归档 INSERT 报 `no column named created_at`）。
+ * 内建列不在 diffDefs 的比较范围（diff 只比声明字段），故单独补齐。 */
+function implicitColumnDDL(backend, defn, existing) {
+  const i = idx(backend);
+  const table = ptable(backend, defn);
+  const out = [];
+  if (!existing.has('__present')) {
+    out.push(`ALTER TABLE ${q(backend, table)} ADD COLUMN ${q(backend, '__present')} ${PRESENT_TYPE[i]}`);
+  }
+  for (const [n, t] of implicitColumns(defn, backend)) {
+    const phys = pname(backend, n);
+    if (!existing.has(phys)) {
+      out.push(`ALTER TABLE ${q(backend, table)} ADD COLUMN ${q(backend, phys)} ${t}`);
+    }
+  }
+  return out;
+}
+
 module.exports = {
   generate, diffDefs, generateMigration, pname, ptable, builtinFieldNames, ownerField,
-  archiveDDL,
+  archiveDDL, archiveDefnOf, implicitColumnDDL,
 };

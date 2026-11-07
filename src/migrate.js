@@ -242,14 +242,23 @@ async function migrate({ backend, source, defs, oldDefs = null, driver = null,
     }
     // ④ 方言 SQL（纯文本）
     const stmts = ddl.generateMigration(backend, oldDefn, physNew);
-    // ⓪c 归档表补建（仅 introspect 模式）：主表已存在时 addTable 分支不触发，老库常缺
-    // `<table>_deleted` 附表 → remove 的归档写入报 no such table（删除功能不可用）。
-    // 此处按当前 def 补建；archive:false 无归档表，跳过。
+    // ⓪c 归档表补齐（仅 introspect 模式）：主表已存在时 addTable 分支不触发，老库常缺
+    // `<table>_deleted` 附表（remove 报 no such table），或归档表由旧版 DDL 建出、缺
+    // 主表 timestamps 列（归档 INSERT 报 no column named created_at）。此处按当前 def 补建/补列。
     if (probe && oldDefs == null && defn.archive !== false) {
       const mainTable = ptable(backend, defn);
-      const archTable = `${mainTable}_deleted`;
+      const archDefn = ddl.archiveDefnOf(defn);
+      const archTable = ptable(backend, archDefn);
       const has = (n) => probe.tables.some((t) => t.name === n);
-      if (has(mainTable) && !has(archTable)) stmts.unshift(...ddl.archiveDDL(backend, defn));
+      if (has(mainTable)) {
+        if (!has(archTable)) {
+          stmts.unshift(...ddl.archiveDDL(backend, defn));
+        } else {
+          // 内建列补齐（旧版归档表缺 created_at/updated_at/__present）
+          const archHave = new Set(probe.columns.filter((c) => c.table === archTable).map((c) => c.name));
+          stmts.unshift(...ddl.implicitColumnDDL(backend, archDefn, archHave));
+        }
+      }
     }
     // version = 该 name 历史最大 version+1（复用 metadef nextVersion 语义）
     const version = (rows.length ? Math.max(...rows.map((r) => r.version)) : 0) + 1;
