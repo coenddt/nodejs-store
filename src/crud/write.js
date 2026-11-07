@@ -19,6 +19,25 @@ async function _planWithProbe(planFn) {
   return out;
 }
 
+/** 写路径结果回喂：以**落库 doc** 为基，只叠加计算列（对齐 core `DefaultFill::Insert`）。
+ *
+ * 绑定尚未导出 computes-only 出口时，用 Return 版算出计算列、但只取 schema 声明的
+ * `computes` 键，其余字段一律取落库 doc —— 否则显式 null 会被默认值替换，同一行出现
+ * 「落库 / returns / 读回」三种取值。 */
+function writeReturns(schemaName, doc) {
+  if (!doc) return doc;
+  const core = getCore();
+  if (typeof core.applyWriteComputes === 'function') {
+    return _call(() => core.applyWriteComputes(schemaName, doc));
+  }
+  const filled = _call(() => core.applyWriteDefaults(schemaName, doc));
+  const keys = Object.keys((_getSchema(schemaName) || {}).computes || {});
+  if (!keys.length) return doc;
+  const out = { ...doc };
+  for (const k of keys) if (filled && k in filled) out[k] = filled[k];
+  return out;
+}
+
 /** 插入一条（`routeOverride` 可选：`{ source?, database?, schema? }` 多租户路由） */
 async function insert(schemaName, data, routeOverride = null) {
   const s = _getSchema(schemaName);
@@ -108,7 +127,7 @@ async function update(schemaName, condition, data, options = null, routeOverride
     if (out.triggers && out.triggers.length && result) {
       await runTriggers(out.triggers, { root: result, before, now, ctx, executed: new Set() });
     }
-    return result ? _call(() => getCore().applyWriteDefaults(schemaName, result)) : null;
+    return result ? writeReturns(schemaName, result) : null;
   };
 
   return runAtomic(sources, doRun);
@@ -207,7 +226,15 @@ async function remove(schemaName, condition, routeOverride = null, options = nul
 
 /** 判断是否存在 */
 async function exists(schemaName, condition, routeOverride = null) {
-  const cmd = _call(() => getCore().planExists(schemaName, condition ?? null, routeOverride));
+  const cmd = _call(() => {
+    const core = getCore();
+    // core 尚无带 ctx 的出口时回落旧调用（会绕过 read:[]/字段白名单/RBAC，见第二轮自检 P1）；
+    // 绑定导出 planExistsWithCtx 后自动切换，调用方无需改动。
+    if (typeof core.planExistsWithCtx === 'function') {
+      return core.planExistsWithCtx(schemaName, condition ?? null, _ctx(), routeOverride);
+    }
+    return core.planExists(schemaName, condition ?? null, routeOverride);
+  });
   const doc = await _exec(cmd);
   return doc !== null && doc !== undefined;
 }
@@ -218,4 +245,4 @@ async function count(schemaName, filter = null, routeOverride = null) {
   return _exec(cmd);
 }
 
-module.exports = { insert, insertMany, update, updateMany, remove, exists, count };
+module.exports = { insert, insertMany, update, updateMany, remove, exists, count, writeReturns };

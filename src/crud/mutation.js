@@ -8,6 +8,7 @@ const { getCore, get: _getSchema } = require('../schema');
 const { emit: _emitFeedback } = require('../feedback');
 const { _call, _ctx, _exec, _nowFor, resolvePlaceholders, runAtomic, sourcesOf } = require('./exec');
 const { _generateId, _newIdPool } = require('./id');
+const { writeReturns } = require('./write');
 
 /** mutation 单条：规划步骤序列 → 依序执行 + 父子 _id 占位符回填 */
 async function _mutationOne(schemaName, data, now, routeOverride = null) {
@@ -30,7 +31,7 @@ async function _mutationOne(schemaName, data, now, routeOverride = null) {
       if (i === 0) rootResult = result; // 首步即根写入
     }
 
-    return rootResult ? _call(() => getCore().applyWriteDefaults(schemaName, rootResult)) : null;
+    return rootResult ? writeReturns(schemaName, rootResult) : null;
   };
 
   // 单一 SQL 源 → 步骤序列整体事务化（同连接同事务，任一步失败整体回滚）；
@@ -75,7 +76,7 @@ async function upsert(schemaName, condition, data, options = null, routeOverride
     s.idPrefix ? _generateId(s) : '', _ctx(), routeOverride,
   ));
   const result = await _exec(plan.command);
-  return result ? _call(() => getCore().applyWriteDefaults(schemaName, result)) : null;
+  return result ? writeReturns(schemaName, result) : null;
 }
 
 module.exports = { mutation, upsert };

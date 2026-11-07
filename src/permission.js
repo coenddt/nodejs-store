@@ -17,8 +17,23 @@ const schemaMod = require('./schema');
 
 const _als = new AsyncLocalStorage();
 
+/** 可信标记：仅允许由 runAsInternal 等内部机制写入，禁止经请求上下文注入
+ * （core 读 ctx.internal 即放行，用户可控输入带上它 = 越权）。 */
+const _TRUSTED_KEYS = ['internal'];
+
+function _assertNoTrustedKeys(ctx, where) {
+  if (!ctx || typeof ctx !== 'object') return;
+  for (const k of _TRUSTED_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(ctx, k)) {
+      throw new PermissionError(
+        `${where}: ctx.${k} 属可信标记，禁止由请求上下文注入（内部调用请用 runAsInternal）`);
+    }
+  }
+}
+
 /** 设置当前请求的上下文，每次请求开始时调用一次 */
 function setContext(ctx) {
+  _assertNoTrustedKeys(ctx, 'setContext');
   _als.enterWith(ctx);
 }
 
@@ -47,6 +62,7 @@ function scopedRoles(roles, fn) {
  * 静默失守方向）。
  */
 function scopedContext(ctx, fn) {
+  _assertNoTrustedKeys(ctx, 'scopedContext');
   return _als.run(ctx ?? null, () => fn());
 }
 
