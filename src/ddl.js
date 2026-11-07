@@ -410,7 +410,9 @@ function archiveDefnOf(defn) {
     name: `${defn.name}Deleted`,
     collection: `${defn.collection || defn.name}_deleted`,
     fields,
-    timestamps: false,
+    // 归档表列 = 主表列 + deletedAt。**不得**改 timestamps：归档文档由 core 按主表
+    // schema 生成（含 created_at / updated_at），若此处置 false 会让归档 INSERT 报
+    // `no column named created_at`（默认 timestamps 的表 remove 直接失败）。
     _isArchive: true,
   };
 }
