@@ -224,17 +224,10 @@ async function remove(schemaName, condition, routeOverride = null, options = nul
   return runAtomic(sources, doRemove);
 }
 
-/** 判断是否存在 */
+/** 判断是否存在（读权限由 core 按当前 ctx 裁决） */
 async function exists(schemaName, condition, routeOverride = null) {
-  const cmd = _call(() => {
-    const core = getCore();
-    // core 尚无带 ctx 的出口时回落旧调用（会绕过 read:[]/字段白名单/RBAC，见第二轮自检 P1）；
-    // 绑定导出 planExistsWithCtx 后自动切换，调用方无需改动。
-    if (typeof core.planExistsWithCtx === 'function') {
-      return core.planExistsWithCtx(schemaName, condition ?? null, _ctx(), routeOverride);
-    }
-    return core.planExists(schemaName, condition ?? null, routeOverride);
-  });
+  const cmd = _call(() => getCore()
+    .planExistsWithCtx(schemaName, condition ?? null, _ctx(), routeOverride));
   const doc = await _exec(cmd);
   return doc !== null && doc !== undefined;
 }
