@@ -231,6 +231,41 @@ function ownerField(defn) {
   return name === '_id' ? null : name;
 }
 
+/** 宿主自动补齐的内建列清单（DDL 生成与迁移补列共用的唯一来源）。
+ *
+ * 返回 `[[逻辑名, sql_type]]`，顺序：timestamps → 归属键。
+ * `__present` 与声明字段不在此列（分别由 columns / 调用方处理）。
+ * timestamps 判定与 DDL 同口径：**未声明即建**（`!== false`）。 */
+function implicitColumns(defn, backend) {
+  const i = idx(backend);
+  const out = [];
+  if (defn.timestamps !== false) {
+    for (const ts of TIMESTAMP_FIELDS) out.push([ts, TYPES.number[i]]);
+  }
+  const owner = ownerField(defn);
+  if (owner) out.push([owner, TYPES.string[i]]);
+  return out;
+}
+
+/** 内建物理列名清单（迁移剔除用；与 implicitColumns 同源）。
+ *
+ * 「内建」= 宿主按 schema 声明自动建、但用户未显式声明的列：`__present` 哨兵 +
+ * timestamps + 归属键。用户显式声明了同名字段时**不剔除**（该列已参与字段 diff，
+ * 误剔会被当成「新增列」重复 ADD COLUMN）。同时返回物理名与逻辑名，兼容显式传入
+ * camelCase 形式的 oldDefs。 */
+function builtinFieldNames(defn, backend) {
+  const declared = defn.fields || {};
+  const declaredPhys = new Set(Object.keys(declared).map((k) => pname(backend, k)));
+  const names = ['__present'];
+  for (const [logical] of implicitColumns(defn, backend)) {
+    const phys = pname(backend, logical);
+    if (declaredPhys.has(phys) || Object.prototype.hasOwnProperty.call(declared, logical)) continue;
+    names.push(phys);
+    if (phys !== logical) names.push(logical);
+  }
+  return names;
+}
+
 /** MySQL __present VARCHAR(255) 容量校验：超限即告警（不静默） */
 function warnPresentOverflow(defn, cols) {
   const length = cols.reduce((n, c) => n + c[0].length, 0) + cols.length + 1;
@@ -378,9 +413,40 @@ function archiveDefnOf(defn) {
     name: `${defn.name}Deleted`,
     collection: `${defn.collection || defn.name}_deleted`,
     fields,
-    timestamps: false,
+    // 归档列 = 主表列 + deletedAt。不得置 timestamps:false：归档文档由 core 按主表
+    // schema 生成（含 createdAt/updatedAt），置 false 会让归档 INSERT 报
+    // `no column named created_at`（默认 timestamps 的表 remove 直接失败）。
     _isArchive: true,
   };
+}
+
+/** 归档表建表语句（列/索引与主表同源）：供迁移补建「主表已存在但 `_deleted` 缺失」的老库。
+ * `archive:false` 无归档表 → 返回空数组（与 addTable 分支同口径）。 */
+function archiveDDL(backend, defn) {
+  if (defn.archive === false) return [];
+  const arch = archiveDefnOf(defn);
+  return [createTable(arch, backend), ...indexStmts(arch, backend)];
+}
+
+/** 补齐缺失内建列的 ALTER 语句（供迁移修复旧版归档表）
+ *
+ * 旧版 `archiveDefnOf` 固定 `timestamps: false`，历史上建出的 `<table>_deleted`
+ * 缺 `created_at` / `updated_at`（归档 INSERT 报 `no column named created_at`）。
+ * 内建列不在 diffDefs 的比较范围（diff 只比声明字段），故单独补齐。 */
+function implicitColumnDDL(backend, defn, existing) {
+  const i = idx(backend);
+  const table = ptable(backend, defn);
+  const out = [];
+  if (!existing.has('__present')) {
+    out.push(`ALTER TABLE ${q(backend, table)} ADD COLUMN ${q(backend, '__present')} ${PRESENT_TYPE[i]}`);
+  }
+  for (const [n, t] of implicitColumns(defn, backend)) {
+    const phys = pname(backend, n);
+    if (!existing.has(phys)) {
+      out.push(`ALTER TABLE ${q(backend, table)} ADD COLUMN ${q(backend, phys)} ${t}`);
+    }
+  }
+  return out;
 }
 
 /** 新旧 schema def 对比 → { changes, errors }（后端无关，纯函数；白名单外记入 errors） */
@@ -537,4 +603,7 @@ function generateMigration(backend, oldDefn, newDefn) {
   return stmts;
 }
 
-module.exports = { generate, diffDefs, generateMigration, pname, ptable };
+module.exports = {
+  generate, diffDefs, generateMigration, pname, ptable,
+  archiveDDL, archiveDefnOf, builtinFieldNames, implicitColumnDDL,
+};

@@ -151,3 +151,54 @@ test('⑥ 参数校验：oldDefs=null 且缺 driver 显式报错（不静默）'
     );
   });
 });
+
+test('⓪d 存量归档表缺 timestamps 列（旧版 DDL 建出）：迁移补列后 remove 可用', async () => {
+  await run(async (db) => {
+    db.exec(`CREATE TABLE legacy_arch (
+      _id TEXT PRIMARY KEY, title TEXT,
+      created_at INTEGER, updated_at INTEGER, created_by TEXT, __present TEXT
+    )`);
+    // 旧版 archiveDefnOf 固定 timestamps:false → 归档表无 created_at / updated_at
+    db.exec(`CREATE TABLE legacy_arch_deleted (
+      _id TEXT PRIMARY KEY, title TEXT, created_by TEXT, __present TEXT, deleted_at INTEGER
+    )`);
+    db.prepare('INSERT INTO legacy_arch (_id, title, created_at, updated_at, created_by, __present) '
+      + 'VALUES (?, ?, ?, ?, ?, ?)')
+      .run('la_1', '待删', Date.now(), Date.now(), 'u1', ',_id,title,');
+    const defn = {
+      name: 'LegacyArch', collection: 'legacy_arch', idPrefix: 'la', write: ['creator'],
+      fields: { _id: { type: 'string' }, title: { type: 'string' } },
+    };
+    store.register(defn);
+    const r = await store.migrate({
+      backend: 'sqlite', source: 'default', defs: { LegacyArch: defn }, driver: db,
+    });
+    assert.deepEqual(r.applied, [{ name: 'LegacyArch', from: 0, to: 1, version: 1 }]);
+    const cols = db.prepare("SELECT name FROM pragma_table_info('legacy_arch_deleted')").all()
+      .map((x) => x.name);
+    for (const col of ['created_at', 'updated_at', 'created_by', '__present']) {
+      assert.ok(cols.includes(col), `归档表应补齐 ${col}（got ${cols}）`);
+    }
+    const rd = await store.remove('LegacyArch', { _id: 'la_1' });
+    assert.deepEqual(rd, { deletedCount: 1, archivedCount: 1 });
+  });
+});
+
+test('⓪c 主表存在但归档表缺失：迁移补建后 remove 可用', async () => {
+  await run(async (db) => {
+    db.exec('CREATE TABLE noarch (_id TEXT PRIMARY KEY, title TEXT, created_at INTEGER, updated_at INTEGER, __present TEXT)');
+    db.prepare('INSERT INTO noarch VALUES (?, ?, ?, ?, ?)')
+      .run('na_1', '待删', Date.now(), Date.now(), ',_id,title,');
+    const defn = {
+      name: 'NoArch', collection: 'noarch', idPrefix: 'na',
+      fields: { _id: { type: 'string' }, title: { type: 'string' } },
+    };
+    store.register(defn);
+    const r = await store.migrate({
+      backend: 'sqlite', source: 'default', defs: { NoArch: defn }, driver: db,
+    });
+    assert.deepEqual(r.applied, [{ name: 'NoArch', from: 0, to: 1, version: 1 }]);
+    const rd = await store.remove('NoArch', { _id: 'na_1' });
+    assert.deepEqual(rd, { deletedCount: 1, archivedCount: 1 });
+  });
+});

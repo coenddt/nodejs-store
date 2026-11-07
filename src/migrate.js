@@ -54,14 +54,16 @@ function migrationId(tenant, env, backend, name, version) {
 
 /**
  * 内建物理列剔除：introspect→schemaFromRows 拉回的 defn 带 `__present` 哨兵列与
- * timestamps 物理列（宿主 DDL 的 snake_case：`created_at`/`updated_at`；兼容 camelCase），
- * 而用户 defn 不声明它们——不剔则 diff 误报「删除字段不支持」。
- * 注意 schemaFromRows 推断 `timestamps: false`，剔除条件看用户侧 defn 的声明。
+ * 宿主自动补齐的 timestamps / 归属键物理列（snake_case；兼容 camelCase）——不剔则
+ * diff 误报「删除字段不支持」。
+ *
+ * 剔除清单**不在本文件自设**，一律取 `ddl.builtinFieldNames`（与 DDL 生成共用同一份
+ * 内建列定义）：此前用 `newDefn.timestamps` 真值判断 + 固定两列，与 DDL 的 `!== false`
+ * 口径分叉（D1），且漏掉归属键（D2）。
  */
-function _stripBuiltinFields(oldDefn, newDefn) {
+function _stripBuiltinFields(backend, oldDefn, newDefn) {
   if (!oldDefn || typeof oldDefn !== 'object') return oldDefn;
-  const drop = ['__present'];
-  if (newDefn && newDefn.timestamps) drop.push('created_at', 'updated_at', 'createdAt', 'updatedAt');
+  const drop = newDefn ? ddl.builtinFieldNames(newDefn, backend) : ['__present'];
   const fields = { ...oldDefn.fields };
   for (const k of drop) delete fields[k];
   return { ...oldDefn, fields };
@@ -179,7 +181,7 @@ async function migrate({ backend, source, defs, oldDefs = null, driver = null,
   const applied = [];
   const skipped = [];
   for (const [name, defn] of Object.entries(defs)) {
-    const oldDefn = _stripBuiltinFields(old[name] || (defn.collection && old[defn.collection]) || null, defn);
+    const oldDefn = _stripBuiltinFields(backend, old[name] || (defn.collection && old[defn.collection]) || null, defn);
     // ⑤ 幂等闸（先于 diff）：同 (tenant,env,backend,name) 最新版本行 hash 相同 → skipped
     // 'unchanged'，不 diff——introspect 反推类型粒度（如 SQLite INTEGER→number）与用户声明
     // 粒度（int）不齐，重跑不应进 diff 被误报
@@ -203,6 +205,24 @@ async function migrate({ backend, source, defs, oldDefs = null, driver = null,
     }
     // ④ 方言 SQL（纯文本）
     const stmts = ddl.generateMigration(backend, oldDefn, physNew);
+    // ⓪c 归档表补齐（仅 introspect 模式）：主表已存在时 addTable 分支不触发，老库常缺
+    // `<table>_deleted` 附表（remove 报 no such table），或归档表由旧版 DDL 建出、缺
+    // 主表 timestamps 列（归档 INSERT 报 no column named created_at）。此处按当前 def 补建/补列。
+    if (probe && oldDefs == null && defn.archive !== false) {
+      const mainTable = ddl.ptable(backend, defn);
+      const archDefn = ddl.archiveDefnOf(defn);
+      const archTable = ddl.ptable(backend, archDefn);
+      const has = (n) => probe.tables.some((t) => t.name === n);
+      if (has(mainTable)) {
+        if (!has(archTable)) {
+          stmts.unshift(...ddl.archiveDDL(backend, defn));
+        } else {
+          // 内建列补齐（旧版归档表缺 created_at/updated_at/__present）
+          const archHave = new Set(probe.columns.filter((c) => c.table === archTable).map((c) => c.name));
+          stmts.unshift(...ddl.implicitColumnDDL(backend, archDefn, archHave));
+        }
+      }
+    }
     // version = 该 name 历史最大 version+1（复用 metadef nextVersion 语义）
     const version = (rows.length ? Math.max(...rows.map((r) => r.version)) : 0) + 1;
     // ⑥ SQL 与版本行同事务：失败整体回滚、无孤儿版本行
