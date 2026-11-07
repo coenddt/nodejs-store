@@ -205,6 +205,98 @@ test('D1/D2：默认 timestamps + creator 权限的内建列不得被当作「�
   });
 });
 
+function legacyNoteDefn() {
+  // camelCase 时代的表：默认 timestamps + read/write creator（隐含 created_by），
+  // 但物理列只有 _id/title/status/createdAt/updatedAt，没有 __present / created_at 等。
+  return {
+    name: 'LegacyNote', collection: 'legacy_notes', idPrefix: 'ln',
+    read: ['creator'], write: ['creator'],
+    fields: {
+      _id: { type: 'string' }, title: { type: 'string' }, status: { type: 'string' },
+    },
+  };
+}
+
+function createLegacyTable(db) {
+  db.exec(`CREATE TABLE legacy_notes (
+    _id TEXT PRIMARY KEY,
+    title TEXT,
+    status TEXT,
+    createdAt INTEGER,
+    updatedAt INTEGER
+  )`);
+}
+
+test('⓪ 老表缺内建列（camelCase 时代）：introspect 迁移显式失败、不隐式补列、无孤儿版本行', async () => {
+  await run(async (db) => {
+    createLegacyTable(db);
+    await assert.rejects(
+      () => store.migrate({
+        backend: 'sqlite', source: 'default', defs: { LegacyNote: legacyNoteDefn() }, driver: db,
+      }),
+      (e) => {
+        assert.ok(e instanceof migrateMod.MigrationUnsupported, '应为 MigrationUnsupported 实例');
+        assert.match(e.message, /缺内建列/);
+        for (const col of ['__present', 'created_at', 'updated_at', 'created_by']) {
+          assert.ok(e.message.includes(col), `消息应列出缺失列 ${col}（got: ${e.message}）`);
+        }
+        assert.ok(e.message.includes(_UNSUPPORTED_HINT), '应携带固定分步建议');
+        return true;
+      },
+    );
+    // 迁移不隐式补列：物理列保持老表原样
+    const cols = db.prepare("SELECT name FROM pragma_table_info('legacy_notes')").all().map((x) => x.name);
+    for (const col of ['__present', 'created_at', 'updated_at', 'created_by']) {
+      assert.ok(!cols.includes(col), `不得自动补列 ${col}（got ${cols}）`);
+    }
+    // 无孤儿版本行
+    const rows = db.prepare("SELECT name FROM __schemaMigration WHERE name = 'LegacyNote'").all();
+    assert.equal(rows.length, 0, '被拦后不得写版本行');
+  });
+});
+
+test('⓪ 边界：按指引补列后同一 defn 可正常迁移（检测不是永久阻断）', async () => {
+  await run(async (db) => {
+    createLegacyTable(db);
+    db.exec('ALTER TABLE legacy_notes ADD COLUMN created_at INTEGER');
+    db.exec('ALTER TABLE legacy_notes ADD COLUMN updated_at INTEGER');
+    db.exec('ALTER TABLE legacy_notes ADD COLUMN created_by TEXT');
+    db.exec('ALTER TABLE legacy_notes ADD COLUMN __present TEXT');
+    const r = await store.migrate({
+      backend: 'sqlite', source: 'default', defs: { LegacyNote: legacyNoteDefn() }, driver: db,
+    });
+    assert.deepEqual(r.applied, [{ name: 'LegacyNote', from: 0, to: 1, version: 1 }]);
+    const rows = db.prepare("SELECT version FROM __schemaMigration WHERE name = 'LegacyNote'").all();
+    assert.deepEqual(rows.map((x) => x.version), [1]);
+  });
+});
+
+test('⓪b 归属键漏回填：created_by 全 NULL 时迁移显式失败（禁止静默全表不可见）', async () => {
+  await run(async (db) => {
+    db.exec(`CREATE TABLE null_owner (
+      _id TEXT PRIMARY KEY, title TEXT,
+      created_at INTEGER, updated_at INTEGER, created_by TEXT, __present TEXT
+    )`);
+    db.prepare('INSERT INTO null_owner (_id, title, created_by) VALUES (?, ?, ?)').run('no_1', 'a', null);
+    const defn = {
+      name: 'NullOwner', collection: 'null_owner', idPrefix: 'no',
+      read: ['creator'], write: ['creator'],
+      fields: { _id: { type: 'string' }, title: { type: 'string' } },
+    };
+    await assert.rejects(
+      () => store.migrate({ backend: 'sqlite', source: 'default', defs: { NullOwner: defn }, driver: db }),
+      (e) => {
+        assert.ok(e instanceof migrateMod.MigrationUnsupported, '应为 MigrationUnsupported 实例');
+        assert.match(e.message, /归属键 created_by 存在未回填行/);
+        assert.match(e.message, /不可见/);
+        return true;
+      },
+    );
+    const rows = db.prepare("SELECT name FROM __schemaMigration WHERE name = 'NullOwner'").all();
+    assert.equal(rows.length, 0, '被拦后不得写版本行');
+  });
+});
+
 test('D1/D2 边界：用户显式声明 createdAt / createdBy ⇒ 不剔除（不得重复 ADD COLUMN）', async () => {
   await run(async (db) => {
     const v1 = {
