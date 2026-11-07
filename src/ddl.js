@@ -572,4 +572,15 @@ function generateMigration(backend, oldDefn, newDefn) {
   return stmts;
 }
 
-module.exports = { generate, diffDefs, generateMigration, pname, ptable, builtinFieldNames };
+/** 归档表建表语句（列/索引与主表同源）：供迁移补建「主表已存在但 `_deleted` 缺失」的老库。
+ * `archive:false` 无归档表 → 返回空数组（与 addTable 分支同口径）。 */
+function archiveDDL(backend, defn) {
+  if (defn.archive === false) return [];
+  const arch = archiveDefnOf(defn);
+  return [createTable(arch, backend), ...indexStmts(arch, backend)];
+}
+
+module.exports = {
+  generate, diffDefs, generateMigration, pname, ptable, builtinFieldNames, ownerField,
+  archiveDDL,
+};
