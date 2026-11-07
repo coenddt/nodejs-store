@@ -11,7 +11,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 
-const { init, store, executors, MetaDefError } = require('../src');
+const { init, store, executors, MetaDefError, schema: _sc } = require('../src');
 const migrateMod = require('../src/migrate');
 
 /** 固定分步建议（契约逐字；见 migrate.js _UNSUPPORTED_HINT 与执行文档 04 §4.2 ③） */
@@ -294,6 +294,35 @@ test('⓪b 归属键漏回填：created_by 全 NULL 时迁移显式失败（禁�
     );
     const rows = db.prepare("SELECT name FROM __schemaMigration WHERE name = 'NullOwner'").all();
     assert.equal(rows.length, 0, '被拦后不得写版本行');
+  });
+});
+
+test('⓪c 老表已存在但归档表缺失：迁移补建 <table>_deleted，remove 可用', async () => {
+  await run(async (db) => {
+    db.exec(`CREATE TABLE arch_notes (
+      _id TEXT PRIMARY KEY, title TEXT,
+      created_at INTEGER, updated_at INTEGER, created_by TEXT, __present TEXT
+    )`);
+    db.prepare('INSERT INTO arch_notes (_id, title, created_at, updated_at, created_by, __present) '
+      + 'VALUES (?, ?, ?, ?, ?, ?)')
+      .run('an_1', '待删', Date.now(), Date.now(), 'u1', ',_id,title,');
+    const defn = {
+      name: 'ArchNote', collection: 'arch_notes', idPrefix: 'an', write: ['creator'],
+      fields: { _id: { type: 'string' }, title: { type: 'string' } },
+    };
+    _sc.register(defn);
+    const r = await store.migrate({
+      backend: 'sqlite', source: 'default', defs: { ArchNote: defn }, driver: db,
+    });
+    assert.deepEqual(r.applied, [{ name: 'ArchNote', from: 0, to: 1, version: 1 }]);
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()
+      .map((x) => x.name);
+    assert.ok(tables.includes('arch_notes_deleted'), `归档表应补建（got ${tables}）`);
+    // 归档表可用：remove 物理删除主表行并写入归档表
+    const rd = await store.remove('ArchNote', { _id: 'an_1' });
+    assert.deepEqual(rd, { deletedCount: 1, archivedCount: 1 });
+    assert.equal(db.prepare('SELECT count(*) AS n FROM arch_notes').get().n, 0);
+    assert.equal(db.prepare('SELECT count(*) AS n FROM arch_notes_deleted').get().n, 1);
   });
 });
 
