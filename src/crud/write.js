@@ -32,9 +32,14 @@ function writeReturns(schemaName, doc) {
   }
   const filled = _call(() => core.applyWriteDefaults(schemaName, doc));
   const keys = Object.keys((_getSchema(schemaName) || {}).computes || {});
-  if (!keys.length) return doc;
-  const out = { ...doc };
-  for (const k of keys) if (filled && k in filled) out[k] = filled[k];
+  // 键序取 core 出口（与 py `apply_write_defaults` 逐字节一致）；值以落库 doc 为基：
+  // 显式 null / 已有值保持（DefaultFill::Insert），计算列取 core 计算结果。
+  const out = {};
+  for (const k of Object.keys(filled || {})) {
+    out[k] = keys.includes(k) ? filled[k] : (k in doc ? doc[k] : filled[k]);
+  }
+  // 落库 doc 中不在 core 出口内的键（如本次新写入但未声明字段）追加在后
+  for (const k of Object.keys(doc)) if (!(k in out)) out[k] = doc[k];
   return out;
 }
 

@@ -18,6 +18,11 @@
 
 ### Fixed（fix：内建列清单收口 / 类型对齐 / 迁移 diff parity / 执行路径）
 
+- **update/updateOne 的 returns 缺省列与键序**：`writeReturns` 此前在「无计算列」时直接返回落库
+  doc，导致 schema 声明默认值但落库文档缺失该列的行，returns 少列（与 py-store
+  `apply_write_defaults` 分叉；`tests/parity-local.test.js` 实测 node 缺 `age: 0`）。现统一以
+  core 出口的键序为准，值以落库 doc 为基（显式 null / 已有值保持，缺失列补默认值），计算列取
+  core 计算结果 —— 双端 returns 逐字节一致。
 - **D1/D2 迁移的内建列剔除改由 `ddl.builtinFieldNames` 单一来源判定**：此前迁移侧用
   `timestamps` 真值 + 固定两列，与 DDL 的「未声明即建」口径分叉，且从不剔除归属键；
   默认 timestamps + creator 权限的表在 SQLite 实机迁移报 `MigrationUnsupported`。
