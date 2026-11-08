@@ -37,8 +37,9 @@ _sc.register({
   },
 });
 
-// E1 用：read: [] 显式拒绝 / RBAC 无授权 / 有权通过 / 字段白名单
-_sc.register({ name: 'R2Deny', collection: 'r2_deny', timestamps: false, read: [],
+// E1 用：denyRead 显式拒绝 / RBAC 无授权 / 有权通过 / 字段白名单
+// 6.0.0 语义：`read: []` 表示「未配置」（不限制），显式拒绝读必须写 `denyRead: true`。
+_sc.register({ name: 'R2Deny', collection: 'r2_deny', timestamps: false, denyRead: true,
   fields: { _id: { type: 'string' }, title: { type: 'string' } } });
 _sc.register({ name: 'R2Rbac', collection: 'r2_rbac', timestamps: false, read: ['viewer'],
   fields: { _id: { type: 'string' }, title: { type: 'string' } } });
@@ -90,7 +91,7 @@ test('update returns 以落库 doc 为基：显式 null 不被默认值替换', 
   assert.equal(row.nick, null);
 });
 
-test('exists: read:[] 显式拒绝（不返回 false，抛 PermissionError）', async () => {
+test('exists: denyRead 显式拒绝（不返回 false，抛 PermissionError）', async () => {
   await freshStore();
   permission.setContext({ userId: 'u1', roles: ['viewer'] });
   try {

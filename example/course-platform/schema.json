@@ -144,7 +144,7 @@
   },
   {
     "name": "AuditLog", "collection": "audit_logs", "idPrefix": "a", "timestamps": false,
-    "read": ["admin"], "write": [],
+    "read": ["admin"], "write": ["admin"],
     "fields": {
       "_id":     { "type": "string" },
       "actorId": { "type": "string" },

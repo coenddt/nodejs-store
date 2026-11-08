@@ -114,6 +114,6 @@
     "steps": [
       { "op": "insert", "schema": "AuditLog", "data": { "action": "x", "target": "c1" },
         "expect": { "kind": "error", "code": "ERR_PERMISSION" } }
-    ], "note": "B-16：AuditLog write 为空，student 写被拒 403"
+    ], "note": "B-16：AuditLog write=admin，student 写被拒 403（6.0.0 起空名单表示未配置，不再用于表达拒绝）"
   }
 ]
