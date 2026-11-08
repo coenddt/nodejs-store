@@ -149,6 +149,14 @@ class Store {
     return crud.update(schemaName, condition, data, options, routeOverride);
   }
 
+  /**
+   * 写后仅叠同步 `fn` 计算列（入参须为 `returnDocument: AFTER` 落库文档；不补默认值）。
+   * 与 py 宿主 `store.apply_write_computes` 同构。
+   */
+  applyWriteComputes(schemaName, doc) {
+    return crud.applyWriteComputes(schemaName, doc);
+  }
+
   async updateMany(schemaName, condition, data, routeOverride) {
     return crud.updateMany(schemaName, condition, data, routeOverride);
   }
