@@ -105,7 +105,7 @@ MongoDB 是*主方言*：查询以 MongoDB 风格的 GQL 编写，三种关系�
 
 明确边界能为你省下时间：
 
-- **你想要带迁移引擎的完整 ORM。** `nodejs-store` 是*数据层*，不是迁移工具。它可以**读取** SQL 后端的物理结构（`syncSchema` → introspection），但从不把 DDL 写回。请与你自选的迁移工具搭配使用。另有一个可选的 `generateDdl()`，可从已注册 schema 渲染出 `CREATE TABLE` 文本 —— 纯文本，绝不连接或写入数据库。
+- **你想要带完整版本图的 ORM 迁移（Prisma Migrate / Knex migrations）。** `nodejs-store` 是*数据层*：提供白名单制**声明式迁移**（`store.migrate({ backend, source, defs, driver })`：加表 / 加列 / 加索引 / 类型放宽，逐表事务 + 版本行），删列、改窄类型等破坏性变更仍交给你的迁移工具，它只给分步建议、绝不静默执行。它也能**读取** SQL 后端的物理结构（`syncSchema` → introspection），以及渲染 `generateDdl()` 文本 —— 纯文本，绝不连接或写入数据库。
 - **你需要带类型安全、自动生成的客户端。** schema 是运行时 JSON，而非 TypeScript 类型。你获得的是灵活性与跨语言一致性（同一份 schema 在 Node 与 Python 中都可用），而不是编译期类型推断。
 - **你只用一种数据库，且几乎不做关联。** 直接用裸驱动（或只针对单一数据库的 ODM/ORM）会更简单。
 - **你需要原生聚合逃生舱。** 用户 `$pipeline` 透传已移除 —— 含 `$pipeline` 的 GQL 一律在解析期显式失败。原生逃生口只保留显式入口：`store.aggregate()`（严格 **opt-in**，默认禁用，需 `init(conn, { allowNativeAggregate: true })` 显式开启）、`executeNative()`（Mongo 原生聚合）与 `executeRaw()`（原生 SQL）。日常查询请使用 `$condition` / `$group` / `$having` / 关系；任何无法安全翻译的内容都会**显式**失败，而不会静默降级。
@@ -124,7 +124,7 @@ MongoDB 是*主方言*：查询以 MongoDB 风格的 GQL 编写，三种关系�
 | 内置角色 / 字段级 RBAC + 属主注入 | ✅ | ➖ | ➖（通过扩展） | ➖ | ➖ |
 | 读时计算列（同步 / 异步 / 关系聚合） | ✅ | ➖（getter） | ➖ | ➖ | ➖ |
 | 自动置备软删除归档表 | ✅ | ➖ | ➖ | ➖ | ➖ |
-| 迁移 / DDL 引擎 | ➖（introspection 只读；可选 `generateDdl` 文本） | ➖ | ✅ | ✅ | ✅ |
+| 迁移 / DDL 引擎 | ✅（白名单制声明式迁移 + `generateDdl` 文本） | ➖ | ✅ | ✅ | ✅ |
 | 静态类型生成 | ➖（运行时 JSON，跨语言一致） | ➖ | ✅ | ⚠️（装饰器 + TS） | ✅ |
 | Node 与 Python 共享原生核心 | ✅（Rust `rust-store`） | ➖ | ➖ | ➖ | ➖ |
 
@@ -135,10 +135,10 @@ MongoDB 是*主方言*：查询以 MongoDB 风格的 GQL 编写，三种关系�
 - **vs Mongoose** —— Mongoose 仅支持 MongoDB。`nodejs-store` 使用类似的 MongoDB 风格查询语法（`$gt`、`$or`、`$set`、`$inc`），但同一条查询也能原样跑在 MySQL、SQLite 与 PostgreSQL 上。
 - **vs `mongoosql-core`** —— 精神上最接近：它同样能在 MongoDB、PostgreSQL 与 MySQL 上运行 Mongoose 风格的查询。`nodejs-store` 还额外面向 SQLite，内置 schema 级权限（角色/字段白名单，外加 `creator` 属主条件注入）、读时计算列（`fn` / `asyncFn` / 关系 `agg`）、自动置备的 `<Model>Deleted` 软删除归档，并与 Python 宿主共享同一个 Rust 引擎，因此 Node.js 与 Python 不会产生漂移。
 - **vs `unsql`** —— `unsql` 从普通 JavaScript 对象为 MySQL、PostgreSQL 与 SQLite 生成 SQL。它不面向 MongoDB，且只是一个查询/CRUD 辅助工具，而非带权限与计算列的 schema 驱动数据层。
-- **vs Prisma** —— Prisma 是 schema DSL 加生成的客户端，配有迁移引擎与编译期类型。`nodejs-store` 是运行时 JSON schema，不承担迁移引擎职责（仅通过 introspection *读取*物理结构，`generateDdl()` 也只*渲染* `CREATE TABLE` 文本而不触碰数据库），也不生成类型 —— 以此换取一套横跨文档库与三种关系库的查询方言。
+- **vs Prisma** —— Prisma 是 schema DSL 加生成的客户端，配有迁移引擎与编译期类型。`nodejs-store` 是运行时 JSON schema，只做白名单制非破坏迁移（加表 / 加列 / 加索引 / 类型放宽，不做版本图与破坏性变更），也不生成类型 —— 以此换取一套横跨文档库与三种关系库的查询方言。
 - **vs TypeORM / Sequelize / Drizzle** —— Sequelize 与 Drizzle 仅支持 SQL；TypeORM 把 MongoDB 与其 SQL 实体分开建模。`nodejs-store` 以 MongoDB 为主方言，并把同一份 GQL 编译为其余三种后端的 SQL。
 
-一句话：想要**编译期类型与迁移**就用 ORM；想要**一份运行时 schema + 一套横跨 MongoDB 与 SQL 的查询方言**，并内置 RBAC 与计算列，就用 `nodejs-store`。
+一句话：想要**编译期类型与全自动迁移**就用 ORM；想要**一份运行时 schema + 一套横跨 MongoDB 与 SQL 的查询方言**，并内置 RBAC 与计算列，就用 `nodejs-store`。
 
 ## 安装
 
@@ -349,6 +349,10 @@ await store.updateMany('Post', { type: t }, { status: 'live' });
 const r      = await store.remove('Post', { _id: pid });  // 先归档到 <collection>_deleted
 await store.mutation('Post', { ... });                    // 智能 upsert + 递归关系子文档
 await store.upsert('Post', { code: 'A1' }, { ... });      // 显式条件的 upsert（不做关系处理）
+
+// 注册门面：批量 / 注销（供插件 bootstrap 的接入与回滚）
+store.registerBatch([{ defn: d1 }, { defn: d2 }]);        // location 缺省时按 defn 推导；原子语义由 core 定
+store.unregister('Post');                                 // 幂等：未知 schema 也成功；连带清理 PostDeleted
 ```
 
 注意：
@@ -476,13 +480,17 @@ store.scopedRoles(['viewer'], () => store.query(gql, params));
 
 // 内部/定时任务 —— 绕过权限校验
 await store.runAsInternal(() => store.remove('Post', { _id: pid }));
-```
-
-- 角色判决统一由 core 执行：命中豁免清单（`setExemptRoles`，默认为空——无 `admin`/`super_admin` 硬编码）或 `{ internal: true }` 上下文放行；其他角色按 schema 级与字段级 `read`/`write` 白名单校验；`guest` 永不写。
-- 白名单的空值语义：**不配置（`null`/缺省）= 缺省 Open**；**显式 `[]` = 显式不允许**（不命中任何角色，只有豁免清单与 internal 直通）。
 - `creator` 是一个伪角色，依据 `doc.<归属键> === ctx.userId` 解析（归属键由 schema `ownerKey` 声明，缺省 `createdBy`，可自定义如 `creatorId`；不得为 `_id` —— 主键由系统管理，注册期即拒绝）。授予它的 schema 会自动在查询上注入属主条件，并在 update/remove 时做属主校验。
 - 未设置上下文 → 权限校验关闭（向后兼容）。
 - 拒绝访问时抛出 `store.PermissionError`（`status = 403`）。
+
+```js
+store.register({
+  name: 'AuditLog',
+  fields: { action: 'string' },
+  denyRead: true,          // 显式拒绝读：query / count / exists / lookup 全部读路径统一拒绝
+});
+```
 
 ### 失败即安全模式（可选开启）
 
@@ -1548,7 +1556,7 @@ app.listen(3000);
 可以。把 schema 定位到 `(source, database, schema, collection)`，并按请求传入 `{ source, database, schema }` 路由覆盖。仅把 `routeOverride` 当作受信的服务端输入。
 
 **它会执行迁移吗？**
-不会。`syncSchema()` 只通过 introspection *读取*物理结构（introspect → 合并 overlay → 注册）。schema 变更 / DDL 是你所用迁移工具的职责。若想要一个起点，`store.generateDdl(backend)` 可从已注册 schema 渲染 `CREATE TABLE` 文本 —— 但它只是纯文本生成：绝不执行、也不写入 DDL。
+会，但只执行白名单内的**非破坏**变更。`store.migrate({ backend, source, defs, driver })` 对比内省结构与 def，执行加表 / 加列 / 加索引 / 类型放宽，并记录版本行；白名单外（删列、改窄类型等）显式抛 `MigrationUnsupported` 并给分步建议，绝不静默执行或自动回滚。`syncSchema()` 仍只通过 introspection *读取*物理结构（introspect → 合并 overlay → 注册）；只想拿 DDL 文本时用 `store.generateDdl(backend)`（纯文本，绝不执行）。老表缺内建列会先自动补列再告警，不阻断升级。
 
 **能否在不运行的情况下查看生成的查询？**
 可以 —— `store.buildPipeline(gql, params)` 返回编译后的计划（`{ tokens, ast, pipeline, projection }`），不执行，也不应用权限/计算列。

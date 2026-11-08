@@ -26,6 +26,14 @@
 5. 升级后首次 `store.migrate` 会因 hash 规范化对既有 defn 重跑一次 diff（通常为空变更，新增一条
    版本行），数据与列型不变（见 hash 条目）。
 
+### 维护分支（5.x，非破坏）
+
+`maintenance/5.x` 只收**非破坏修复**，随 **5.1.4**（nodejs-store）/ **5.3.3**（py-store）维护版发布：
+不改变任何既有调用方的行为与签名、无迁移步骤。内容为 workflow 空名单恢复「未配置」并在注册期
+告警、`denyRead` 显式拒绝读、迁移自动补内建列 + 归属键 NULL 告警、`update` 返回值补内建列、
+新增 `registerBatch` / `unregister` 门面。上文 `internal` 收口、`exists()` 带 ctx、`toNumber`
+超界等破坏性项**只进 6.0.0 主干**，不进入维护分支。
+
 ### Added（feat：`text` 长文本字段类型）
 
 - `text` → MySQL `MEDIUMTEXT`、PG / SQLite `TEXT`（对齐 py-store 5.3.0）。此前 Node 侧

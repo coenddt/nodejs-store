@@ -178,6 +178,12 @@ console.log(row);
 
 The insert never mentioned `status`; the default was written before the row landed. The relation and the aggregate arrived in the same read, not in two follow-up queries.
 
+Registration facades for bootstrap plugins: `store.registerBatch([{ defn: d1 }, { defn: d2 }])` registers in one atomic step (any failure leaves zero side effects; `location` defaults to what the definition implies), and `store.unregister('Lesson')` is idempotent (unknown names succeed) and also clears the derived `LessonDeleted` archive metadata.
+
+Blank permission lists mean *unconfigured*, not *nobody*: `read: []` behaves exactly like an omitted `read` (5.x semantics), and workflow white lists emit a `workflowWhitelistEmptyAsUnconfigured` warning at registration time. To deny reads you must say so explicitly with the top-level boolean `denyRead: true` (validated at registration, non-boolean is an error); it wins over every role and exemption list, while calls without a context stay fail-open.
+
+`store.migrate({ backend, source, defs, driver })` executes only a whitelist of non-destructive changes (add table / column / index, widen types) inside per-table transactions and records a version row; anything outside that whitelist (dropping a column, narrowing a type) raises `MigrationUnsupported` with a step-by-step recommendation instead of being executed or rolled back silently. When a legacy table is missing built-in columns, they are added first and a `migrationAutoAddBuiltinColumns` warning is emitted; only a failed column add aborts the upgrade.
+
 The same schema and the same GQL run on a real backend by changing only the connection:
 
 ```javascript
