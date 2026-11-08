@@ -14,9 +14,9 @@ const { runTriggers } = require('./triggers');
  *
  * 入参必须是 `returnDocument: AFTER` 的落库文档。默认值只在 insert 物化一次，重复填充
  * 会让「落库 / returns / 读回」出现不同取值（D1）。无 `fn` 声明原样返回；声明
- * `fn: true` 却未注册实现，由 core 显式报错（不静默跳过）。与 py 宿主 `_write_returns` 同构。
+ * `fn: true` 却未注册实现，由 core 显式报错（不静默跳过）。与 py 宿主 `apply_write_computes` 同构。
  */
-function writeReturns(schemaName, doc) {
+function applyWriteComputes(schemaName, doc) {
   if (!doc) return doc;
   return _call(() => getCore().applyWriteComputes(schemaName, doc));
 }
@@ -120,7 +120,7 @@ async function update(schemaName, condition, data, options = null, routeOverride
     if (out.triggers && out.triggers.length && result) {
       await runTriggers(out.triggers, { root: result, before, now, ctx, executed: new Set() });
     }
-    return result ? writeReturns(schemaName, result) : null;
+    return result ? applyWriteComputes(schemaName, result) : null;
   };
 
   return runAtomic(sources, doRun);
@@ -230,4 +230,4 @@ async function count(schemaName, filter = null, routeOverride = null) {
   return _exec(cmd);
 }
 
-module.exports = { insert, insertMany, update, updateMany, remove, exists, count, writeReturns };
+module.exports = { insert, insertMany, update, updateMany, remove, exists, count, applyWriteComputes };

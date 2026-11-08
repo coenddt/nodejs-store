@@ -23,7 +23,7 @@ const { setConnections, setDb, _nowFor, _ctx, _call, ProfileViolation, _exec, _s
 const { claim, compareAndSet, renewLease } = require('./claim');
 const { _generateId, _truthy, _newIdPool } = require('./id');
 const { query, queryOne, queryWithCount, queryFederated } = require('./query');
-const { insert, insertMany, update, updateMany, remove, exists, count } = require('./write');
+const { insert, insertMany, update, updateMany, remove, exists, count, applyWriteComputes } = require('./write');
 const { mutation, upsert } = require('./mutation');
 
 module.exports = {
@@ -37,6 +37,7 @@ module.exports = {
   insertMany,
   update,
   updateMany,
+  applyWriteComputes,
   remove,
   exists,
   count,

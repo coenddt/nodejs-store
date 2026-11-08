@@ -16,7 +16,6 @@ const path = require('node:path');
 
 const { connect } = require('../src/local');
 const { init, store, schema: _sc } = require('../src');
-const { writeReturns } = require('../src/crud/write');
 
 const _dirs = [];
 function tmpDir(tag) {
@@ -74,7 +73,7 @@ test('returns: 无 fn 声明原样返回（不补默认值）', () => {
       _id: { type: 'string' }, v: { type: 'string' }, n: { type: 'int', default: 9 },
     },
   });
-  const out = writeReturns('RetPlain', { _id: 'rp1', v: 'a' });
+  const out = store.applyWriteComputes('RetPlain', { _id: 'rp1', v: 'a' });
   assert.deepEqual(out, { _id: 'rp1', v: 'a' }, '不得补 n=9');
 });
 
@@ -85,7 +84,7 @@ test('returns: fn: true 未注册实现 ⇒ 显式报错', () => {
     computes: { orphan: { type: 'int', fn: true, depends: ['a'] } },
   });
   assert.throws(
-    () => writeReturns('RetNoFn', { _id: 'rn1', a: 1 }),
+    () => store.applyWriteComputes('RetNoFn', { _id: 'rn1', a: 1 }),
     /未注册同步实现/,
   );
 });

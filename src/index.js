@@ -164,6 +164,10 @@ class Store {
     return crud.count(schemaName, filter, routeOverride);
   }
 
+  applyWriteComputes(schemaName, doc) {
+    return crud.applyWriteComputes(schemaName, doc);
+  }
+
   // ── Mutation / Upsert ──
   async mutation(schemaName, data, routeOverride) {
     return crud.mutation(schemaName, data, routeOverride);
