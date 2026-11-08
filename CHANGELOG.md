@@ -1,6 +1,30 @@
 # Changelog
 
-## Unreleased
+## 6.0.0 (2026-11-08)
+
+### Breaking（主干破坏性变更，升级必读）
+
+- **`internal` 上下文收口**：`setContext(...)` 不再采信普通上下文里自带的 `internal` 标记
+  （用户可控输入带 `internal: true` 即越权）。内部 / 定时任务统一改用 `runAsInternal()`。
+  **迁移**：`setContext({ internal: true, ... })` → `runAsInternal(async () => ...)`。
+- **`exists()` 改调带 ctx 的 `planExistsWithCtx`**：读权限统一由 core 裁决，宿主不再绕过读
+  白名单。**迁移**：若业务依赖「能 `exists` 但无 `read`」，需在 schema 的 `read` 名单里显式放行。
+- **`toNumber` 超安全整数出参**：超出 ±(2^53−1) 的整数值返回字符串（精确值），不再返回失真的
+  number。**迁移**：读 BIGINT 超界列时按 `typeof` 分支处理（JSON 序列化仍为精确数字字面量）。
+- **workflow 白名单去硬编码**：`admin` / `super_admin` 不再自动放行，必须写进 `read` / `write` /
+  `run` 名单。**迁移**：把内部管理员角色显式加入对应名单。
+- **依赖下限抬升（发版时生效）**：`rust-store-node` 须含 core `273bc11` 及 `registerBatch` /
+  `planExistsWithCtx` / `unregister`；旧绑定缺方法时显式抛错（不静默降级）。
+
+### Migration（6.0.0 升级步骤）
+
+1. 升级 `rust-store-node` 到随 6.0.0 发布的版本（旧绑定缺新 core 能力会显式抛错）。
+2. 内部调用从 `setContext({ internal: true })` 改为 `runAsInternal()`。
+3. 需要「拒绝读」的 workflow 定义改用顶层 `denyRead: true`；`read: []` 现在按「未配置」处理
+   （见下方 workflow 条目，非破坏）。
+4. BIGINT 超界读取按字符串分支处理；MySQL 侧建议连接池 `supportBigNumbers: true`。
+5. 升级后首次 `store.migrate` 会因 hash 规范化对既有 defn 重跑一次 diff（通常为空变更，新增一条
+   版本行），数据与列型不变（见 hash 条目）。
 
 ### Added（feat：`text` 长文本字段类型）
 
@@ -43,13 +67,27 @@
   （白名单不含 `database`），旧写法注册期会被 reject（「含未知顶层键」）。落点仍由
   `_locOf` 显式注入，行为不变；定义持久化不再携带落点键。
 
-### Changed（破坏性：workflow 定义级白名单口径与 core 对齐）
+### Fixed（迁移：老库缺内建列先自动补齐再告警，不再阻断升级）
 
-- `workflow` 的 `read`/`write`/`run` 三级白名单改按 core `permission.rs::evaluate` 判定：
-  显式 `[]` = 显式不允许；`run: []` 不再回退 `write`；移除 `admin`/`super_admin`
-  硬编码与 `guest` 读拒特例（须写进名单才放行）；未配置（键缺省）仍为缺省 Open。
-  **升级提示**：此前依赖「空名单=放行」或「admin 自动放行」的 workflow 定义，需把
-  角色名显式写进名单。
+- 迁移 ⓪ 段由「缺内建列即 `MigrationUnsupported`」改为**先自动补列、再告警**：按
+  `ddl.implicitColumnDDL` 对物理表执行 `ALTER TABLE ... ADD COLUMN`，补齐
+  `created_at` / `updated_at` / `created_by` / `__present` 等缺失列后继续迁移；成功后发
+  `migrationAutoAddBuiltinColumns` 告警，消息含表名与全部补齐的列，可定位到具体表。
+- 只有补列语句本身失败时才中断并抛 `MigrationUnsupported`（附手工补列 / 重建表指引）——
+  真报错保留，不吞成静默通过。
+- ⓪b 归属键为 NULL 的存量行改为发 `migrationOwnerKeyNullRows` 告警后继续（老库照常迁过去，
+  不再整表阻断）。
+- **非破坏**：老库升级不再因缺内建列直接失败；行为变化仅是多两条可定位告警。
+
+### Changed（workflow 定义级白名单：空名单回归「未配置」，显式拒绝走 `denyRead`）
+
+- `read` / `write` / `run` 的显式空名单（`[]`）按 core 口径回到「未配置」旧语义 —— 照常放行，
+  避免旧定义升级即 403。注册期发 `workflowWhitelistEmptyAsUnconfigured` 告警，告警含 workflow
+  名与被判空的字段，可定位到具体定义（不静默放宽）。
+- 显式拒绝读统一由顶层 `denyRead: true` 表达（core 新增开关，宿主透传，口径以 core 为准）；
+  `run: []` 按未配置回退 `write`（JS 空数组是 truthy，`_runWhitelist` 显式按长度判断）。
+- **非破坏**：旧定义（含空名单）照常可用，仅新增一条告警。需要拒绝语义的定义把 `read: []`
+  改为 `denyRead: true` 即可。
 
 ### Changed（契约：超安全整数出参类型）
 
