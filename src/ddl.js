@@ -608,5 +608,5 @@ function generateMigration(backend, oldDefn, newDefn) {
 
 module.exports = {
   generate, diffDefs, generateMigration, pname, ptable,
-  archiveDDL, archiveDefnOf, builtinFieldNames, implicitColumnDDL,
+  archiveDDL, archiveDefnOf, builtinFieldNames, implicitColumnDDL, ownerField,
 };

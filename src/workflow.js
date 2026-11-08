@@ -37,7 +37,7 @@ const _WHEN_PARAM = {
   ne: 'than', lt: 'than', lte: 'than', gt: 'than', gte: 'than',
 };
 // defn 顶层字段白名单（§4.1）
-const _TOP_FIELDS = new Set(['name', 'steps', 'read', 'write', 'run', 'description']);
+const _TOP_FIELDS = new Set(['name', 'steps', 'read', 'write', 'run', 'denyRead', 'description']);
 // 步骤字段白名单（按 op；as 语义见 §4.2——query 必填，mutation 可选，fail 无）
 const _STEP_FIELDS = {
   query: new Set(['op', 'as', 'gql', 'params', 'when']),
@@ -125,14 +125,11 @@ function _pyTypeName(v) {
  */
 function _evaluate(roleList, ctx) {
   const list = roleList ?? null;
-  if (!list || list.length === 0) {
-    // 空白名单 = 无权限配置 → 默认行为（ctx 缺失放行；internal 放行；guest 拒绝）
-    if (ctx == null) return true;
-    if (ctx.internal) return true;
-    return !(ctx.roles || []).includes('guest');
-  }
   if (ctx == null) return true;
   if (ctx.internal) return true;
+  // 空名单按「未配置」处理（旧语义，注册期已发 workflowWhitelistEmptyAsUnconfigured 告警）；
+  // 显式拒绝读的唯一入口是顶层 denyRead。
+  if (!list || list.length === 0) return true;
   const roles = ctx.roles || [];
   if (roles.includes('super_admin') || roles.includes('admin')) return true;
   const effective = roles.length ? roles : [ctx.role];
@@ -140,9 +137,13 @@ function _evaluate(roleList, ctx) {
   return list.includes('creator');
 }
 
-/** run 白名单：显式声明优先；缺省回退 write（§0.6，falsy 统一回退） */
+/** run 白名单：显式声明优先；缺省回退 write（§0.6 旧语义：空名单按未配置处理） */
 function _runWhitelist(defn) {
-  return defn.run || defn.write || null;
+  const run = defn.run;
+  // JS 空数组是 truthy，必须显式按长度判断「未配置」
+  if (run != null && (!Array.isArray(run) || run.length > 0)) return run;
+  const write = defn.write;
+  return write === undefined ? null : write;
 }
 
 // ─── 校验器（注册即静态检查；纯函数，错误全量收集） ──────────────
@@ -233,7 +234,19 @@ function validateDefn(defn) {
     const v = defn[k];
     if (v != null && (!Array.isArray(v) || !v.every((r) => typeof r === 'string'))) {
       errors.push(`${k} 白名单须为字符串数组`);
+    } else if (Array.isArray(v) && v.length === 0) {
+      // 空名单按「未配置」放行（旧语义），必须可定位告警，禁止悄悄放宽
+      _emitFeedback({
+        type: 'warning',
+        code: 'workflowWhitelistEmptyAsUnconfigured',
+        layer: 'workflow',
+        message: `workflow "${defn.name}" 的 ${k} 是空名单，按「未配置」放行（旧语义，避免升级即 403）`,
+        hint: '如需显式拒绝读，请改用顶层 denyRead',
+      });
     }
+  }
+  if (defn.denyRead && typeof defn.denyRead !== 'boolean') {
+    errors.push('denyRead 须为布尔值（显式拒绝读开关，口径以 core 为准）');
   }
 
   const steps = defn.steps;
@@ -422,7 +435,9 @@ function get(name, ctx = undefined) {
   const d = _workflows.get(name);
   if (!d) throw new Error(`Workflow 未注册: ${name}`);
   const c = ctx === undefined ? getContext() ?? null : ctx;
-  if (!_evaluate(d.read ?? null, c)) throw new Error(`Workflow 未注册: ${name}`);
+  if (d.denyRead === true || !_evaluate(d.read ?? null, c)) {
+    throw new Error(`Workflow 未注册: ${name}`);
+  }
   return d;
 }
 
@@ -430,7 +445,7 @@ function get(name, ctx = undefined) {
 function list(ctx = undefined) {
   const c = ctx === undefined ? getContext() ?? null : ctx;
   return [..._workflows.values()]
-    .filter((d) => _evaluate(d.read ?? null, c))
+    .filter((d) => d.denyRead !== true && _evaluate(d.read ?? null, c))
     .map((d) => d.name);
 }
 

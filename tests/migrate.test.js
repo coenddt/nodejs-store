@@ -202,3 +202,74 @@ test('⓪c 主表存在但归档表缺失：迁移补建后 remove 可用', asyn
     assert.deepEqual(rd, { deletedCount: 1, archivedCount: 1 });
   });
 });
+
+test('⓪ 老表缺内建列：迁移先自动补列再继续，并发出可定位告警', async () => {
+  const { feedback } = require('../src');
+  const seen = [];
+  feedback.setSink((e) => seen.push(e));
+  try {
+    await run(async (db) => {
+      db.exec(`CREATE TABLE legacy_notes (
+        _id TEXT PRIMARY KEY, title TEXT, status TEXT,
+        createdAt INTEGER, updatedAt INTEGER
+      )`);
+      const defn = {
+        name: 'LegacyNote', collection: 'legacy_notes', idPrefix: 'ln',
+        read: ['creator'], write: ['creator'],
+        fields: { _id: { type: 'string' }, title: { type: 'string' }, status: { type: 'string' } },
+      };
+      const r = await store.migrate({
+        backend: 'sqlite', source: 'default', defs: { LegacyNote: defn }, driver: db,
+      });
+      assert.deepEqual(r.applied, [{ name: 'LegacyNote', from: 0, to: 1, version: 1 }]);
+      const cols = db.prepare("SELECT name FROM pragma_table_info('legacy_notes')").all()
+        .map((x) => x.name);
+      for (const col of ['__present', 'created_at', 'updated_at', 'created_by']) {
+        assert.ok(cols.includes(col), `应自动补列 ${col}（got ${cols}）`);
+      }
+    });
+  } finally {
+    feedback.setSink(null);
+  }
+  const hit = seen.filter((e) => e.code === 'migrationAutoAddBuiltinColumns');
+  assert.ok(hit.length, `必须发出自动补列告警（got ${JSON.stringify(seen)}）`);
+  assert.match(hit[0].message, /legacy_notes/);
+  for (const col of ['__present', 'created_at', 'updated_at', 'created_by']) {
+    assert.ok(hit[0].message.includes(col), `告警应列出 ${col}（got: ${hit[0].message}）`);
+  }
+});
+
+test('⓪b 归属键漏回填：created_by 全 NULL 时迁移继续，但必须告警', async () => {
+  const { feedback } = require('../src');
+  const seen = [];
+  feedback.setSink((e) => seen.push(e));
+  try {
+    await run(async (db) => {
+      db.exec(`CREATE TABLE null_owner (
+        _id TEXT PRIMARY KEY, title TEXT,
+        created_at INTEGER, updated_at INTEGER, created_by TEXT, __present TEXT
+      )`);
+      db.prepare('INSERT INTO null_owner (_id, title, created_by) VALUES (?, ?, ?)')
+        .run('no_1', 'a', null);
+      const defn = {
+        name: 'NullOwner', collection: 'null_owner', idPrefix: 'no',
+        read: ['creator'], write: ['creator'],
+        fields: { _id: { type: 'string' }, title: { type: 'string' } },
+      };
+      const r = await store.migrate({
+        backend: 'sqlite', source: 'default', defs: { NullOwner: defn }, driver: db,
+      });
+      assert.deepEqual(r.applied, [{ name: 'NullOwner', from: 0, to: 1, version: 1 }]);
+      const rows = db.prepare(
+        "SELECT version FROM __schemaMigration WHERE name = 'NullOwner'",
+      ).all();
+      assert.deepEqual(rows.map((x) => x.version), [1]);
+    });
+  } finally {
+    feedback.setSink(null);
+  }
+  const hit = seen.filter((e) => e.code === 'migrationOwnerKeyNullRows');
+  assert.ok(hit.length, `必须发出归属键 NULL 告警（got ${JSON.stringify(seen)}）`);
+  assert.match(hit[0].message, /null_owner/);
+  assert.match(hit[0].message, /created_by/);
+});

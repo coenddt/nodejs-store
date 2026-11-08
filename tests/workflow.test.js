@@ -91,7 +91,7 @@ const BAD_ERRORS = {
   B7_when_shape: ['steps[0].when: lt 算子缺少右值键 "than"'],
   B8_dunder_name: ['name "__mine" 以 __ 开头（前缀保留给内建 schema，禁止用于工作流）'],
   B9_unknown_top: [
-    '未知顶层字段 "retry"（白名单: ["description","name","read","run","steps","write"]）'],
+    '未知顶层字段 "retry"（白名单: ["denyRead","description","name","read","run","steps","write"]）'],
   B10_dup_as: ['steps[1]: as "inv" 重复（引用歧义，禁止覆盖）'],
   B11_index_path: [
     'steps[0]: 占位符 {{input.items.0.id}} 路径非法'
@@ -223,8 +223,14 @@ test('when 取值位三态：inv 无结果时路径取值为 null', () => {
 
 const PERM_CASES = [
   [null, null, true],
-  [null, { roles: ['guest'] }, false],
+  // 未配置（null）与显式空名单（[]）都按「未配置」放行（旧语义，
+  // 注册期发 workflowWhitelistEmptyAsUnconfigured 告警）；显式拒绝走 denyRead
+  [null, { roles: ['guest'] }, true],
   [null, { roles: ['user'] }, true],
+  [[], null, true],
+  [[], { roles: ['user'] }, true],
+  [[], { roles: ['guest'] }, true],
+  [[], { internal: true }, true],
   [['ops'], null, true],
   [['ops'], { roles: ['ops'] }, true],
   [['ops'], { roles: ['user'] }, false],
@@ -247,6 +253,37 @@ test('run 白名单缺省回退 write（对齐 py wf._run_whitelist）', () => {
   assert.deepEqual(workflow._runWhitelist({ write: ['w1'] }), ['w1']);
   assert.deepEqual(workflow._runWhitelist({ run: ['r1'], write: ['w1'] }), ['r1']);
   assert.equal(workflow._runWhitelist({}), null);
+});
+
+test('空名单按未配置放行但注册期告警（可定位 workflow 名与字段）', () => {
+  const { feedback } = require('../src');
+  const seen = [];
+  feedback.setSink((e) => seen.push(e));
+  try {
+    const defn = { ...GOOD, name: 'wfEmpty', read: [], write: [], run: [] };
+    assert.deepEqual(workflow.validateDefn(defn), []);
+  } finally {
+    feedback.setSink(null);
+  }
+  const hit = seen.filter((e) => e.code === 'workflowWhitelistEmptyAsUnconfigured');
+  assert.equal(hit.length, 3, JSON.stringify(seen));
+  assert.ok(hit.every((e) => e.message.includes('wfEmpty')));
+  assert.equal(workflow._evaluate([], { roles: ['user'] }), true);
+  assert.deepEqual(workflow._runWhitelist({ run: [], write: ['w1'] }), ['w1']);
+});
+
+test('显式拒绝唯一入口 denyRead（空名单不再承担拒绝语义）', () => {
+  const defn = { ...GOOD, name: 'wfDeny', denyRead: true };
+  assert.deepEqual(workflow.validateDefn(defn), []);
+  try {
+    workflow.register(defn);
+    assert.throws(() => workflow.get('wfDeny', { roles: ['admin'] }), /Workflow 未注册/);
+    assert.deepEqual(workflow.list({ roles: ['admin'] }), []);
+  } finally {
+    workflow._workflows.delete('wfDeny');
+  }
+  assert.deepEqual(workflow.validateDefn({ ...GOOD, denyRead: 'yes' }),
+    ['denyRead 须为布尔值（显式拒绝读开关，口径以 core 为准）']);
 });
 
 // ─── 内建 run 表自举 ─────────────────────────────────────────

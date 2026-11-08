@@ -256,3 +256,16 @@ test('unregister: 未知 schema 幂等成功（绑定导出后）', (t) => {
   store.unregister('NotRegisteredAnywhere');
   store.unregister('NotRegisteredAnywhere');
 });
+
+test('writeReturns：补齐落库默认值列（键序取 core 出口）', () => {
+  const { schema } = require('../src');
+  const { writeReturns } = require('../src/crud/write');
+  schema.register({
+    name: 'RetItem', collection: 'ret_items', idPrefix: 'ri', timestamps: false,
+    fields: { _id: { type: 'string' }, v: { type: 'string' }, n: { type: 'int', default: 0 } },
+  });
+  const out = writeReturns('RetItem', { _id: 'r1', v: 'a' });
+  assert.deepEqual(Object.keys(out).sort(), ['_id', 'n', 'v']);
+  assert.equal(out.n, 0);
+  assert.equal(out.v, 'a');
+});

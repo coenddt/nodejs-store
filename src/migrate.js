@@ -22,12 +22,13 @@
 const crypto = require('node:crypto');
 
 const ddl = require('./ddl');
-const { pname } = ddl;
+const { pname, ptable, builtinFieldNames, ownerField } = ddl;
 const introspect = require('./introspect');
 const { core } = require('./schema');
 const { MetaDefError, _stableStringify, _runInternal, _MIGRATION } = require('./metadef');
 const crud = require('./crud');
 const { runInTransaction, executeRaw } = require('./datasource');
+const { emit: emitFeedback } = require('./feedback');
 
 /** 白名单外变更的固定分步建议（契约逐字；MigrationUnsupported 消息必须原文携带） */
 const _UNSUPPORTED_HINT = '白名单外变更请分两版走：先加新列并回填，确认切换后再于下一版删除旧列';
@@ -186,6 +187,55 @@ async function migrate({ backend, source, defs, oldDefs = null, driver = null,
   const skipped = [];
   for (const [name, defn] of Object.entries(defs)) {
     const oldDefn = _stripBuiltinFields(backend, old[name] || (defn.collection && old[defn.collection]) || null, defn);
+    // ⓪ 物理内建列完整性（仅 introspect 模式）：camelCase 时代的老表缺 `__present` /
+    // `created_by` / `created_at` 等内建列。先按当前 DDL 自动补列（老库照样迁得过去），
+    // 同时发出可定位告警；**只有补列失败才中断**（保留真报错，不吞成静默通过）。
+    if (probe && oldDefs == null) {
+      const table = ptable(backend, defn);
+      if (probe.tables.some((t) => t.name === table)) {
+        const have = new Set(probe.columns.filter((c) => c.table === table).map((c) => c.name));
+        const missing = [...new Set(builtinFieldNames(defn, backend).map((n) => pname(backend, n)))]
+          .filter((n) => !have.has(n));
+        if (missing.length) {
+          try {
+            for (const stmt of ddl.implicitColumnDDL(backend, defn, have)) {
+              await executeRaw(source, stmt, null, true);
+            }
+          } catch (e) {
+            const reason = `物理表 ${table} 缺内建列 [${missing.join(', ')}]，自动补列失败：${e.message}；`
+              + '请按当前 DDL 手工补列或重建表后重跑迁移';
+            skipped.push({ name, reason });
+            throw new MigrationUnsupported(`MIGRATION_UNSUPPORTED: ${reason}（${_UNSUPPORTED_HINT}）`, skipped);
+          }
+          emitFeedback({
+            type: 'warning',
+            code: 'migrationAutoAddBuiltinColumns',
+            layer: 'migrate',
+            message: `物理表 ${table} 缺内建列 [${missing.join(', ')}]，已按当前 DDL 自动补列后继续迁移`,
+            hint: '新补列的存量行为 NULL；归属键列需按业务回填后 creator 行控才可见',
+          });
+          for (const n of missing) have.add(n);
+        }
+        // ⓪b 归属键回填完整性（仅 introspect 模式）：列已存在但值为 NULL ⇒ creator 行控下
+        // 这些行对非 bypass 用户不可见。迁移层不猜业务归属，放行但必须告警
+        // （no-error-masking：允许通过、禁止静默失守）。
+        const owner = ownerField(defn);
+        if (owner) {
+          const col = pname(backend, owner);
+          const hit = await executeRaw(
+            source, `SELECT 1 FROM ${table} WHERE ${col} IS NULL LIMIT 1`, null, false);
+          if (hit.rows && hit.rows.length) {
+            emitFeedback({
+              type: 'warning',
+              code: 'migrationOwnerKeyNullRows',
+              layer: 'migrate',
+              message: `物理表 ${table} 的归属键 ${col} 存在 NULL 行：creator 行控下这些行对非 bypass 用户不可见`,
+              hint: '请按业务回填归属键；迁移已继续，未静默拦截',
+            });
+          }
+        }
+      }
+    }
     // ⑤ 幂等闸（先于 diff）：同 (tenant,env,backend,name) 最新版本行 hash 相同 → skipped
     // 'unchanged'，不 diff——introspect 反推类型粒度（如 SQLite INTEGER→number）与用户声明
     // 粒度（int）不齐，重跑不应进 diff 被误报

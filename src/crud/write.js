@@ -9,6 +9,33 @@ const { _call, _ctx, _exec, _nowFor, runAtomic, sourcesOf, declareTriggerSources
 const { _generateId } = require('./id');
 const { runTriggers } = require('./triggers');
 
+/**
+ * 写路径结果回喂：**键序取 core 出口**，值以**落库 doc** 为基（对齐 `DefaultFill::Insert`）。
+ *
+ * 绑定尚未导出 computes-only 出口时，用 Return 版（`applyWriteDefaults`）算出完整出口形状：
+ * 键序按 core 出口（补齐本次未写、但有默认值的列），值以落库 doc 为基（显式 null / 已有值
+ * 保持），计算列取 core 计算结果；落库 doc 中不在 core 出口内的键追加在后。与 py 宿主
+ * `_write_returns` 逐字节同构。
+ */
+function writeReturns(schemaName, doc) {
+  if (!doc) return doc;
+  const core = getCore();
+  if (typeof core.applyWriteComputes === 'function') {
+    return _call(() => core.applyWriteComputes(schemaName, doc));
+  }
+  const filled = _call(() => core.applyWriteDefaults(schemaName, doc));
+  const keys = Object.keys((_getSchema(schemaName) || {}).computes || {});
+  // 键序取 core 出口（与 py `apply_write_defaults` 逐字节一致）；值以落库 doc 为基：
+  // 显式 null / 已有值保持（DefaultFill::Insert），计算列取 core 计算结果。
+  const out = {};
+  for (const k of Object.keys(filled || {})) {
+    out[k] = keys.includes(k) ? filled[k] : (k in doc ? doc[k] : filled[k]);
+  }
+  // 落库 doc 中不在 core 出口内的键（如本次新写入但未声明字段）追加在后
+  for (const k of Object.keys(doc)) if (!(k in out)) out[k] = doc[k];
+  return out;
+}
+
 /** creator 写权限探针：先规划，若 needsProbe 则执行探针命令后重入 */
 async function _planWithProbe(planFn) {
   let out = planFn(null, null);
@@ -108,7 +135,7 @@ async function update(schemaName, condition, data, options = null, routeOverride
     if (out.triggers && out.triggers.length && result) {
       await runTriggers(out.triggers, { root: result, before, now, ctx, executed: new Set() });
     }
-    return result ? _call(() => getCore().applyWriteDefaults(schemaName, result)) : null;
+    return result ? writeReturns(schemaName, result) : null;
   };
 
   return runAtomic(sources, doRun);
@@ -218,4 +245,4 @@ async function count(schemaName, filter = null, routeOverride = null) {
   return _exec(cmd);
 }
 
-module.exports = { insert, insertMany, update, updateMany, remove, exists, count };
+module.exports = { insert, insertMany, update, updateMany, remove, exists, count, writeReturns };

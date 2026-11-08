@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 5.1.4 (2026-11-08)
+
+> **维护分支（`maintenance/5.x`）只收非破坏修复**：无破坏性变更、无迁移步骤，
+> 不改任何既有调用方的行为与签名，升级即用。破坏性项（`internal` 上下文收口、
+> `exists()` 带 ctx、`toNumber` 超界、`denyRead` 显式拒绝读等）一律只进主干 6.0.0。
 
 ### Added（新增宿主门面：批量注册 / 注销，供插件 bootstrap 接入）
 
@@ -25,6 +29,23 @@
   非有限→`null`），与 py-store 逐字节一致。
 - **落点键剥离**：`_toCoreDefn` 剔除 `database`/`schema`（由 `_locOf` 注入 Location）。
 - 测试：`tests/migrate.test.js` 22 例全通过。
+
+### Fixed（workflow 空名单回归「未配置」+ 迁移自动补内建列 + update 返回值补列）
+
+- **workflow 白名单空名单恢复「未配置」旧义**：`read` / `write` / `run` 写 `[]` 不再判为
+  「谁都不许」，按未配置放行（旧语义，避免升级即 403）；注册期发
+  `workflowWhitelistEmptyAsUnconfigured` 告警（含 workflow 名与字段名）。
+  要显式拒绝读，改用顶层 `denyRead: true`（布尔，注册期校验，非布尔报错），
+  与 core 的 `read: []` / `denyRead` 完全同口径。
+- **迁移自动补内建列**：老表缺内建列时先按 `ddl.implicitColumnDDL` 自动补齐，
+  再发 `migrationAutoAddBuiltinColumns` 告警（含表名与全部列）；只有补列失败才
+  `MigrationUnsupported` 中断。归属键列存在全 NULL 行时发
+  `migrationOwnerKeyNullRows` 告警后继续（不再阻断升级）。
+- **`update` 返回值补内建列**：返回文档的键集合取 core 出口（`writeReturns`），
+  值以落库 doc 为基、有 `applyWriteComputes` 时优先计算列，读取期默认值不再缺键。
+- 测试：`tests/workflow.test.js`（空名单放行 + 告警 + `denyRead` 拒绝）、
+  `tests/migrate.test.js`（自动补列 + 归属键 NULL 告警）、
+  `tests/store-facade.test.js`（update 返回补列）。
 
 ## 5.1.0 (2026-11-02)
 
