@@ -10,30 +10,15 @@ const { _generateId } = require('./id');
 const { runTriggers } = require('./triggers');
 
 /**
- * 写路径结果回喂：**键序取 core 出口**，值以**落库 doc** 为基（对齐 `DefaultFill::Insert`）。
+ * 写路径结果回喂：只叠 **同步计算列**（`fn`），**不补任何默认值**。
  *
- * 绑定尚未导出 computes-only 出口时，用 Return 版（`applyWriteDefaults`）算出完整出口形状：
- * 键序按 core 出口（补齐本次未写、但有默认值的列），值以落库 doc 为基（显式 null / 已有值
- * 保持），计算列取 core 计算结果；落库 doc 中不在 core 出口内的键追加在后。与 py 宿主
- * `_write_returns` 逐字节同构。
+ * 入参必须是 `returnDocument: AFTER` 的落库文档。默认值只在 insert 物化一次，重复填充
+ * 会让「落库 / returns / 读回」出现不同取值（D1）。无 `fn` 声明原样返回；声明
+ * `fn: true` 却未注册实现，由 core 显式报错（不静默跳过）。与 py 宿主 `_write_returns` 同构。
  */
 function writeReturns(schemaName, doc) {
   if (!doc) return doc;
-  const core = getCore();
-  if (typeof core.applyWriteComputes === 'function') {
-    return _call(() => core.applyWriteComputes(schemaName, doc));
-  }
-  const filled = _call(() => core.applyWriteDefaults(schemaName, doc));
-  const keys = Object.keys((_getSchema(schemaName) || {}).computes || {});
-  // 键序取 core 出口（与 py `apply_write_defaults` 逐字节一致）；值以落库 doc 为基：
-  // 显式 null / 已有值保持（DefaultFill::Insert），计算列取 core 计算结果。
-  const out = {};
-  for (const k of Object.keys(filled || {})) {
-    out[k] = keys.includes(k) ? filled[k] : (k in doc ? doc[k] : filled[k]);
-  }
-  // 落库 doc 中不在 core 出口内的键（如本次新写入但未声明字段）追加在后
-  for (const k of Object.keys(doc)) if (!(k in out)) out[k] = doc[k];
-  return out;
+  return _call(() => getCore().applyWriteComputes(schemaName, doc));
 }
 
 /** creator 写权限探针：先规划，若 needsProbe 则执行探针命令后重入 */
