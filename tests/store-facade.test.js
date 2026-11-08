@@ -247,12 +247,17 @@ test('registerBatch: 批量可见 + location 缺省推导 + 批内冲突零副�
   assert.equal(store.has(c), false, '冲突后应零副作用（不得留下半注册）');
 });
 
-test('unregister: 未知 schema 幂等成功（绑定导出后）', (t) => {
-  const { Registry } = require('rust-store-node');
-  if (typeof Registry.prototype.unregister !== 'function') {
-    t.skip('当前 rust-store-node 绑定未导出 Registry.unregister（core 源码已实现，待重建绑定后生效）');
-    return;
-  }
-  store.unregister('NotRegisteredAnywhere');
-  store.unregister('NotRegisteredAnywhere');
+test('unregister: 注册后注销（含派生归档）+ 未知 schema 幂等', () => {
+  const u = Math.random().toString(36).slice(2, 10);
+  const a = `UndoA${u}`;
+  store.registerBatch([{ defn: batchDefn(a) }]);
+  assert.equal(store.has(a), true, '注册后应可见');
+  assert.equal(store.has(`${a}Deleted`), true, '注册期派生的归档表应可见');
+
+  store.unregister(a);
+  assert.equal(store.has(a), false, '注销后主项应从 Host 镜像移除');
+  assert.equal(store.has(`${a}Deleted`), false, '派生归档应一并清理');
+
+  store.unregister(a);                              // 重复注销幂等
+  store.unregister('NotRegisteredAnywhere');        // 未知 schema 幂等（补偿清单可整份重放）
 });
