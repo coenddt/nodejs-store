@@ -1,5 +1,17 @@
 # Changelog
 
+## 6.0.1 (2026-11-10)
+
+### Fixed（索引键点号路径物理化）
+
+- **新增 `naming.physicalPath`，`init` 建索引改用它逐段物理化索引键**：schema 声明嵌套
+  路径索引（如 `signers.userId`）时，旧实现把整串交给 `translateName`，物理化成
+  `signersUserId`，与文档真实嵌套路径不符——索引能建成但永远匹配不到数据（按该字段查询
+  退化为 COLLSCAN）。现按 `trKey` 的分段语义逐段映射、以 `.` 连接，保留点号结构；索引名
+  同步变为 `signers.userId_1`。
+- 回归：新增 `tests/index-nested-path.test.js`（真实 MongoDB），断言索引键等于文档嵌套
+  路径，并以执行计划断言按该字段查询命中该索引（IXSCAN）。
+
 ## 6.0.0 (2026-11-08)
 
 ### Breaking（主干破坏性变更，升级必读）

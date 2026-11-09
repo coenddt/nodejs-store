@@ -734,8 +734,9 @@ async function _createIndexesIfNeeded() {
         }
         Object.assign(finalOptions, explicitOptions);
 
-        // 检查是否已有同 key 模式的索引（忽略选项差异）；键按目标介质翻译为物理名
-        const physKeys = Object.entries(keys).map(([k, v]) => [naming.physical(k), v]);
+        // 检查是否已有同 key 模式的索引（忽略选项差异）；键按目标介质逐段翻译为
+        // 物理名（点号路径保留层级结构，不得整串拼接）
+        const physKeys = Object.entries(keys).map(([k, v]) => [naming.physicalPath(k), v]);
         const nameFromKeys = physKeys.map(([k, v]) => `${k}_${v}`).join('_');
         if (existingIndexes.some((ei) => ei.name === nameFromKeys)) continue;
 

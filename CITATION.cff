@@ -13,8 +13,8 @@ authors:
 repository-code: "https://github.com/coenddt/nodejs-store"
 url: "https://www.npmjs.com/package/nodejs-store"
 license: MIT
-version: "6.0.0"
-date-released: "2026-11-08"
+version: "6.0.1"
+date-released: "2026-11-10"
 keywords:
   - multi-backend
   - mongodb

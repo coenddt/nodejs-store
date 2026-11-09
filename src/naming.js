@@ -53,6 +53,16 @@ function trSeg(seg, rels) {
   return rels.has(seg) ? seg : physical(seg);
 }
 
+/**
+ * 逻辑字段路径 → Mongo 物理路径（点号分段逐段翻译，保留层级结构）
+ *
+ * 索引键等「路径型标识符」必须逐段物理化：整串交给 translateName 会把
+ * `signers.userId` 拼成 `signersUserId`，与文档真实嵌套路径不符（索引失效）。
+ */
+function physicalPath(logical) {
+  return trKey(logical, new Set());
+}
+
 /** `$fieldRef` 字符串值翻译（`$$var` 系统变量保留） */
 function trRef(value, rels) {
   if (typeof value !== 'string' || !value.startsWith('$') || value.startsWith('$$')) {
@@ -224,4 +234,4 @@ function _toLogical(result, cmd) {
   return mapDoc(result, info);
 }
 
-module.exports = { _toMongo, _toLogical, physical, isReserved };
+module.exports = { _toMongo, _toLogical, physical, physicalPath, isReserved };
