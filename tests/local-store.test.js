@@ -39,6 +39,25 @@ test('local/store: 目录不存在 → 空快照', () => {
   assert.deepEqual(readSnapshot(dir), {});
 });
 
+test('local/store: 集合名含穿越字符 → 显式抛错且不落盘（对照 _dirFor 同规则）', () => {
+  const dir = tmpDir('traversal-name');
+  for (const bad of ['../evil', 'a\\b', 'x/../y']) {
+    assert.throws(
+      () => writeCollections(dir, [bad], { [bad]: [] }),
+      new RegExp(`ERR:LOCAL 集合名非法: ${bad.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+    );
+  }
+  // 未在任何非法名上落盘（无 evil.json 等残留）
+  const leftovers = fs.existsSync(dir)
+    ? fs.readdirSync(dir).filter((f) => f !== '.' && f !== '..')
+    : [];
+  assert.deepEqual(leftovers, [], '非法集合名不得产生任何文件');
+
+  // 合法名（含中文/空格/点）不受影响——既有布局零语义变更
+  writeCollections(dir, ['订单 主表.v2'], { '订单 主表.v2': [{ _id: 1 }] });
+  assert.deepEqual(readSnapshot(dir), { '订单 主表.v2': [{ _id: 1 }] });
+});
+
 test('local/store: 写→读往返（文档数组，可读 JSON）', () => {
   const dir = tmpDir('roundtrip');
   const docs = [{ _id: 'u1', name: 'Ada' }, { _id: 'u2', name: 'Bob' }];

@@ -209,6 +209,30 @@ test('Store 门面转发 registerProvider', () => {
   assert.strictEqual(providers._REG.get('stub-x'), mod);
 });
 
+test('local provider: 子目录 key 放行（objects/<xx>/<sha1> 正常形态）', async () => {
+  const local = require('../src/resource/providers/local');
+  const p = local.create({ baseDir: path.join(os.tmpdir(), `res-trav-${Date.now()}`) });
+  const key = 'objects/ab/ab12cd';
+  await p.put(key, Buffer.from('payload'));
+  const got = await p.get(key);
+  assert.strictEqual(got.toString(), 'payload');
+  assert.strictEqual(await p.exists(key), true);
+  await p.remove(key);
+  assert.strictEqual(await p.exists(key), false);
+});
+
+test('local provider: 越界 key 抛错（防穿越，put/get/remove/exists 全拦截）', async () => {
+  const local = require('../src/resource/providers/local');
+  const p = local.create({ baseDir: path.join(os.tmpdir(), `res-trav-${Date.now()}`) });
+  const bad = ['../escape.txt', 'a/../../out.txt', path.join(os.tmpdir(), 'absolute.txt'), '.', '..'];
+  for (const key of bad) {
+    await assert.rejects(() => p.put(key, Buffer.from('x')), /越界/);
+    await assert.rejects(() => p.get(key), /越界/);
+    await assert.rejects(() => p.remove(key), /越界/);
+    await assert.rejects(() => p.exists(key), /越界/);
+  }
+});
+
 test('字段映射：自定义物理字段名全链路（put/open/remove/binding/跳过列）', async () => {
   const store = genericStore();
   const writes = new Map();

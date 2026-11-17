@@ -25,14 +25,13 @@ const _queues = new Map(); // dir -> Promise（写串行化：单进程内互斥
  * @param {string|null|undefined} database
  * @returns {string}
  */
+function _badSegment(v) {
+  return typeof v !== 'string' || v.includes('/') || v.includes('\\') || v.includes('..');
+}
+
 function _dirFor(dir, database) {
   if (database === null || database === undefined || database === '') return dir;
-  if (
-    typeof database !== 'string'
-    || database.includes('/')
-    || database.includes('\\')
-    || database.includes('..')
-  ) {
+  if (_badSegment(database)) {
     throw new Error(`ERR:LOCAL database 非法: ${database}`);
   }
   return path.join(dir, database);
@@ -87,6 +86,12 @@ function writeCollections(dir, changed, collections, database = null) {
   const target = _dirFor(dir, database); // 先校验（非法 database ⇒ 抛错）
   const names = Array.from(changed);
   if (names.length === 0) return;
+  // 集合名同规则校验（`/`、`\`、`..` ⇒ 抛错，防穿越拼出目录外文件名；对照 _dirFor）
+  for (const name of names) {
+    if (_badSegment(name)) {
+      throw new Error(`ERR:LOCAL 集合名非法: ${name}`);
+    }
+  }
   fs.mkdirSync(target, { recursive: true });
   for (const name of names) {
     const tmp = path.join(target, `.${name}.json.tmp`);
