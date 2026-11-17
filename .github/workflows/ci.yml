@@ -13,6 +13,12 @@ name: ci
 # 缺任一后端会走显式 skip 并连带拉低 src/executors、src/introspect 覆盖率、
 # 使门禁失败 —— 故 CI 起三个真实服务，库名/账号与测试默认 URI 对齐
 # （`e2e/e2e123`；MySQL `mongo_store_e2e{,_real,_fed}`，PG `mongo_store_e2e{,_real}`）。
+#
+# skip 分级（36 个，明细见 doc/test-skip-ledger.md）：
+#   [环境依赖] 35 个 —— 缺外部环境（真实库 / 原生 core / 相邻仓库 / 环境变量 / 可选 peer）；
+#                CI 起服务后仍跳过的属平台能力差异（如 mongod 无 $vectorSearch），不算缺测。
+#   [长期挂起] 1 个 —— 跨方向能力缺口（需 rust-store core 改动），单列挂账。
+# 每个 skip 文案都带上述前缀，可用 `grep -c "\[环境依赖\]"` / `\[长期挂起\]` 机械统计。
 
 on:
   push:

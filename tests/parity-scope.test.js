@@ -43,7 +43,7 @@ function snapshotOf(parsed, viewName) {
 
 test('两侧脚本共用同一份 fixture（逐字一致）', (t) => {
   if (!fs.existsSync(PY_SCRIPT)) {
-    t.skip('相邻 py-store 仓缺失，跳过 fixture 一致性断言');
+    t.skip('[环境依赖] 相邻 py-store 仓缺失，跳过 fixture 一致性断言');
     return;
   }
   const nodeM = fs.readFileSync(NODE_SCRIPT, 'utf8').match(/const FIXTURE_JSON = `([\s\S]*?)`;/);
@@ -96,11 +96,11 @@ test('node 侧对拍输出单行合法 JSON 且快照有判别力（自身合法
 
 test('作用域快照与 py 端逐字节一致', (t) => {
   if (!fs.existsSync(PY_SCRIPT)) {
-    t.skip('相邻 py-store 仓缺失，跳过对拍');
+    t.skip('[环境依赖] 相邻 py-store 仓缺失，跳过对拍');
     return;
   }
   if (!hasPython()) {
-    t.skip('本机无 python，跳过对拍');
+    t.skip('[环境依赖] 本机无 python，跳过对拍');
     return;
   }
   const nodeOut = runNode().trim();

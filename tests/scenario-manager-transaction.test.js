@@ -112,6 +112,6 @@ mountScenarioMatrix({
   harness,
   cases: CASES,
   suiteLabel: 'manager-transaction',
-  extraSkip: (kind, c) => (c.backends && !c.backends.includes(kind) ? 'backends 子集限定' : null),
+  extraSkip: (kind, c) => (c.backends && !c.backends.includes(kind) ? '[环境依赖] 用例 backends 白名单不含此后端（跨后端语义差异，非缺测）' : null),
   writeReport: writeManagerReport,
 });

@@ -332,7 +332,7 @@ defineSuite(
       return { vc_mongodb: client.db() };
     } catch (e) {
       await client.close().catch(() => {});
-      return `mongodb 实例不可达 / 不支持 $vectorSearch: ${_errText(e)}`;
+      return `[环境依赖] mongodb 实例不可达 / 不支持 $vectorSearch: ${_errText(e)}`;
     }
   },
   async () => {

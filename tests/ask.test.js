@@ -605,7 +605,7 @@ describe('llm · OpenAI 兼容工厂（D6）', () => {
 describe('conformance · 与 py-store 逐字节一致（GQL / 错误前缀 / 事件形状）', () => {
   it('ask_knowledge.md 正文与 py-store 基线逐字节一致（剥离端差异化头注释后）', (t) => {
     const pyPath = path.join(__dirname, '..', '..', 'py-store', 'src', 'py_store', 'ask_knowledge.md');
-    if (!fs.existsSync(pyPath)) return t.skip('py-store 基线不存在（非 monorepo 环境）');
+    if (!fs.existsSync(pyPath)) return t.skip('[环境依赖] py-store 基线不存在（非 monorepo 环境）');
     const stripHeader = (s) => s.replace(/^<!--[\s\S]*?-->\r?\n/, '');
     const nodeText = stripHeader(fs.readFileSync(path.join(__dirname, '..', 'src', 'ask_knowledge.md'), 'utf8'));
     const pyText = stripHeader(fs.readFileSync(pyPath, 'utf8'));

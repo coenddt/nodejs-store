@@ -54,7 +54,7 @@ const state = { mongoReady: false, mysqlReady: false, reason: '[环境依赖] �
 
 async function setupMongo() {
   const client = await probeMongo(MONGO_URI, (e) => {
-    state.reason = `MongoDB 不可达（${MONGO_URI}）: ${e.message}`;
+    state.reason = `[环境依赖] MongoDB 不可达（${MONGO_URI}）: ${e.message}`;
   });
   if (!client) return null;
   const db = client.db();
@@ -69,7 +69,7 @@ async function setupMysql() {
   try {
     await pool.query('SELECT 1');
   } catch (e) {
-    state.reason = `MySQL 不可达（${MYSQL_URI}）: ${e.message}`;
+    state.reason = `[环境依赖] MySQL 不可达（${MYSQL_URI}）: ${e.message}`;
     await pool.end().catch(() => {});
     return null;
   }
