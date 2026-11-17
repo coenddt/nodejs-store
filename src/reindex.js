@@ -8,7 +8,7 @@
 const crypto = require('node:crypto');
 
 const schema = require('./schema');
-const feedback = require('./feedback');
+const feedback = require('./feedback-core');
 const triggerExec = require('./crud/triggers');
 
 const DEFAULT_PAGE = 200;

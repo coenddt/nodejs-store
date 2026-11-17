@@ -20,10 +20,25 @@
 
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { getCore, get: _getSchema } = require('./schema');
-const { emit: _emitFeedback } = require('./feedback');
+const { emit: _emitFeedback } = require('./feedback-core');
+const {
+  NonAtomicWriteError, PushdownUnsupportedError, RawSqlError, NativeCommandError,
+} = require('./errors');
 const executors = require('./executors');
 const vectorScan = require('./vector-scan');
 const degraded = require('./degraded');
+
+// D4-1 解环：Session「会话 API」门面（query/insert/…，与 Store 同名同形）原本函数内
+// require('./crud')，形成 crud→claim/exec→datasource→crud 加载环（madge 环 1）。
+// 改为反向注入：crud/index.js 加载完成时把模块对象注入本表（crud→datasource 单向，
+// 不回指），调用期再经 _crud() 取用——加载图上 datasource 不再指向 crud。
+let _crudModule = null;
+/** crud/index.js 加载完成时调用（包内注入口，非公共 API） */
+function _bindCrudModule(m) { _crudModule = m; }
+function _crud() {
+  if (!_crudModule) throw new Error('ERR:INTERNAL crud 模块未注入（应经 nodejs-store 主入口加载）');
+  return _crudModule;
+}
 
 const DEFAULT_SOURCE = 'default';
 
@@ -61,51 +76,13 @@ function isWriteCommand(cmd) {
   return !!cmd && WRITE_KINDS.has(cmd.kind);
 }
 
-/** 会话内写入了多个数据源：跨源写无法原子（fail-closed，绝不静默提交半截） */
-class NonAtomicWriteError extends Error {
-  constructor(sources) {
-    const list = Array.from(sources).sort();
-    super(
-      `会话内写入了多个数据源（${list.join(', ')}）：跨源写无法原子（Phase 1 未提供分布式事务）；请拆分为多个会话，或改用单一数据源`,
-    );
-    this.name = 'NonAtomicWriteError';
-    this.sources = list;
-  }
-}
+// NonAtomicWriteError / PushdownUnsupportedError / RawSqlError / NativeCommandError
+// 已下沉 ./errors（D4-1 解环：executors/mongo、crud/claim 只需错误类，不再回指本模块）；
+// 本模块经顶部 require 解构引入，module.exports 保持原导出面。
 
 /** 当前生效会话（无则 null） */
 function currentSession() {
   return _sessionStore.getStore() || null;
-}
-
-/**
- * SQL 下推遇到无法安全翻译的组合（core 标记 unsupported）
- *
- * 显式报错而非静默执行「缺少该段」的 SQL（会返回错误结果）；
- * 自动反馈：触发原因见 message，修复指引见 feedback()。
- */
-class PushdownUnsupportedError extends Error {
-  constructor(source, kind, codes, warnings) {
-    super(`SQL 下推不支持（${kind}）: ${codes.join(', ')}；${warnings.join(' / ')}`);
-    this.name = 'PushdownUnsupportedError';
-    this.source = source;
-    this.kind = kind;
-    this.codes = codes;
-    this.warnings = warnings;
-  }
-
-  /** 转统一反馈事件（与 feedback.emit 的事件形状一致） */
-  feedback() {
-    return {
-      type: 'sql_pushdown_unsupported',
-      code: 'pushdownUnsupported',
-      layer: 'dialect',
-      message: this.message,
-      hint: '改写查询避开该组合，或改用 Mongo 源执行该段取数',
-      source: this.source,
-      kind: this.kind,
-    };
-  }
 }
 
 /** Mongo 形态判别：db 实例（collection 为函数）或 MongoClient（db 为函数且无 collection） */
@@ -620,14 +597,6 @@ async function _execSqlDirect(source, connection, cmd) {
   return executors.shapeResult(cmd, out);
 }
 
-/** 原生 SQL 入口的显式错误（非 SQL 源 / 执行器未接入） */
-class RawSqlError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = 'RawSqlError';
-  }
-}
-
 /**
  * 在指定 SQL 源上执行原生 SQL（Host 层逃生口，编译由 core 的 rawStmtCompile 完成）
  *
@@ -667,14 +636,6 @@ async function executeRaw(source, sql, params = null, isWrite = null) {
   const stmt = { text: compiled.sql, params: compiled.params, isWrite: compiled.isWrite };
   const out = await conn.exec({ stmts: [stmt] });
   return { rows: out.rows ?? null, affectedRows: Number(out.affectedRows || 0) };
-}
-
-/** 原生 Mongo 命令入口的显式错误（非 Mongo 源 / 非 Mongo 形态） */
-class NativeCommandError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = 'NativeCommandError';
-  }
 }
 
 /** 聚合管道是否为写管道：任一阶段含 `$merge` / `$out`（Mongo 的写出口）。
@@ -979,62 +940,62 @@ class Session {
   // ---------- 会话 API（与 Store 同名同形，委托 crud） ----------
 
   async query(...a) {
-    const crud = require('./crud');
+    const crud = _crud();
     return crud.query(...a);
   }
 
   async queryOne(...a) {
-    const crud = require('./crud');
+    const crud = _crud();
     return crud.queryOne(...a);
   }
 
   async queryWithCount(...a) {
-    const crud = require('./crud');
+    const crud = _crud();
     return crud.queryWithCount(...a);
   }
 
   async insert(...a) {
-    const crud = require('./crud');
+    const crud = _crud();
     return crud.insert(...a);
   }
 
   async insertMany(...a) {
-    const crud = require('./crud');
+    const crud = _crud();
     return crud.insertMany(...a);
   }
 
   async update(...a) {
-    const crud = require('./crud');
+    const crud = _crud();
     return crud.update(...a);
   }
 
   async updateMany(...a) {
-    const crud = require('./crud');
+    const crud = _crud();
     return crud.updateMany(...a);
   }
 
   async upsert(...a) {
-    const crud = require('./crud');
+    const crud = _crud();
     return crud.upsert(...a);
   }
 
   async remove(...a) {
-    const crud = require('./crud');
+    const crud = _crud();
     return crud.remove(...a);
   }
 
   async exists(...a) {
-    const crud = require('./crud');
+    const crud = _crud();
     return crud.exists(...a);
   }
 
   async count(...a) {
-    const crud = require('./crud');
+    const crud = _crud();
     return crud.count(...a);
   }
 
   async mutation(...a) {
-    const crud = require('./crud');
+    const crud = _crud();
     return crud.mutation(...a);
   }
 
@@ -1085,6 +1046,8 @@ module.exports = {
   PushdownUnsupportedError,
   RawSqlError,
   NativeCommandError,
+  // D4-1 解环注入口（包内协作，非公共 API）
+  _bindCrudModule,
   // parity 锚与内部件（下划线内部语义）
   _claimTwoStep,
   _execClaim,

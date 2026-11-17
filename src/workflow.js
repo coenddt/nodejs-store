@@ -22,7 +22,7 @@ const {
   requireContext: _requireContext,
 } = require('./schema');
 const crud = require('./crud');
-const { emit: _emitFeedback } = require('./feedback');
+const { emit: _emitFeedback } = require('./feedback-core');
 const { getContext, _als } = require('./permission');
 const { _call, sourcesOf: _sourcesOf, runAtomic } = require('./crud/exec');
 const { _newIdPool } = require('./crud/id');

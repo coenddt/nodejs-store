@@ -35,7 +35,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const crud = require('./crud');
-const feedback = require('./feedback');
+const feedback = require('./feedback-core');
 const permission = require('./permission');
 const schema = require('./schema');
 const { withScope } = require('./scope');

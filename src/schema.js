@@ -12,7 +12,7 @@
  */
 
 const native = require('./core');
-const { emit: _emitFeedback } = require('./feedback');
+const { emit: _emitFeedback } = require('./feedback-core');
 const scope = require('./scope');
 
 /** Rust core 注册表（全项目共享单例） */

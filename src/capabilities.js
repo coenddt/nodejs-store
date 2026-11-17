@@ -7,7 +7,7 @@
 const { list, get } = require('./schema');
 const native = require('./core');
 const datasource = require('./datasource');
-const { emit } = require('./feedback');
+const { emit } = require('./feedback-core');
 
 function _backendOf(connection) {
   const kind = datasource.kindOf(connection);

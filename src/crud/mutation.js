@@ -5,7 +5,7 @@
  */
 
 const { getCore, get: _getSchema } = require('../schema');
-const { emit: _emitFeedback } = require('../feedback');
+const { emit: _emitFeedback } = require('../feedback-core');
 const { _call, _ctx, _exec, _nowFor, resolvePlaceholders, runAtomic, sourcesOf } = require('./exec');
 const { _generateId, _newIdPool } = require('./id');
 const { applyWriteComputes } = require('./write');

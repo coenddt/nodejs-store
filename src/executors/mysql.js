@@ -51,7 +51,7 @@ function create(driver, _options = {}) {
    * + beginTransaction + 幂等 commit/rollback；release 归还连接（单连接为 no-op）。
    */
   async function openTransaction() {
-    const { openAcquire } = require('./index'); // 延迟导入：避免与 index 的循环依赖
+    const { openAcquire } = require('./open'); // D4-1 解环：openAcquire 下沉零依赖模块，驱动不再回指索引
     const { conn, release } = await openAcquire(driver);
     await conn.beginTransaction();
     let closed = false;

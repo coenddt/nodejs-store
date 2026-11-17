@@ -18,7 +18,7 @@
  * 对齐 py_store/ddl.py（两端输出逐字节一致）。
  */
 
-const { emit: _emitFeedback } = require('./feedback');
+const { emit: _emitFeedback } = require('./feedback-core');
 const { translateName } = require('./core');
 const schema = require('./schema');
 

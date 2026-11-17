@@ -22,7 +22,7 @@
 const { core: _core } = require('../schema');
 const { _ctx } = require('../crud/exec');
 const { runTriggers } = require('../crud/triggers');
-const { emit: _emitFeedback } = require('../feedback');
+const { emit: _emitFeedback } = require('../feedback-core');
 
 // ─── cron 5 段匹配器（分 时 日 月 周） ─────────────────────────
 

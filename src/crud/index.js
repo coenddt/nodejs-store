@@ -59,3 +59,9 @@ module.exports = {
   _call,
   _exec,
 };
+
+// D4-1 解环：向 datasource 反向注入本模块（Session「会话 API」门面调用期取用），
+// 替代 datasource 内部对 './crud' 的静态/惰性 require——加载图上 datasource
+// 不再指向 crud，环 crud→claim/exec→datasource→crud 断开。
+// 时序：crud/index 顶层 require('./exec') 时 datasource 已加载完成，此处必可解析。
+require('../datasource')._bindCrudModule(module.exports);

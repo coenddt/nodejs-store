@@ -5,12 +5,18 @@
  * 消除装配期快照陷阱（注册完才挂载，见 store-api/spec/01-routing.md:3）。
  * 可选参数：02 回调注入（fns）、03 反馈默认接线（feedback/tenant/env）。
  *
- * 注意：`init` / `store` 用惰性 require——index.js 顶部 require 本模块，
- * 若此处顶层 require('./index') 会拿到尚未赋值的循环导出（空对象）。
+ * D4-1 解环：`init` / `store` 由 index.js 加载完成时经 `_bindDeps` 注入
+ * （原为函数内惰性 require('./index')，与 index.js 顶部 require 本模块互指成环）。
+ * 本模块仅被 index.js 引用（包内唯一消费方），经主入口加载时依赖必已注入。
  */
 
+// index.js 加载完成时注入（包内注入口，非公共 API）
+let _deps = null;
+function _bindDeps(d) { _deps = d; }
+
 async function createApp(cfg) {
-  const { init, store } = require('./index');
+  if (!_deps) throw new Error('ERR_BOOTSTRAP:依赖未注入（应经 nodejs-store 主入口 require createApp）');
+  const { init, store } = _deps;
   const {
     datasource,          // 必填：传给 init 的数据源（Mongo db 实例或 {default: ...} 配置）
     schemas = [],        // 定义数组（纯 JSON；每项即 register 的入参）
@@ -61,4 +67,4 @@ async function createApp(cfg) {
   };
 }
 
-module.exports = { createApp };
+module.exports = { createApp, _bindDeps };

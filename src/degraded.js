@@ -8,7 +8,7 @@
  */
 
 const { AsyncLocalStorage } = require('node:async_hooks');
-const { emit } = require('./feedback');
+const { emit } = require('./feedback-core');
 
 const _als = new AsyncLocalStorage();
 

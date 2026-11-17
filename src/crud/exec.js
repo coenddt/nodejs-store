@@ -16,7 +16,7 @@
 const { PermissionError, NoContextError, getContext } = require('../permission');
 const datasource = require('../datasource');
 const { execMongo } = require('../executors/mongo');
-const { emit: _emitFeedback } = require('../feedback');
+const { emit: _emitFeedback } = require('../feedback-core');
 const { get: _getSchema } = require('../schema');
 const { _toMongo, _toLogical } = require('../naming');
 const vectorScan = require('../vector-scan');

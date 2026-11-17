@@ -15,7 +15,7 @@
 const crypto = require('node:crypto');
 
 const native = require('../core');
-const { emit: _emitFeedback } = require('../feedback');
+const { emit: _emitFeedback } = require('../feedback-core');
 const providers = require('./providers');
 
 const DEFAULT_SCHEMA = {

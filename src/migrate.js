@@ -28,7 +28,7 @@ const { core } = require('./schema');
 const { MetaDefError, _stableStringify, _runInternal, _MIGRATION } = require('./metadef');
 const crud = require('./crud');
 const { runInTransaction, executeRaw } = require('./datasource');
-const { emit: emitFeedback } = require('./feedback');
+const { emit: emitFeedback } = require('./feedback-core');
 
 /** 白名单外变更的固定分步建议（契约逐字；MigrationUnsupported 消息必须原文携带） */
 const _UNSUPPORTED_HINT = '白名单外变更请分两版走：先加新列并回填，确认切换后再于下一版删除旧列';

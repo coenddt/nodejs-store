@@ -21,7 +21,7 @@
  * README「声明式并发原语」）。
  */
 
-const { PushdownUnsupportedError } = require('../datasource');
+const { PushdownUnsupportedError } = require('../errors'); // D4-1 解环：错误类下沉，claim 不再回指 datasource
 const { getCore, get: _getSchema } = require('../schema');
 const { _call, _nowFor, _ctx, runAtomicCommands } = require('./exec');
 

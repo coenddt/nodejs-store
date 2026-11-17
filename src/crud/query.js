@@ -6,7 +6,7 @@
  */
 
 const { getCore, getAsyncFn, getProfile } = require('../schema');
-const { emit: _emitFeedback } = require('../feedback');
+const { emit: _emitFeedback } = require('../feedback-core');
 const degraded = require('../degraded');
 const {
   _call, _ctx, _exec, _execOn, resolvePlaceholders, ProfileViolation, _PROFILE_HINT,

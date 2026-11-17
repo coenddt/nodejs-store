@@ -8,7 +8,7 @@
  * provider 由接入方在实现缓存时经 setCacheStatus 注入，签名 (ctx) => 'HIT'|'MISS'|'BYPASS'。
  */
 
-const { emit } = require('./feedback');
+const { emit } = require('./feedback-core');
 
 const _VALUES = new Set(['HIT', 'MISS', 'BYPASS']);
 let _provider = null;

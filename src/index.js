@@ -833,3 +833,7 @@ module.exports = {
   AskExhausted: ask.AskExhausted,
   llm,
 };
+
+// D4-1 解环：bootstrap 的 init/store 依赖在此注入（bootstrap 不再回指本模块，
+// index→bootstrap 保持单向）；必须置于 module.exports 赋值之后（init/store 已定义）。
+require('./bootstrap')._bindDeps({ init, store });
