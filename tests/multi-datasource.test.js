@@ -21,51 +21,22 @@
  *   `rust-store/core/tests/pushdown_usecases.rs`。
  *
  * 运行：node scripts/test.js（置 LOCAL_CORE=1 使用仓库内 Rust 核心）
+ *
+ * D4-4 零语义拆分：Mongo 双形态桩（FakeDb / FakeClient）与清空 permission 上下文的
+ * before 钩子下沉 ../test-support/multi-datasource-fixtures.js（用例前 require，钩子
+ * 注册顺序不变）；用例名、断言与注释逐字未改。
  */
 
 const boot = require('./helpers/boot');
 const {
-  test, before, Database,
-  src: { init, store, executors, permission, schema: _sc },
+  test, Database,
+  src: { init, store, executors, schema: _sc },
 } = boot;
 // assert 带断言签名（asserts），checkJs 下要求调用目标有显式类型注解（TS2775）
 /** @type {typeof import('node:assert/strict')} */
 const assert = boot.assert;
 const datasource = require('../src/datasource');
-// 内存 Mongo 桩改用 tests 共享超集版（零语义论证见 helpers/mem-mongo.js 头注释）
-const { MemColl } = require('./helpers/mem-mongo');
-
-/** Mongo db 实形态（collection 为函数）：固定库，无法跨库 */
-class FakeDb {
-  /** colls: { 集合名: docs[] } */
-  constructor(colls) {
-    this.colls = colls || {};
-    this.accessed = [];
-  }
-
-  collection(name) {
-    this.accessed.push(name);
-    return new MemColl(this.colls[name]);
-  }
-}
-
-/** MongoClient 形态（db 为函数且无 collection）：按 database 动态取库 */
-class FakeClient {
-  constructor() {
-    this.dbs = Object.create(null);
-    this.dbNames = [];
-  }
-
-  db(name) {
-    this.dbNames.push(name);
-    if (!this.dbs[name]) this.dbs[name] = new FakeDb({});
-    return this.dbs[name];
-  }
-}
-
-before(() => {
-  permission.setContext(undefined);
-});
+const { FakeDb, FakeClient } = require('../test-support/multi-datasource-fixtures');
 
 // ─── B1：双 db 实例，同名集合，各查各库 ──────────────────────
 
