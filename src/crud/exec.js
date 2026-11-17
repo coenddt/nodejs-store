@@ -11,19 +11,18 @@
  * 定位四元组，按 `source` 选连接、`database`（PG 另加 `schema`）定位连接内的库/schema
  * （Mongo 双形态严格校验），Mongo 走原生驱动（命令先经 `./naming` 翻译为物理名、
  * 结果再回映射为逻辑名），SQL 走 `translate → exec`。
+ *
+ * D4-4 零语义拆分：命令执行 IO 边界下沉 ./exec-io，占位符替换与 atomic_commands
+ * 执行管道下沉 ./placeholder，本文件保留权限/档位映射与多源编排；导出面
+ * （键名 / 键序 / 语义）与拆分前逐字一致。
  */
 
 const { PermissionError, NoContextError, getContext } = require('../permission');
 const datasource = require('../datasource');
-const { execMongo } = require('../executors/mongo');
 const { emit: _emitFeedback } = require('../feedback-core');
 const { get: _getSchema } = require('../schema');
-const { _toMongo, _toLogical } = require('../naming');
-const vectorScan = require('../vector-scan');
-const degraded = require('../degraded');
-
-const _PHASE1_IDS = /^\{\{phase1\.ids\}\}$/;
-const _STEP_PH = /^\{\{step\.(\d+)\._id\}\}$/;
+const { _exec, _execOn } = require('./exec-io');
+const { _substitute, resolvePlaceholders, runAtomicCommands } = require('./placeholder');
 
 /**
  * 权限类错误识别：core 权限错误统一携带 `ERR_PERMISSION:` 稳定前缀（见 core
@@ -125,83 +124,6 @@ function _call(fn) {
   }
 }
 
-// ─── 命令执行（唯一 IO 边界） ────────────────────────────────
-
-/**
- * Mongo 原生执行 + 向量降级（03 §4.7）
- *
- * 真实驱动不认 `$vectorSearch`（非 Atlas / 未建向量索引）时，捕获该形态错误后
- * 取候选行 → core `localEval` 精确打分。`$vectorSearch.metric` 是 core 内部元数据键，
- * 只在物理命令副本上剥离（local 求值仍需该键）。
- */
-async function _execMongoVector(db, cmd, session) {
-  try {
-    return _toLogical(
-      await execMongo(db, vectorScan.stripVectorMeta(_toMongo(cmd)), session),
-      cmd,
-    );
-  } catch (e) {
-    if (!vectorScan.canScan(cmd, 'mongo') || !vectorScan.isUnsupportedStageError(e)) throw e;
-    const spec = cmd.pipeline[0].$vectorSearch;
-    degraded.vectorDegraded({
-      backend: 'mongodb',
-      field: spec.path,
-      metric: spec.metric,
-      message: vectorScan.DEGRADED_MESSAGES.mongodb,
-      hint: vectorScan.DEGRADED_HINT,
-    });
-    return vectorScan.scan(cmd, {
-      exec: async (candidate) => _toLogical(
-        await execMongo(db, vectorScan.stripVectorMeta(_toMongo(candidate)), session),
-        candidate,
-      ),
-    });
-  }
-}
-
-/** 在指定数据源上执行命令（Mongo 走原生驱动，SQL 走 translate → exec；
- * 事务 / 会话作用域内经 datasource.resolveConnection 落到事务专用连接） */
-async function _execOn(source, cmd) {
-  const connection = await datasource.resolveConnection(source, datasource.isWriteCommand(cmd));
-  // 嵌入式载体（local / memory）：与 Mongo 同路径（复用 execMongo）
-  // 按命令的 database 取该库分区手柄；缺省回落描述符自身 handle（向后兼容）
-  if (datasource.isEmbeddedConnection(connection)) {
-    const db = typeof connection.handleFor === 'function'
-      ? connection.handleFor(cmd.database ?? null)
-      : connection.handle;
-    // 嵌入式载体（local / memory）无原生近似索引：向量查询恒为应用层精确检索，
-    // 须显式声明降级（06 §4.6 C10；native 是静态能力，不因此改变）
-    if (vectorScan.canScan(cmd, datasource.kindOf(connection))) {
-      const spec = cmd.pipeline[0].$vectorSearch;
-      const kind = datasource.kindOf(connection);
-      degraded.vectorDegraded({
-        backend: kind,
-        field: spec.path,
-        metric: spec.metric,
-        message: vectorScan.DEGRADED_MESSAGES[kind],
-        hint: vectorScan.DEGRADED_HINT,
-      });
-    }
-    return _toLogical(await execMongo(db, _toMongo(cmd)), cmd);
-  }
-  if (connection && connection.kind === 'mongo') {
-    // Mongo 事务视图：db 按命令 database 解析，session 透传给驱动
-    const db = datasource.mongoDb(connection.conn, source, cmd.database ?? null);
-    return _execMongoVector(db, cmd, connection.session);
-  }
-  const db = datasource.mongoDb(connection, source, cmd.database ?? null);
-  if (db) {
-    // Mongo 物理名翻译（逻辑 → camelCase）；执行后按 schema 逆表回映射（物理 → 逻辑）
-    return _execMongoVector(db, cmd, undefined);
-  }
-  return datasource.execSql(source, connection, cmd);
-}
-
-/** Command JSON → 按命令自带的 `source` 路由（不按 collection 反查） */
-async function _exec(cmd) {
-  return _execOn(cmd.source || datasource.DEFAULT_SOURCE, cmd);
-}
-
 /** 单命令源收集：命令非空则记入 out（source 缺省回 DEFAULT_SOURCE） */
 function _collectCmdSource(out, cmd) {
   const c = cmd || {};
@@ -278,106 +200,6 @@ async function runAtomic(sources, fn) {
     warnMultiSource(uniq);
   }
   return fn();
-}
-
-/** 深度替换命令中的占位符（命中 resolver 返回非字符串时替换） */
-function _substitute(value, resolver) {
-  if (typeof value === 'string') return resolver(value);
-  if (Array.isArray(value)) return value.map((v) => _substitute(v, resolver));
-  if (value && typeof value === 'object') {
-    const out = {};
-    for (const [k, v] of Object.entries(value)) out[k] = _substitute(v, resolver);
-    return out;
-  }
-  return value;
-}
-
-/**
- * Host 契约：把命令中的占位符替换为执行结果
- *
- *   - `{{phase1.ids}}`     → 两阶段查询第一步取回的 id 数组（整值替换）
- *   - `{{step.<N>._id}}`   → mutation 第 N 步执行结果的 _id
- *
- * 未命中的占位符原样保留（便于定位 core 与 Host 的契约漂移）。
- * Python 侧 `py_store.crud.exec.resolve_placeholders` 为同语义实现，
- * 两侧共测 `rust-store/fixtures/host/placeholders.json`。
- */
-function resolvePlaceholders(command, { ids = null, steps = [] } = {}) {
-  return _substitute(command, (s) => {
-    if (_PHASE1_IDS.test(s)) return ids ?? s;
-    const m = s.match(_STEP_PH);
-    if (m) {
-      const idx = Number(m[1]);
-      if (idx < steps.length) return steps[idx];
-    }
-    return s;
-  });
-}
-
-const _CLAIMED_IDS = '___claimed_ids___';
-const _MODE_ATOMIC = 'atomic_commands';
-
-/**
- * atomic_commands 专用占位符替换：`___claimed_ids___` → 领取到的 _id 数组
- *
- * 与 `{{phase1.ids}}` 分开实现（two_phase 与 claim 各用各的替换入口），契约同源：
- * 整值替换（字符串整体匹配才替换）；未命中原样保留——token 残留会让 SQL 因非法
- * 语法显式报错（no-error-masking：禁静默当作空集执行）。
- */
-function _fillClaimed(command, ids) {
-  return _substitute(command, (s) => (s === _CLAIMED_IDS ? ids : s));
-}
-
-/** 从 claim 命令的执行包络提取领取到的 _id 列表
- *
- * 三后端 rows 形状统一含 `_id`：MySQL/PG 为 stmt1 `SELECT _id` 的行；SQLite 为
- * `UPDATE … RETURNING` 的完整行。行缺 `_id` 视为契约漂移——跳过而非静默顶替
- * （禁伪造领取结果）。
- */
-function _claimedIdsOf(env) {
-  const rows = (env && typeof env === 'object' ? env.rows : null) || [];
-  return rows
-    .filter((r) => r && typeof r === 'object' && '_id' in r)
-    .map((r) => r._id);
-}
-
-/**
- * atomic_commands mode 执行器（claim / compareAndSet 的执行管道）
- *
- *   - mode 校验：仅接受 `atomic_commands`，其余显式报错（禁静默走通用路径——
- *     该 mode 的语义是「全部命令同连接同事务内顺序执行」，走通用路径会丢失原子性）；
- *   - 事务包裹：`datasource.runInTransaction`（claim 的 SELECT FOR UPDATE SKIP
- *     LOCKED 与标记 UPDATE 必须同一作用域）；
- *   - 占位符回填：前条 claim 包络的 _id 列表（`___claimed_ids___` 整值替换）→
- *     末条取行命令；零领取（rows 空）直接返回空、不执行后续命令；
- *   - 方言已随领取语句取回完整还原行（如 SQLite 的 `UPDATE … RETURNING`）→
- *     直接作为领取结果，不再执行取行命令；
- *   - compareAndSet 为单命令 plan：直接执行并返回包络（matched 从包络读，
- *     见 crud/claim.js）。对齐 py_store `crud/exec.py#run_atomic_commands`。
- */
-async function runAtomicCommands(source, plan) {
-  const mode = (plan || {}).mode;
-  if (mode !== _MODE_ATOMIC) {
-    throw new Error(
-      `runAtomicCommands 仅接受 mode='${_MODE_ATOMIC}'，实际 ${JSON.stringify(mode)}`
-      + '（禁静默走通用路径：atomic_commands 的同事务语义不可降级）');
-  }
-  const commands = plan.commands || [];
-  if (commands.length === 0) {
-    throw new Error('atomic_commands plan 缺少 commands（禁静默空执行）');
-  }
-
-  async function _do() {
-    const env = await _exec(commands[0]);
-    if (commands.length === 1) return env;
-    const docs = env && typeof env === 'object' ? env.docs : null;
-    if (docs !== null && docs !== undefined) return docs;
-    const ids = _claimedIdsOf(env);
-    if (ids.length === 0) return [];
-    return _exec(_fillClaimed(commands[1], ids));
-  }
-
-  return datasource.runInTransaction(source, _do);
 }
 
 module.exports = {
