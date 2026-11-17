@@ -9,103 +9,39 @@
  *   3. 保留 asyncFn 原生函数映射（闭包无法跨 FFI，由 Host 在读路径尾处理执行）；
  *   4. 保留 Host 必需的元数据镜像（collection / idPrefix / indexes / relations），
  *      供 ID 生成与索引创建使用。
+ *
+ * D4-4 零语义拆分：core 门面视图（base / 作用域视图）下沉 ./schema/core-view，
+ * Host 元数据镜像与跨 FFI 定义整形下沉 ./schema/mirror，策略开关委托下沉
+ * ./schema/policy，本文件保留注册/注销/查询编排；导出面（键名 / 键序 / 语义）
+ * 与拆分前逐字一致。
  */
 
-const native = require('./core');
 const { emit: _emitFeedback } = require('./feedback-core');
-const scope = require('./scope');
-
-/** Rust core 注册表（全项目共享单例） */
-const core = new native.Registry();
-
-/**
- * 取当前生效的 core 门面（R2 双端宿主作用域）：作用域内回退到该作用域的派生视图，否则 base。
- *
- *   - 未进入作用域（无 `withScope`）→ 恒等 base `core`（零行为变化，fail-open 姿态不变）；
- *   - 进入作用域 → 返回 `scope.currentView()`（派生 Registry，策略覆盖只作用于本作用域）；
- *   - 视图为只读：写类调用（register/setXxx）由 core 守卫抛 `ERR_POLICY_VIEW_READONLY:`。
- *
- * 禁模块级/跨 await 缓存返回值（03 §7）：每个调用点现场取。
- */
-function getCore() {
-  return scope.currentView() ?? core;
-}
-
-/**
- * 取 base core 门面（恒 base，无视作用域）：协议皮派生视图的唯一合法起点
- * （R2-04 §4.1 `store.baseView()`；皮侧禁自持 `new Registry()`——§7）。
- * 与 `getCore()` 的区别：getCore 作用域内返回派生视图，getBase 恒返回 base。
- */
-function getBase() {
-  return core;
-}
+const { core, getCore, getBase } = require('./schema/core-view');
+const {
+  _schemas,
+  _asyncFns,
+  _fnImpls,
+  _normKey,
+  _logicalFnRef,
+  _coreFnKey,
+  _locOf,
+  _toCoreDefn,
+  _mirror,
+} = require('./schema/mirror');
+const {
+  setRequireContext,
+  requireContext,
+  setExemptRoles,
+  setDenyWriteRoles,
+  setUnconfiguredPolicy,
+  setMetaPolicy,
+  setProfile,
+  getProfile,
+} = require('./schema/policy');
 
 // 重复名去重签名（同一重复形态只告警一次，避免 list() 高频调用刷屏）
 const _dupSignatures = new Set();
-
-// Host 侧元数据镜像
-const _schemas = Object.create(null);
-
-// asyncFn 计算列回调映射（coreKey → 原生异步函数）
-const _asyncFns = Object.create(null);
-
-// L2 实现池：归一 key → { name, impl }（§8.2 匹配靠归一；禁静默覆盖）
-const _fnImpls = new Map();
-
-/** 归一 key：两侧都归一到 token 序列后 join（用 core 透出算法，禁宿主自实现） */
-function _normKey(name) {
-  return native.canonical(String(name)).join('');
-}
-
-/** 逻辑 fnRef（默认 `<schema.name>.<计算列key>`，§6.5） */
-function _logicalFnRef(schemaName, key, comp) {
-  return (comp && comp.fnRef) || `${schemaName}.${key}`;
-}
-
-/** core 侧回调查找键（保持 core 既有语义：显式 fnRef 优先，否则 key；cache.rs:47） */
-function _coreFnKey(key, comp) {
-  return (comp && comp.fnRef) || key;
-}
-
-/**
- * 落点键：由 _locOf 显式注入 Location，不进 core 定义（01 起定义零落点）
- */
-const _LOCATION_KEYS = ['database', 'schema'];
-
-/**
- * 单条 defn 的落点注入（Location）。
- *
- * 发布契约是「定义零落点」；但**既有** defn 仍可能带 `datasource`/`database`/`schema`
- * （多源路由的历史写法）。01 起 core 不再解析定义内落点字段 ⇒ 本层把它们**显式**注入
- * `Location`（与 06 装载器 / 07 federation 夹具的落点注入同构），否则 `source` 恒为
- * `default`、多源路由失效。缺省（无 `datasource`）⇒ `default`。
- */
-function _locOf(defn) {
-  return {
-    source: (defn && defn.datasource) || null,
-    database: (defn && defn.database) || null,
-    schema: (defn && defn.schema) || null,
-  };
-}
-
-/**
- * 生成可跨 FFI 的 schema 定义：fn/asyncFn → true 占位；函数型值剔除
- *
- * 落点键（database/schema）不属 core 白名单（01 起「定义零落点」）：
- * 由 _locOf 显式注入 Location 后从定义中剔除，否则 core 注册期会以
- * 「含未知顶层键」拒绝（既有 defn 兼容由本层承担，core 不再放行）。
- */
-function _toCoreDefn(defn) {
-  const out = JSON.parse(JSON.stringify(defn, (key, value) => {
-    if (typeof value === 'function') {
-      // fn/asyncFn 声明占位（core 按 `fn: true` 识别）；函数型 default 无法跨 FFI，剔除
-      return key === 'fn' || key === 'asyncFn' ? true : undefined;
-    }
-    return value;
-  }));
-  for (const k of _LOCATION_KEYS) delete out[k];
-  return out;
-}
 
 /**
  * 注册一个 schema（自动派生 `<Name>Deleted` 归档表镜像），返回 Host 侧元数据。
@@ -117,112 +53,6 @@ function _toCoreDefn(defn) {
 function register(defn, ctx) {
   getCore().registerBatch([{ defn: _toCoreDefn(defn), location: _locOf(defn) }], ctx ?? null);
   return _mirror(defn);
-}
-
-/** 单个计算列的镜像与回调绑定：fn → core 回调桥；asyncFn → Host 侧映射 */
-function _mirrorCompute(defn, key, val, computes) {
-  const coreKey = _coreFnKey(key, val);          // core 查找键（本步不改 core 语义）
-  // 注2：仅「函数」才走内嵌绑定；纯 JSON `"fn": true`（boolean）不在此绑定，
-  //      由 assertFnsCovered 从 L2 实现池解析绑定（否则会绑定出坏回调）。
-  if (typeof val.fn === 'function') {
-    const userFn = val.fn;
-    // FFI 边界契约：JS `undefined` 无法表示为 JSON 值（core 回调桥 SyncFnBridge
-    // 对 fn 返回值做 serde 序列化，undefined 即 InvalidArg）；归一为 null——
-    // 与 py 侧 lambda 返回 None → null 同语义，非错误兜底
-    getCore().setFn(coreKey, (item, ctx) => {
-      const r = userFn(item, ctx);
-      return r === undefined ? null : r;
-    });
-  }
-  if (typeof val.asyncFn === 'function') _asyncFns[coreKey] = val.asyncFn;
-  // 镜像保留声明元数据（对齐 py_store.schema.register）：agg 形态与 read 白名单
-  // 供 AI 摘要（ask.describeForAi）等消费者读取；可执行物（fn/asyncFn）不入镜像
-  // （执行判决唯一在 core 规划 + Host 尾处理）
-  const meta = {};
-  for (const k of ['type', 'depends', 'agg', 'read']) {
-    if (k in val) meta[k] = val[k];
-  }
-  meta.fnRef = _logicalFnRef(defn.name, key, val);   // 逻辑 ref（默认 <name>.<key>）
-  computes[key] = meta;
-}
-
-/** 计算列回调镜像：fn → core 回调桥；asyncFn → Host 侧映射 */
-function _mirrorComputes(defn) {
-  const computes = {};
-  for (const [key, val] of Object.entries(defn.computes || {})) {
-    _mirrorCompute(defn, key, val, computes);
-  }
-  return computes;
-}
-
-/** 落点定位与时间戳标志（定义文件零落点；由装载器注入 defn） */
-function _hostMetaFlags(defn) {
-  return {
-    collection: defn.collection || defn.name,
-    // database = 连接内库（Mongo/MySQL/SQLite/PG），schema = 仅 PG 的 schema 层
-    database: defn.database || null,
-    schema: defn.schema || null,
-    idPrefix: defn.idPrefix || '',
-    timestamps: defn.timestamps !== false,
-    // 时间戳单位（'ms'/'s'/null=不维护）；值合法性由 core.register 校验
-    timestampUnit: defn.timestamps === 's' ? 's' : (defn.timestamps === false ? null : 'ms'),
-  };
-}
-
-/** 主模型 Host 镜像（含落点定位与归属键/行级权限元数据） */
-function _hostMetaOf(defn, computes) {
-  return {
-    name: defn.name,
-    ..._hostMetaFlags(defn),
-    fields: defn.fields || {},
-    relations: defn.relations || {},
-    computes,
-    indexes: defn.indexes || [],
-    datasource: defn.datasource || null,
-    read: defn.read,
-    write: defn.write,
-    // 归属键元数据镜像（漉金Core 接入扩展 01）：creator 伪角色判定/注入的键，
-    // 判决唯一在 core（缺省 createdBy 由 core 兜底）；值合法性由 core.register 校验
-    ownerKey: defn.ownerKey,
-    // 行级权限声明镜像（accessKeys）：判决唯一在 core，Host 仅镜像元数据；
-    // 归档镜像不继承（与 ownerKey 现状一致）
-    accessKeys: defn.accessKeys,
-  };
-}
-
-/** 归档表镜像（形状对齐 core archive_defn，供 Host 查询元数据）
- * —— 只补 Host 镜像，**不再调用 core.register**：`<Name>Deleted` 已由 core 在
- * register 内自动派生并注册（registry.rs），二次注册会让同名条目再进 core.order，
- * 使 list()/generate_ddl() 出现重复表（对齐 py `schema.register` 的既有处置）。
- * archive:false（漉金Core 接入扩展 02）→ 归档模型在 core 注册期即不派生，
- * Host 镜像同步跳过（与 core 模型表保持一致，禁出现「core 无归档模型而 Host 有镜像」的中间态） */
-function _mirrorArchive(defn) {
-  if (defn._isArchive || defn.name.endsWith('Deleted') || defn.archive === false) return;
-  _schemas[`${defn.name}Deleted`] = {
-    name: `${defn.name}Deleted`,
-    collection: `${defn.collection || defn.name}_deleted`,
-    database: defn.database || null,
-    schema: defn.schema || null,
-    idPrefix: '',
-    timestamps: true,
-    timestampUnit: 'ms',
-    fields: { ...(defn.fields || {}), deletedAt: { type: 'number' } },
-    relations: {},
-    computes: {},
-    indexes: defn.indexes || [],
-    // 归档表与原表同 (source, database, schema)
-    datasource: defn.datasource || null,
-    read: undefined,
-    write: undefined,
-  };
-}
-
-/** Host 侧元数据镜像 + 内嵌回调绑定（`register` 与 `registerBatch` 共用） */
-function _mirror(defn) {
-  const computes = _mirrorComputes(defn);
-  _schemas[defn.name] = _hostMetaOf(defn, computes);
-  _mirrorArchive(defn);
-  return _schemas[defn.name];
 }
 
 /** 按名称获取 Host 侧元数据 */
@@ -270,59 +100,6 @@ function list() {
     }
   }
   return out;
-}
-
-/**
- * 开关「上下文强制」（默认关闭 = fail-open，与 JS 原版语义一致）。
- *
- * 开启后：所有 plan 入口遇 ctx 缺失抛 `ERR_NO_CONTEXT` 错误（fail-secure）；
- * 内部调用（索引创建、归档回填、后台任务等）须显式传 `{ internal: true }` 上下文。
- */
-function setRequireContext(needCtx = true) {
-  getCore().setRequireContext(Boolean(needCtx));
-}
-
-/** 豁免角色清单（命中者在一切判决环节直接放行）。默认空——无豁免（清单化语义） */
-function setExemptRoles(roles) {
-  getCore().setExemptRoles(roles);
-}
-
-/** 拒写角色清单（命中者一切写路径拒绝，读不受影响）。默认空——无拒写 */
-function setDenyWriteRoles(roles) {
-  getCore().setDenyWriteRoles(roles);
-}
-
-/** schema 白名单缺失/为空时的默认姿态：'open'（默认，放行）| 'closed'（全拒） */
-function setUnconfiguredPolicy(policy) {
-  getCore().setUnconfiguredPolicy(policy);
-}
-
-/**
- * 定义层门禁策略：`closed=true` 时仅 internal 或 `roles` 白名单可注册/覆盖。
- * 判决唯一在 core；默认 Open（`register` 无 ctx 亦放行，保既有兼容）。
- */
-function setMetaPolicy(closed, roles) {
-  getCore().setMetaPolicy(Boolean(closed), roles);
-}
-
-/** 「上下文强制」开关当前值（对齐 py_store.schema.require_context） */
-function requireContext() {
-  return getCore().requireContext();
-}
-
-/**
- * 设置查询档位：`'standard'`（默认，功能最大化 + 跨 DB 对齐）/
- * `'text2query'`（功能收缩 + 硬限制）
- *
- * 判决唯一在 core；未知档位由 core 抛错（禁静默回落到默认档）。
- */
-function setProfile(profile) {
-  getCore().setProfile(profile);
-}
-
-/** 当前档位字符串（`'standard'` / `'text2query'`；对齐 py_store.schema.get_profile） */
-function getProfile() {
-  return getCore().profile();
 }
 
 /** 取 asyncFn 计算列实现（入参为 core 侧 fnRefs 查找键，即 coreKey） */
