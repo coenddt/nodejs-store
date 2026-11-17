@@ -10,6 +10,10 @@
  *   4. 不参与 datasource 命令路由（不碰 SQL_KINDS / mongoDb / _execOn）。
  *   5. 表名（schema）与字段名（fields）均可由业务自定义：表名经 `configure({schema})`，
  *      字段名经 `configure({fields})` 的「逻辑角色 → 物理字段」映射。缺省 = canonical。
+ *
+ * D4-4 零语义拆分：表名/字段映射常量与校验、provider 池构建与选取、configure
+ * 整体重赋值下沉 ./config（配置状态经 getCfg/getPool 现场取值），本文件保留
+ * 资源读写编排；导出面（键名 / 键序 / 语义）与拆分前逐字一致。
  */
 
 const crypto = require('node:crypto');
@@ -17,175 +21,31 @@ const crypto = require('node:crypto');
 const native = require('../core');
 const { emit: _emitFeedback } = require('../feedback-core');
 const providers = require('./providers');
-
-const DEFAULT_SCHEMA = {
-  resource: 'Resource',
-  location: 'ResourceLocation',
-  binding: 'ResourceBinding',
-};
-
-// 逻辑角色 → 物理字段名（canonical 缺省）。业务可经 configureResource({ fields }) 覆盖，
-// 使资源三表的字段结构由业务 schema 自定义；缺省 = canonical（向后逐字节兼容）。
-const DEFAULT_FIELDS = {
-  resource: { sha1: 'sha1', fileName: 'fileName', mime: 'mime', size: 'size', kind: 'kind' },
-  location: { resourceId: 'resourceId', backend: 'backend', key: 'key', status: 'status', priority: 'priority' },
-  binding: { resourceId: 'resourceId', businessTable: 'businessTable', businessId: 'businessId', userId: 'userId' },
-};
-
-// 必填角色：值为 null / 非空字符串之外的任何值 → configure 抛错（该列缺失则引擎无法定位）
-const REQUIRED_ROLES = {
-  resource: ['sha1'],
-  location: ['resourceId', 'backend', 'key'],
-  binding: ['resourceId', 'businessTable', 'businessId'],
-};
-
-/**
- * 解析并校验 `cfg.fields`：未知表 / 未知角色 → 抛错；
- * 必填角色须为非空字符串；可选角色为「非空字符串」或 `null`（`null` = 跳过该列）。
- */
-
-/** 单角色值校验：必填角色须非空字符串；可选角色非空字符串或 null（错误文案逐字不变） */
-function _validateRoleValue(table, role, v) {
-  const isStr = typeof v === 'string' && v !== '';
-  if (REQUIRED_ROLES[table].includes(role)) {
-    if (!isStr) throw new Error(`configureResource: fields.${table}.${role} 为必填角色，须为非空字符串`);
-  } else if (v !== null && !isStr) {
-    throw new Error(`configureResource: fields.${table}.${role} 须为非空字符串或 null`);
-  }
-}
-
-/** 单表解析：形状/未知角色校验 + 映射合并 + 逐角色校验，返回 mapped */
-function _parseTableFields(table, given) {
-  if (given === null || typeof given !== 'object') {
-    throw new Error(`configureResource: fields.${table} 须为对象`);
-  }
-  for (const role of Object.keys(given)) {
-    if (!(role in DEFAULT_FIELDS[table])) {
-      throw new Error(`configureResource: fields.${table} 未知角色: ${role}`);
-    }
-  }
-  const mapped = { ...DEFAULT_FIELDS[table], ...given };
-  for (const role of Object.keys(mapped)) {
-    _validateRoleValue(table, role, mapped[role]);
-  }
-  return mapped;
-}
-
-function _parseFields(raw = {}) {
-  if (raw === null || typeof raw !== 'object') {
-    throw new Error('configureResource: fields 须为对象');
-  }
-  for (const table of Object.keys(raw)) {
-    if (!(table in DEFAULT_FIELDS)) throw new Error(`configureResource: fields 未知表: ${table}`);
-  }
-  const out = {};
-  for (const table of Object.keys(DEFAULT_FIELDS)) {
-    out[table] = _parseTableFields(table, raw[table] === undefined ? {} : raw[table]);
-  }
-  return out;
-}
+const {
+  DEFAULT_SCHEMA,
+  DEFAULT_FIELDS,
+  getCfg,
+  getPool,
+  configure,
+  poolNames,
+  _requirePool,
+} = require('./config');
+const {
+  _locRow,
+  _LOC_GQL,
+  _META_GQL,
+  _resourceRow,
+  _bindingRow,
+} = require('./rows');
 
 // core 稳定前缀（与 ERR_PERM_PREFIX / ERR_GQL_PARSE 同构）：适配层按前缀判定 → 404，
 // 禁按中文文案匹配。仅「按 resourceId 查到零 ResourceLocation 行」时抛出；
 // provider get 失败走 lastErr 原样重抛（属 IO/降级故障，仍 500）。
 const ERR_RESOURCE_NOT_FOUND = 'ERR_RESOURCE_NOT_FOUND:';
 
-// 装配期由 configureResource 整体重赋值（形状随配置而变：schema/fields/store/providers/url/sign
-// 及池级覆盖），声明为开放记录以免把首版字面量的窄形状当成契约。
-/** @type {Record<string, any>} */
-let _cfg = {
-  schema: { ...DEFAULT_SCHEMA },
-  fields: _parseFields({}),
-  store: null,
-  providers: [],
-  url: {},
-  sign: null,
-};
-let _pool = new Map();
-// 命名池注册表（C2）：池名 → Map(kind → provider)。默认池恒名 "default"；
-// _pool 保留为默认池别名（兼容既有引用，禁删/禁改名）
-let _pools = new Map();
-
-function _buildPool(sub, { strict }) {
-  if (typeof sub !== 'object' || sub === null || Array.isArray(sub)) {
-    throw new Error('configureResource: pools.<名> 须为对象');
-  }
-  if (strict) {
-    // 命名池子形状仅接受 providers 键——schema/fields/store/url/sign 是全局配置，
-    // 池级出现即抛错（禁静默丢弃让用户误以为已按池生效）
-    for (const k of Object.keys(sub)) {
-      if (k !== 'providers') {
-        throw new Error(`configureResource: pools.<名>.${k} 不被接受（${k} 为全局配置不得按池分化；池级仅接受 providers）`);
-      }
-    }
-  }
-  const pool = new Map();
-  (sub.providers || []).forEach((spec, i) => {
-    const p = providers.createProvider(spec.kind, spec.options || {});
-    p.priority = Number.isInteger(spec.priority) ? spec.priority : i;
-    pool.set(spec.kind, p);
-  });
-  return pool;
-}
-
-/**
- * 配置资源能力。cfg 两种形状（互斥——同 cfg 同时出现 `providers` 与 `pools` 键抛错，禁静默合并）：
- *  ① 旧形状 `{providers, schema/fields/store/url/sign}` → 等价默认池 "default"（行为与 4.7.x 完全一致）；
- *  ② 新形状 `{pools: {"<池名>": {providers: [...]}, ...}, schema/...}` → 逐池独立构建
- *     （同 kind 双凭据 sys/biz 共存互不覆盖）；"default" 为保留池名，新形状中显式使用合法，但与旧形状互斥。
- *
- * 返回 `{"<池名>": <pool Map 拷贝>, ...}` 结构视图；模块级 _pool 仍指向默认池
- * （兼容既有引用；纯命名池未配 "default" 时为空 Map），`poolNames()` 枚举全池。
- */
-/** 池初始化（副作用落 _pools/_pool）：新形状逐池 strict 构建 / 旧形状等价默认池 */
-function _initPools(cfg) {
-  _pools = new Map();
-  if (cfg.pools != null) {
-    if (typeof cfg.pools !== 'object' || Array.isArray(cfg.pools) || !Object.keys(cfg.pools).length) {
-      throw new Error('configureResource: pools 须为非空对象');
-    }
-    for (const [name, sub] of Object.entries(cfg.pools)) {
-      _pools.set(name, _buildPool(sub, { strict: true }));
-    }
-  } else {
-    _pools.set('default', _buildPool(cfg, { strict: false }));
-  }
-  _pool = _pools.get('default') || new Map();
-}
-
-function configure(cfg = {}) {
-  if (cfg.providers && cfg.pools) {
-    throw new Error('configureResource: providers 与 pools 互斥（同一 cfg 只允许一种形状），禁静默合并');
-  }
-  _cfg = {
-    schema: { ...DEFAULT_SCHEMA, ...(cfg.schema || {}) },
-    fields: _parseFields(cfg.fields || {}),
-    store: cfg.store || null,
-    providers: Array.isArray(cfg.providers) ? cfg.providers.slice() : [],
-    url: cfg.url || {},
-    sign: typeof cfg.sign === 'function' ? cfg.sign : null,
-  };
-  _initPools(cfg);
-  return Object.fromEntries([..._pools.entries()].map(([k, v]) => [k, new Map(v)]));
-}
-
-/** 已配置池名列表（旧形状配置 → 恒 ['default']；只读快照） */
-function poolNames() {
-  return Array.from(_pools.keys());
-}
-
-/** 取池：null = 默认池；未知池名抛错（禁静默回落默认池） */
-function _requirePool(name) {
-  const key = name || 'default';
-  if (!_pools.has(key)) {
-    throw new Error(`未知资源池: ${key}（已配置: ${Array.from(_pools.keys()).join(', ')}）`);
-  }
-  return _pools.get(key);
-}
-
 /** 当前生效字段映射（深拷贝；只读快照） */
 function fields() {
-  return JSON.parse(JSON.stringify(_cfg.fields));
+  return JSON.parse(JSON.stringify(getCfg().fields));
 }
 
 /** 注册 provider 类型（`mod` 须含 `create(options)`） */
@@ -195,45 +55,17 @@ function registerProvider(kind, mod) {
 
 /** 当前已实例化 provider（kind → provider） */
 function providers_() {
-  return _pool;
+  return getPool();
 }
 
 /** CRUD 句柄：显式注入优先（单测），否则本仓 crud（同 Store 面签名） */
 function _crud() {
-  return _cfg.store || require('../crud');
+  return getCfg().store || require('../crud');
 }
 
 function _sha1(bytes) {
   return crypto.createHash('sha1').update(bytes).digest('hex');
 }
-
-/** location 落库行：仅写映射到的列（`null` 角色跳过），`_id` 由 store 生成 */
-function _locRow(resourceId, backend, key, status, priority) {
-  const F = _cfg.fields.location;
-  const row = {};
-  if (F.resourceId) row[F.resourceId] = resourceId;
-  if (F.backend) row[F.backend] = backend;
-  if (F.key) row[F.key] = key;
-  if (F.status) row[F.status] = status;
-  if (F.priority) row[F.priority] = priority;
-  return row;
-}
-
-/** location 读投影 + 条件键：按映射生成（`_id` 恒含） */
-const _LOC_GQL = (schema) => {
-  const F = _cfg.fields.location;
-  const cols = ['_id', ...Object.values(F).filter((v) => typeof v === 'string' && v !== '')];
-  return `${schema}($condition: @c0) { ${[...new Set(cols)].join(', ')} }`;
-};
-
-/** Resource 元数据读投影：`_id` + 映射到的 fileName/mime */
-const _META_GQL = (schema) => {
-  const F = _cfg.fields.resource;
-  const cols = ['_id'];
-  if (F.fileName) cols.push(F.fileName);
-  if (F.mime) cols.push(F.mime);
-  return `${schema}($condition: @c0) { ${[...new Set(cols)].join(', ')} }`;
-};
 
 /** fan-out 全部 provider 副本：允许部分失败但逐条显式反馈（禁静默）；返回 locations/locationRows */
 async function _putFanout(poolSel, resourceId, key, buf, mime) {
@@ -262,34 +94,13 @@ async function _putFanout(poolSel, resourceId, key, buf, mime) {
   return { locations, locationRows };
 }
 
-/** Resource 元数据行构造（列按映射；缺列跳过；缺省值文案不变） */
-function _resourceRow(F, spec, buf) {
-  const row = { _id: spec.resourceId };
-  if (F.resource.sha1) row[F.resource.sha1] = spec.sha1;
-  if (F.resource.fileName) row[F.resource.fileName] = spec.fileName || 'unnamed';
-  if (F.resource.mime) row[F.resource.mime] = spec.mime || 'application/octet-stream';
-  if (F.resource.size) row[F.resource.size] = buf.length;
-  if (F.resource.kind) row[F.resource.kind] = spec.kind || 'file';
-  return row;
-}
-
 /** location 行去重落库：按 backend 已有集合过滤后批量插入 */
 async function _putLocations(crud, F, resourceId, locationRows) {
   if (!locationRows.length) return;
-  const existing = await crud.query(_LOC_GQL(_cfg.schema.location), { c0: { [F.location.resourceId]: resourceId } });
+  const existing = await crud.query(_LOC_GQL(getCfg().schema.location), { c0: { [F.location.resourceId]: resourceId } });
   const have = new Set(existing.map((r) => r[F.location.backend]));
   const fresh = locationRows.filter((l) => !have.has(l[F.location.backend]));
-  if (fresh.length) await crud.insertMany(_cfg.schema.location, fresh);
-}
-
-/** 绑定行构造（列按映射；userId null 保留） */
-function _bindingRow(F, resourceId, bind) {
-  const b = {};
-  if (F.binding.resourceId) b[F.binding.resourceId] = resourceId;
-  if (F.binding.businessTable) b[F.binding.businessTable] = bind.businessTable;
-  if (F.binding.businessId) b[F.binding.businessId] = String(bind.businessId);
-  if (F.binding.userId) b[F.binding.userId] = bind.userId != null ? String(bind.userId) : null;
-  return b;
+  if (fresh.length) await crud.insertMany(getCfg().schema.location, fresh);
 }
 
 /**
@@ -301,19 +112,19 @@ async function put({ bytes, fileName, mime, kind, bind, pool } = /** @type {any}
   if (bytes == null) throw new Error('resource.put 需要 bytes');
   const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
   const crud = _crud();
-  const F = _cfg.fields;
+  const F = getCfg().fields;
   const poolSel = _requirePool(pool);
   const sha1 = _sha1(buf);
   const resourceId = sha1;
   const key = native.resourceContentPath(sha1);
 
   const { locations, locationRows } = await _putFanout(poolSel, resourceId, key, buf, mime);
-  if (!(await crud.exists(_cfg.schema.resource, { _id: resourceId }))) {
-    await crud.insert(_cfg.schema.resource, _resourceRow(F, { resourceId, sha1, fileName, mime, kind }, buf));
+  if (!(await crud.exists(getCfg().schema.resource, { _id: resourceId }))) {
+    await crud.insert(getCfg().schema.resource, _resourceRow(F, { resourceId, sha1, fileName, mime, kind }, buf));
   }
   await _putLocations(crud, F, resourceId, locationRows);
   if (bind) {
-    await crud.insert(_cfg.schema.binding, _bindingRow(F, resourceId, bind));
+    await crud.insert(getCfg().schema.binding, _bindingRow(F, resourceId, bind));
   }
   return { resourceId, sha1, locations };
 }
@@ -321,9 +132,9 @@ async function put({ bytes, fileName, mime, kind, bind, pool } = /** @type {any}
 /** open/remove 共用前置：crud 门面、字段映射、provider 池与该资源的 location 行集 */
 async function _loadLocations(resourceId, opts) {
   const crud = _crud();
-  const F = _cfg.fields;
+  const F = getCfg().fields;
   const poolSel = _requirePool(opts.pool);
-  const rows = await crud.query(_LOC_GQL(_cfg.schema.location), { c0: { [F.location.resourceId]: resourceId } });
+  const rows = await crud.query(_LOC_GQL(getCfg().schema.location), { c0: { [F.location.resourceId]: resourceId } });
   return { crud, F, poolSel, rows };
 }
 
@@ -367,12 +178,12 @@ async function _openLoc(F, poolSel, opts, loc, resourceId) {
 
 /** 字节成功后读元数据（读失败不降级：缺失发 feedback，fileName/mime 回落 null） */
 async function _readMeta(crud, F, resourceId) {
-  const meta = await crud.queryOne(_META_GQL(_cfg.schema.resource), { c0: { _id: resourceId } });
+  const meta = await crud.queryOne(_META_GQL(getCfg().schema.resource), { c0: { _id: resourceId } });
   if (!meta) {
     _emitFeedback({
       type: 'resource_meta_missing', code: 'resourceMetaMissing',
       layer: 'resource', resourceId,
-      message: `资源元数据缺失（${_cfg.schema.resource} 无 _id=${resourceId} 行）：open 仍返回字节`,
+      message: `资源元数据缺失（${getCfg().schema.resource} 无 _id=${resourceId} 行）：open 仍返回字节`,
       hint: '检查资源表是否被外部清理；fileName/mime 将回落调用方兜底值',
     });
     return { fileName: null, mime: null };
@@ -425,18 +236,18 @@ async function remove(resourceId, opts = {}) {
       });
     }
   }
-  await crud.remove(_cfg.schema.location, { [F.location.resourceId]: resourceId });
-  await crud.remove(_cfg.schema.resource, { _id: resourceId });
+  await crud.remove(getCfg().schema.location, { [F.location.resourceId]: resourceId });
+  await crud.remove(getCfg().schema.resource, { _id: resourceId });
   return { removed };
 }
 
 /** URL：核心纯拼接 + 可选签名（宿主注入时钟/密钥） */
 async function url(reference, opts = {}) {
   _requirePool(opts.pool); // 池存在性 fail-fast；URL 模板/签名为全局配置（跨池共享），行为不变
-  const cfg = { ..._cfg.url };
+  const cfg = { ...getCfg().url };
   if (opts.vars) cfg.vars = { ...(cfg.vars || {}), ...opts.vars };
-  if (_cfg.sign) {
-    const signed = await _cfg.sign(reference, opts);
+  if (getCfg().sign) {
+    const signed = await getCfg().sign(reference, opts);
     if (signed && typeof signed === 'object') cfg.query = { ...(cfg.query || {}), ...signed };
   }
   return native.resourceComposeUrl(reference, cfg);
