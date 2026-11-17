@@ -17,58 +17,31 @@
  *   - 同批次多表不做跨表事务（每表独立事务 + 版本行）；部分成功按 skipped/applied 对账重跑；
  *   - 破坏性变更被拦后不提供自动回滚——`MigrationUnsupported` 只给分步建议；
  *   - 版本表缺失时按 introspect 探测补建（DDL 由 core `ddl.generate` 产出，宿主不拼 SQL）。
+ *
+ * D4-4 零语义拆分：纯逻辑（错误型与固定建议、hash 与版本行自然键、物理命名空间拷贝、
+ * 反推类型粒度对齐、段归一与版本号推导）下沉 ./migrate/plan，本文件保留编排与 IO；
+ * 导出面（键名 / 键序 / 语义）与拆分前逐字一致。
  */
-
-const crypto = require('node:crypto');
 
 const ddl = require('./ddl');
 const { pname, ptable, builtinFieldNames, ownerField } = ddl;
 const introspect = require('./introspect');
 const { core } = require('./schema');
-const { MetaDefError, _stableStringify, _runInternal, _MIGRATION } = require('./metadef');
+const { MetaDefError, _runInternal, _MIGRATION } = require('./metadef');
 const crud = require('./crud');
 const { runInTransaction, executeRaw } = require('./datasource');
 const { emit: emitFeedback } = require('./feedback-core');
-
-/** 白名单外变更的固定分步建议（契约逐字；MigrationUnsupported 消息必须原文携带） */
-const _UNSUPPORTED_HINT = '白名单外变更请分两版走：先加新列并回填，确认切换后再于下一版删除旧列';
-
-/** 白名单外变更（diff errors 非空）：只给分步建议，不自动执行、不自动回滚 */
-class MigrationUnsupported extends MetaDefError {
-  constructor(message, skipped) {
-    super(message);
-    this.name = 'MigrationUnsupported';
-    this.skipped = skipped;
-  }
-}
-
-/** 当前版 defn 的稳定 hash：stableStringify（键序无关）→ SHA-1 hex（与 resource sha1 惯例一致） */
-function _hashOf(defn) {
-  return crypto.createHash('sha1').update(_stableStringify(defn)).digest('hex');
-}
-
-/** 版本行自然键：defId 惯例追加 backend 段（tenant␟env␟backend␟name␟version，\u001f 分隔） */
-function migrationId(tenant, env, backend, name, version) {
-  const seg = (v) => (v == null ? '' : String(v));
-  return `${seg(tenant)}\u001f${seg(env)}\u001f${seg(backend)}\u001f${seg(name)}\u001f${seg(version)}`;
-}
-
-/**
- * 内建物理列剔除：introspect→schemaFromRows 拉回的 defn 带 `__present` 哨兵列与宿主自动
- * 补齐的 timestamps / 归属键物理列（snake_case；兼容 camelCase）——不剔则 diff 误报
- * 「删除字段不支持」。
- *
- * 剔除清单**不在本文件自设**，一律取 `ddl.builtinFieldNames`（与 DDL 生成共用同一份内建列
- * 定义）：此前用 `newDefn.timestamps` 真值判断 + 固定两列，与 DDL 的 `!== false` 口径分叉
- * （D1），且漏掉归属键（D2）。
- */
-function _stripBuiltinFields(backend, oldDefn, newDefn) {
-  if (!oldDefn || typeof oldDefn !== 'object') return oldDefn;
-  const drop = newDefn ? builtinFieldNames(newDefn, backend) : ['__present'];
-  const fields = { ...oldDefn.fields };
-  for (const k of drop) delete fields[k];
-  return { ...oldDefn, fields };
-}
+const {
+  _UNSUPPORTED_HINT,
+  MigrationUnsupported,
+  _hashOf,
+  migrationId,
+  _stripBuiltinFields,
+  _physicalDefn,
+  _alignTypes,
+  _segOf,
+  _versionOf,
+} = require('./migrate/plan');
 
 /** 版本表存在性探测 SQL（表名为常量非用户输入，内联无注入面；宿主只读 SELECT，
  *  同 `introspect/<backend>.js` 既有惯例——introspect 需原生驱动实例，连接视图不暴露） */
@@ -83,54 +56,6 @@ const _PROBE_SQL = {
 async function _hasMigrationTable(backend, source) {
   const out = await executeRaw(source, _PROBE_SQL[backend], null, false);
   return (out.rows || []).length > 0;
-}
-
-/**
- * 用户 defn → 物理命名空间拷贝（顶层 fields 键与 indexes keys 经 pname 按后端翻译）。
- *
- * introspect→schemaFromRows 产出的旧 defn 键是物理列名（`view_count`），且物理形式不可逆
- * （core::naming 单向翻译）——故 diff 在物理命名空间进行：new 侧翻到物理名与 old 对齐。
- * pname 对 snake_case 输入幂等，`_id`/`__` 保留名原样（generateMigration 内部再次 pname 无害）。
- */
-function _physicalDefn(backend, defn) {
-  const fields = Object.fromEntries(
-    Object.entries(defn.fields || {}).map(([k, v]) => [pname(backend, k), v]));
-  const indexes = (defn.indexes || []).map((ix) => ({
-    ...ix,
-    keys: Object.fromEntries(
-      Object.entries(ix && ix.keys || {}).map(([k, v]) => [pname(backend, k), v])),
-  }));
-  return { ...defn, fields, indexes };
-}
-
-const _NUMERIC = new Set(['int', 'long', 'float', 'double', 'number']);
-// 内省反推 `number` 的物理族：SQLite INTEGER 承载 int/long/float/double/date/datetime/bool；
-// MySQL BIGINT 承载 long/number/datetime/date，TINYINT(1)（bool）也反推为 number。
-// old 侧反推为 number 时，new 声明落在同族内不得判「非放宽变更」（D3）。
-const _NUMBER_FAMILY = new Set([..._NUMERIC, 'date', 'datetime', 'bool', 'boolean']);
-
-/**
- * 反推粒度对齐：introspect 反推类型粒度可粗于用户声明（SQLite INTEGER/动态类型 →
- * `number`，承载 int/long/float/double/date/datetime/bool 全域）——old 侧字段为 `number` 时
- * 把 new 侧同名同族字段归一为 `number` 比对（物理层确无差异；MySQL/PG 反推保真不受影响）。
- * 仅同名两侧都有时归一；新加列保留用户类型（DDL 仍按声明产列型）。
- */
-function _alignTypes(backend, oldDefn, physNew) {
-  const oldFields = (oldDefn && oldDefn.fields) || {};
-  const fields = { ...physNew.fields };
-  for (const [k, v] of Object.entries(fields)) {
-    fields[k] = _alignedField(oldFields[k], v);
-  }
-  return { ...physNew, fields };
-}
-
-/** 单字段粒度对齐：old 侧为 number 且 new 侧同名同族 → 归一为 number；否则原样保留 */
-function _alignedField(o, v) {
-  const ot = o && (typeof o === 'object' ? o.type : o);
-  if (ot !== 'number') return v;
-  const nt = v && typeof v === 'object' ? v.type : v;
-  if (!_NUMBER_FAMILY.has(nt)) return v;
-  return typeof v === 'object' ? { ...v, type: 'number' } : 'number';
 }
 
 /**
@@ -153,9 +78,6 @@ function _assertArgs(backend, source, defs) {
     throw new MetaDefError('migrate: backend/source/defs 必填（defs 为 {name: defn} 对象）');
   }
 }
-
-/** 段归一：null/undefined → 空串（与 metadef 既有 null 处理一致） */
-function _segOf(v) { return v == null ? '' : v; }
 
 /**
  * 版本表保障：有 driver 时一次完整 introspect（两用：版本表探测 + oldDefs=null 转 defn）；
@@ -285,12 +207,6 @@ async function _migrationState({ source, seg, defn }) {
     `${_MIGRATION}($condition:@c0, $sort:@s0){_id, version, hash}`,
     { c0: seg, s0: { version: -1 } }, { source });
   return { unchanged: rows.length > 0 && rows[0].hash === hash, hash, latest: rows };
-}
-
-/** version = 该 name 历史最大 version+1（复用 metadef nextVersion 语义）；from = 当前最新版本 */
-function _versionOf(rows) {
-  const version = (rows.length ? Math.max(...rows.map((r) => r.version)) : 0) + 1;
-  return { version, from: rows.length ? rows[0].version : 0 };
 }
 
 /** 单个定义的迁移步骤（主循环体拆出；unchanged 返回 null，成功返回 applied 条目） */
