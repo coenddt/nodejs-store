@@ -13,6 +13,10 @@
  *
  * 注意：`withScope` 是 async —— 必须 `await`（同步 try/catch 接不住 rejected Promise）。
  * 运行：node scripts/test.js（scripts/test.js 会置 LOCAL_CORE=1）
+ *
+ * D4-4 零语义拆分：档位常量、rbac 判决上下文、base 模型注册（IsoPost / IsoAudit）、
+ * 两套 rbac 策略、策略视图派生入口、n 方并发栅栏与双 emit 辅助下沉
+ * ../test-support/policy-isolation-fixtures.js；用例名、断言与注释逐字未改。
  */
 
 const { test } = require('node:test');
@@ -21,64 +25,10 @@ const assert = require('node:assert/strict');
 const {
   store, schema, permission, feedback, withScope, currentScope, currentView,
 } = require('../src');
-
-const PROFILE_STD = 'standard';
-const PROFILE_AI = 'text2query';
-const CTX_VIEWER = { userId: 'u1', roles: ['viewer'] };
-const CTX_OTHER = { userId: 'u2', roles: ['other'] };
-
-// ── 夹具：base 注册（域外一次性；本文件只读不放宽任何 base 策略）──
-
-schema.register({
-  name: 'IsoPost',
-  collection: 'iso_posts',
-  timestamps: false,
-  fields: { title: { type: 'string' } },
-  relations: {},
-});
-
-/** 静态读白名单 schema：用于断言 canRead 静态面不被 rbac 视图扰动 */
-schema.register({
-  name: 'IsoAudit',
-  collection: 'iso_audits',
-  timestamps: false,
-  read: ['viewer'],
-  fields: { title: { type: 'string' } },
-  relations: {},
-});
-
-/** rbac 策略：viewer 可读 IsoPost */
-const RBAC_GRANTED = {
-  mode: 'enforce',
-  roles: { viewer: {} },
-  grants: [{ role: 'viewer', model: 'IsoPost', actions: ['read'] }],
-};
-/** rbac 策略：无任何授权（enforce 下该角色被拒） */
-const RBAC_DENIED = { mode: 'enforce', roles: { viewer: {} }, grants: [] };
-
-/** 从 base 派生策略视图（作用域 store.view 的构造入口） */
-function viewOf(overrides) {
-  return schema.core.withPolicy(overrides);
-}
-
-/** n 方栅栏：全部到达后同时放行——保证两个作用域真实重叠（并发交错，而非先后串行） */
-function barrier(n) {
-  let arrived = 0;
-  let release;
-  const gate = new Promise((resolve) => { release = resolve; });
-  return async function wait() {
-    arrived += 1;
-    if (arrived >= n) release();
-    await gate;
-  };
-}
-
-/** worker 内双 emit 夹 barrier 等待：两次隔离事件由并发时钟对齐（A1/A5 用例共用） */
-async function emitPairWithBarrier(tag, wait) {
-  feedback.emit({ type: 'isolation', code: `${tag}-1`, layer: 'host' });
-  await wait();
-  feedback.emit({ type: 'isolation', code: `${tag}-2`, layer: 'host' });
-}
+const {
+  PROFILE_STD, PROFILE_AI, CTX_VIEWER, CTX_OTHER, RBAC_GRANTED, RBAC_DENIED,
+  viewOf, barrier, emitPairWithBarrier,
+} = require('../test-support/policy-isolation-fixtures');
 
 // ── A1：档位视图 + sink 事件隔离 ──────────────────────────────
 
