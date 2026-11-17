@@ -8,11 +8,10 @@
  * 运行：node scripts/test.js（scripts/test.js 会置 LOCAL_CORE=1）
  */
 
-const { test, before } = require('node:test');
-const assert = require('node:assert/strict');
-const Database = require('better-sqlite3');
-
-const { init, store, executors, permission, schema: _sc } = require('../src');
+const {
+  test, before, assert, Database, bootSingleTable,
+  src: { init, store, executors, permission, schema: _sc },
+} = require('./helpers/boot');
 
 const SRC = 'rbac_src';
 
@@ -34,21 +33,18 @@ function createDb() {
   return db;
 }
 
-_sc.register({
-  name: 'Post',
-  collection: 'rbac_posts',
-  idPrefix: 'rb_',
-  timestamps: false,
-  fields: { title: { type: 'string' }, secret: { type: 'string' } },
-  relations: {},
-  datasource: SRC,
-});
-
-before(async () => {
-  await init({ [SRC]: executors.createConnection('sqlite', createDb()) });
-  permission.setContext(undefined);
-  store.setRbac(null);
-});
+bootSingleTable(
+  {
+    name: 'Post',
+    collection: 'rbac_posts',
+    idPrefix: 'rb_',
+    timestamps: false,
+    fields: { title: { type: 'string' }, secret: { type: 'string' } },
+    relations: {},
+    datasource: SRC,
+  },
+  { createDb, srcName: SRC, afterInit: () => store.setRbac(null) },
+);
 
 test('setRbac 后越权 insert 抛 PermissionError(403)，消息含 RBAC', async () => {
   store.setRbac(POLICY);

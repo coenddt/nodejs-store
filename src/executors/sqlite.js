@@ -15,6 +15,7 @@
  */
 
 const { core: _core } = require('../schema');
+const txShared = require('./tx'); // D4-2 去重：withTransaction 骨架与 mysql/postgres 共享（./tx）
 
 /** better-sqlite3 只接受 number/string/bigint/Buffer/null，布尔需显式转 0/1 */
 function _bind(params) {
@@ -85,24 +86,9 @@ function create(db, _options = {}) {
   }
 
   /** 事务执行：基于 openTransaction（无第二套事务路径），任一失败整体回滚；
-   *  body(exec, tx) 第二参数为事务句柄（供上层读保存点原语），可选——旧单参写法继续可用 */
-  async function withTransaction(body) {
-    const tx = await openTransaction();
-    try {
-      const out = await body(tx.exec, tx);
-      await tx.commit();
-      return out;
-    } catch (e) {
-      try {
-        await tx.rollback();
-      } catch (_) {
-        /* rollback 失败不掩盖原始错误 */
-      }
-      throw e;
-    } finally {
-      await tx.release();
-    }
-  }
+   *  body(exec, tx) 第二参数为事务句柄（供上层读保存点原语），可选——旧单参写法继续可用。
+   *  骨架在 ./tx 与 mysql/postgres 共享（sqlite 的 openTransaction 为同步单连接形态，本地保留） */
+  const withTransaction = (body) => txShared.withTransaction(openTransaction, body);
 
   return { kind: 'sqlite', exec: runStmts, withTransaction, openTransaction };
 }

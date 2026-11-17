@@ -28,6 +28,32 @@ async function run(body) {
   }
 }
 
+/** 迁移 defn 并断言 applied 落点（0→1 / version 1；⓪系列用例共用骨架），返回 migrate 结果 */
+async function migrateAssertApplied(db, key, defn) {
+  const r = await store.migrate({ backend: 'sqlite', source: 'default', defs: { [key]: defn }, driver: db });
+  assert.deepEqual(r.applied, [{ name: key, from: 0, to: 1, version: 1 }]);
+  return r;
+}
+
+/** 断言 __schemaMigration 中该 name 已记 version=1（迁移落点收尾断言，⓪系列共用） */
+function assertMigrationVersion(db, name) {
+  const rows = db.prepare(`SELECT version FROM __schemaMigration WHERE name = '${name}'`).all();
+  assert.deepEqual(rows.map((x) => x.version), [1]);
+}
+
+/** 迁移告警用例骨架：挂 sink → run 内执行 body → 复位 sink，返回 seen 供告警断言（⓪/⓪b 共用） */
+async function runWithMigrationFeedback(body) {
+  const { feedback } = require('../src');
+  const seen = [];
+  feedback.setSink((e) => seen.push(e));
+  try {
+    await run(body);
+  } finally {
+    feedback.setSink(null);
+  }
+  return seen;
+}
+
 function noteV1() {
   return {
     name: 'Note', collection: 'notes', idPrefix: 'n', timestamps: true,
@@ -228,26 +254,15 @@ function createLegacyTable(db) {
 }
 
 test('⓪ 老表缺内建列：迁移先自动补列再继续，并发出可定位告警', async () => {
-  const { feedback } = require('../src');
-  const seen = [];
-  feedback.setSink((e) => seen.push(e));
-  try {
-    await run(async (db) => {
-      createLegacyTable(db);
-      const r = await store.migrate({
-        backend: 'sqlite', source: 'default', defs: { LegacyNote: legacyNoteDefn() }, driver: db,
-      });
-      assert.deepEqual(r.applied, [{ name: 'LegacyNote', from: 0, to: 1, version: 1 }]);
-      const cols = db.prepare("SELECT name FROM pragma_table_info('legacy_notes')").all().map((x) => x.name);
-      for (const col of ['__present', 'created_at', 'updated_at', 'created_by']) {
-        assert.ok(cols.includes(col), `应自动补列 ${col}（got ${cols}）`);
-      }
-      const rows = db.prepare("SELECT version FROM __schemaMigration WHERE name = 'LegacyNote'").all();
-      assert.deepEqual(rows.map((x) => x.version), [1]);
-    });
-  } finally {
-    feedback.setSink(null);
-  }
+  const seen = await runWithMigrationFeedback(async (db) => {
+    createLegacyTable(db);
+    await migrateAssertApplied(db, 'LegacyNote', legacyNoteDefn());
+    const cols = db.prepare("SELECT name FROM pragma_table_info('legacy_notes')").all().map((x) => x.name);
+    for (const col of ['__present', 'created_at', 'updated_at', 'created_by']) {
+      assert.ok(cols.includes(col), `应自动补列 ${col}（got ${cols}）`);
+    }
+    assertMigrationVersion(db, 'LegacyNote');
+  });
   const hit = seen.filter((e) => e.code === 'migrationAutoAddBuiltinColumns');
   assert.ok(hit.length, `必须发出自动补列告警（got ${JSON.stringify(seen)}）`);
   assert.match(hit[0].message, /legacy_notes/);
@@ -263,39 +278,26 @@ test('⓪ 边界：按指引补列后同一 defn 可正常迁移（检测不是�
     db.exec('ALTER TABLE legacy_notes ADD COLUMN updated_at INTEGER');
     db.exec('ALTER TABLE legacy_notes ADD COLUMN created_by TEXT');
     db.exec('ALTER TABLE legacy_notes ADD COLUMN __present TEXT');
-    const r = await store.migrate({
-      backend: 'sqlite', source: 'default', defs: { LegacyNote: legacyNoteDefn() }, driver: db,
-    });
-    assert.deepEqual(r.applied, [{ name: 'LegacyNote', from: 0, to: 1, version: 1 }]);
-    const rows = db.prepare("SELECT version FROM __schemaMigration WHERE name = 'LegacyNote'").all();
-    assert.deepEqual(rows.map((x) => x.version), [1]);
+    await migrateAssertApplied(db, 'LegacyNote', legacyNoteDefn());
+    assertMigrationVersion(db, 'LegacyNote');
   });
 });
 
 test('⓪b 归属键漏回填：created_by 全 NULL 时迁移继续，但必须告警', async () => {
-  const { feedback } = require('../src');
-  const seen = [];
-  feedback.setSink((e) => seen.push(e));
-  try {
-    await run(async (db) => {
-      db.exec(`CREATE TABLE null_owner (
-        _id TEXT PRIMARY KEY, title TEXT,
-        created_at INTEGER, updated_at INTEGER, created_by TEXT, __present TEXT
-      )`);
-      db.prepare('INSERT INTO null_owner (_id, title, created_by) VALUES (?, ?, ?)').run('no_1', 'a', null);
-      const defn = {
-        name: 'NullOwner', collection: 'null_owner', idPrefix: 'no',
-        read: ['creator'], write: ['creator'],
-        fields: { _id: { type: 'string' }, title: { type: 'string' } },
-      };
-      const r = await store.migrate({ backend: 'sqlite', source: 'default', defs: { NullOwner: defn }, driver: db });
-      assert.deepEqual(r.applied, [{ name: 'NullOwner', from: 0, to: 1, version: 1 }]);
-      const rows = db.prepare("SELECT version FROM __schemaMigration WHERE name = 'NullOwner'").all();
-      assert.deepEqual(rows.map((x) => x.version), [1]);
-    });
-  } finally {
-    feedback.setSink(null);
-  }
+  const seen = await runWithMigrationFeedback(async (db) => {
+    db.exec(`CREATE TABLE null_owner (
+      _id TEXT PRIMARY KEY, title TEXT,
+      created_at INTEGER, updated_at INTEGER, created_by TEXT, __present TEXT
+    )`);
+    db.prepare('INSERT INTO null_owner (_id, title, created_by) VALUES (?, ?, ?)').run('no_1', 'a', null);
+    const defn = {
+      name: 'NullOwner', collection: 'null_owner', idPrefix: 'no',
+      read: ['creator'], write: ['creator'],
+      fields: { _id: { type: 'string' }, title: { type: 'string' } },
+    };
+    await migrateAssertApplied(db, 'NullOwner', defn);
+    assertMigrationVersion(db, 'NullOwner');
+  });
   const hit = seen.filter((e) => e.code === 'migrationOwnerKeyNullRows');
   assert.ok(hit.length, `必须发出归属键 NULL 告警（got ${JSON.stringify(seen)}）`);
   assert.match(hit[0].message, /null_owner/);
@@ -316,10 +318,7 @@ test('⓪c 老表已存在但归档表缺失：迁移补建 <table>_deleted，re
       fields: { _id: { type: 'string' }, title: { type: 'string' } },
     };
     _sc.register(defn);
-    const r = await store.migrate({
-      backend: 'sqlite', source: 'default', defs: { ArchNote: defn }, driver: db,
-    });
-    assert.deepEqual(r.applied, [{ name: 'ArchNote', from: 0, to: 1, version: 1 }]);
+    await migrateAssertApplied(db, 'ArchNote', defn);
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()
       .map((x) => x.name);
     assert.ok(tables.includes('arch_notes_deleted'), `归档表应补建（got ${tables}）`);
@@ -349,10 +348,7 @@ test('⓪d 存量归档表缺 timestamps 列（旧版 DDL 建出）：迁移补�
       fields: { _id: { type: 'string' }, title: { type: 'string' } },
     };
     _sc.register(defn);
-    const r = await store.migrate({
-      backend: 'sqlite', source: 'default', defs: { LegacyArch: defn }, driver: db,
-    });
-    assert.deepEqual(r.applied, [{ name: 'LegacyArch', from: 0, to: 1, version: 1 }]);
+    await migrateAssertApplied(db, 'LegacyArch', defn);
     const cols = db.prepare("SELECT name FROM pragma_table_info('legacy_arch_deleted')").all()
       .map((x) => x.name);
     for (const col of ['created_at', 'updated_at', 'created_by', '__present']) {

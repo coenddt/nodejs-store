@@ -18,69 +18,10 @@ const { permission: perm } = require('../src');
 // 内置最小 schema（node --test 每文件独立进程，需自注册）
 // ─────────────────────────────────────────────────────────────
 
-_sc.register({
-  name: 'CommercialLedger', collection: 'commercial_ledger', idPrefix: 'CL', timestamps: true,
-  fields: { unit: 'string', income: 'float' }, relations: {}, read: null, write: null,
-});
+require('./helpers/boot').registerCommercialLedger();
 
-// ─────────────────────────────────────────────────────────────
-// mock 驱动（与 test-nodejs-store.js 同构的最小内存实现）
-// ─────────────────────────────────────────────────────────────
-
-class _MemColl {
-  constructor(docs) {
-    this.docs = docs !== undefined ? docs : [];
-  }
-
-  find() {
-    return { toArray: async () => [...this.docs] };
-  }
-
-  aggregate() {
-    return { toArray: async () => [...this.docs] };
-  }
-
-  async findOne() {
-    return this.docs.length ? { ...this.docs[0] } : null;
-  }
-
-  async countDocuments() {
-    return this.docs.length;
-  }
-
-  async insertOne(doc) {
-    this.docs.push(doc);
-    return { insertedId: doc._id };
-  }
-
-  async insertMany(docs) {
-    this.docs.push(...docs);
-    return { insertedCount: docs.length };
-  }
-
-  async findOneAndUpdate(condition, update, options) {
-    const base = this.docs.length ? { ...this.docs[0] } : {};
-    for (const st of Object.values(update)) {
-      if (st && typeof st === 'object') Object.assign(base, st);
-    }
-    if (options && options.upsert && !this.docs.length) this.docs.push(base);
-    return base;
-  }
-
-  async updateMany() {
-    return { modifiedCount: this.docs.length };
-  }
-
-  async deleteMany() {
-    const n = this.docs.length;
-    this.docs = [];
-    return { deletedCount: n };
-  }
-
-  listIndexes() {
-    return { toArray: async () => [] };
-  }
-}
+// mock 驱动：内存 Mongo 桩改用 tests 共享超集版（零语义论证见 helpers/mem-mongo.js 头注释）
+const { MemColl: _MemColl } = require('./helpers/mem-mongo');
 
 class _FakeDb {
   constructor(coll) {

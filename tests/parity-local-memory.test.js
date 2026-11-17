@@ -14,27 +14,18 @@
 
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
 
 const { connect: connectLocal } = require('../src/local');
 const { connect: connectMemory } = require('../src/memory');
 const { readSnapshot } = require('../src/local/store');
 const datasource = require('../src/datasource');
 const { init, store, schema: _sc } = require('../src');
+// 与 inline-agg 共用的临时目录登记桩（行为见 helpers 头注释）
+const { makeTmpDirs } = require('./helpers/tmp-dirs');
 
-const _dirs = [];
+const { tmpDir, cleanup } = makeTmpDirs('plm');
 
-function tmpDir(tag) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `nodejs-store-plm-${tag}-`));
-  _dirs.push(dir);
-  return dir;
-}
-
-after(() => {
-  for (const dir of _dirs) fs.rmSync(dir, { recursive: true, force: true });
-});
+after(cleanup);
 
 // 同一批文档（显式 _id、无时钟、含 null 字段）：local 与 memory 逐文档对拍
 const DOCS = [

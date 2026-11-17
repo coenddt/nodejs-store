@@ -129,6 +129,23 @@ function _reset() {
   _db.exec('DELETE FROM ak_orders; DELETE FROM ak_users;');
 }
 
+/** 断言首轮 attempt 被 U2 档位拦截（profileBlocked / core），返回首轮错误供细分断言 */
+function assertFirstBlocked(res) {
+  const err = res.attempts[0].error;
+  assert.equal(err.code, 'profileBlocked');
+  assert.equal(err.layer, 'core');
+  return err;
+}
+
+/** client 首调拒绝 + 差异化断言骨架（HTTP 错误用例共用；check 原样透传，断言异常自然上抛） */
+async function assertClientRejects(llmReg, BASE, check) {
+  const client = llmReg.makeOpenaiCompat(BASE);
+  await assert.rejects(
+    () => client([{ role: 'user', content: '输出 json' }]),
+    (e) => check(e),
+  );
+}
+
 describe('ask L1 · 验收矩阵 T1-T12', () => {
   // ── T1 正常问数（正向断言：成功态轨迹无任何错误字段） ──────────
 
@@ -237,10 +254,8 @@ describe('ask L1 · 验收矩阵 T1-T12', () => {
       _out('AkUser($condition:@c0){_id, name}', { c0: { name: 'bob' } }),
     );
     const res = await store.ask('查住在 x 城的用户', { llm, ctx: CTX_USER });
-    const err = res.attempts[0].error;
+    const err = assertFirstBlocked(res);
     // U2 收缩判决携带 ERR_TEXT2QUERY 稳定前缀（rust-store 补前缀任务已合入本地产物）
-    assert.equal(err.code, 'profileBlocked');
-    assert.equal(err.layer, 'core');
     assert.ok(err.message.includes('U2') && err.message.includes('text2query'));
     assert.deepEqual(res.data, [{ _id: 'aku1', name: 'bob' }]);
   });
@@ -435,10 +450,8 @@ describe('ask L1 · 验收矩阵 T1-T12', () => {
       _out(..._GOOD),
     );
     const res = await store.ask('库存里有 s1 的订单', { llm, ctx: CTX_USER });
-    const err = res.attempts[0].error;
+    const err = assertFirstBlocked(res);
     // 8c-2 收缩判决携带 ERR_TEXT2QUERY 稳定前缀（rust-store 补前缀任务已合入本地产物）
-    assert.equal(err.code, 'profileBlocked');
-    assert.equal(err.layer, 'core');
     assert.ok(err.message.includes('嵌套关系路径'));
     assert.deepEqual(res.data, _PROJ_DOCS);
   });
@@ -512,30 +525,22 @@ describe('llm · OpenAI 兼容工厂（D6）', () => {
     await withFetch(async () => ({
       ok: false, status: 500, text: async () => 'boom-body',
     }), async () => {
-      const client = llmReg.makeOpenaiCompat(BASE);
-      await assert.rejects(
-        () => client([{ role: 'user', content: '输出 json' }]),
-        (e) => {
-          assert.equal(e.detail.code, 'llmHttpError');
-          assert.equal(e.detail.status, 500);
-          assert.equal(e.detail.body, 'boom-body');
-          return true;
-        },
-      );
+      await assertClientRejects(llmReg, BASE, (e) => {
+        assert.equal(e.detail.code, 'llmHttpError');
+        assert.equal(e.detail.status, 500);
+        assert.equal(e.detail.body, 'boom-body');
+        return true;
+      });
     });
   });
 
   it('网络层断连 → llmNetworkError', async () => {
     await withFetch(async () => { throw new Error('socket hang up'); }, async () => {
-      const client = llmReg.makeOpenaiCompat(BASE);
-      await assert.rejects(
-        () => client([{ role: 'user', content: '输出 json' }]),
-        (e) => {
-          assert.equal(e.detail.code, 'llmNetworkError');
-          assert.match(e.detail.detail, /socket hang up/);
-          return true;
-        },
-      );
+      await assertClientRejects(llmReg, BASE, (e) => {
+        assert.equal(e.detail.code, 'llmNetworkError');
+        assert.match(e.detail.detail, /socket hang up/);
+        return true;
+      });
     });
   });
 
@@ -547,16 +552,12 @@ describe('llm · OpenAI 兼容工厂（D6）', () => {
         usage: { completion_tokens_details: { reasoning_tokens: 440 } },
       }),
     }), async () => {
-      const client = llmReg.makeOpenaiCompat(BASE);
-      await assert.rejects(
-        () => client([{ role: 'user', content: '输出 json' }]),
-        (e) => {
-          assert.equal(e.detail.code, 'llmEmptyContent');
-          assert.equal(e.detail.finish_reason, 'length');
-          assert.equal(e.detail.reasoning_tokens, 440);
-          return true;
-        },
-      );
+      await assertClientRejects(llmReg, BASE, (e) => {
+        assert.equal(e.detail.code, 'llmEmptyContent');
+        assert.equal(e.detail.finish_reason, 'length');
+        assert.equal(e.detail.reasoning_tokens, 440);
+        return true;
+      });
     });
   });
 

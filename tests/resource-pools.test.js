@@ -12,19 +12,8 @@ const os = require('node:os');
 const path = require('node:path');
 
 const resource = require('../src/resource');
-
-function fakeStore() {
-  const rows = [];
-  return {
-    _rows: rows,
-    async exists(schema, cond) { return rows.some((r) => r._schema === schema && r._id === cond._id); },
-    async insert(schema, data) { rows.push({ _schema: schema, ...data }); return data; },
-    async insertMany(schema, docs) { docs.forEach((d) => rows.push({ _schema: schema, ...d })); return docs; },
-    async query(gql, params) { const id = params.c0.resourceId; return rows.filter((r) => r._schema === 'ResourceLocation' && r.resourceId === id); },
-    async queryOne(gql, params) { return rows.find((r) => r._schema === 'Resource' && r._id === params.c0._id) || null; },
-    async remove(schema, cond) { for (let i = rows.length - 1; i >= 0; i--) if (rows[i]._schema === schema && (cond.resourceId ? rows[i].resourceId === cond.resourceId : rows[i]._id === cond._id)) rows.splice(i, 1); return { deletedCount: 1 }; },
-  };
-}
+// ResourceLocation 存储桩与 resource.test.js 逐字重复，收敛到共享桩（行为见 helpers 头注释）
+const { fakeStore } = require('./helpers/resource-fakes');
 
 function poolCfg(tmp, subs = ['a', 'b']) {
   return { pools: {

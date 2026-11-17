@@ -156,12 +156,35 @@ function registerSql(schemaName, source, idPrefix = '') {
   });
 }
 
-// ─── #1 成功提交（A8 单一路径 / A1 单源） ────────────────────
-
-test('#1 会话成功提交：opened/committed/released 各 1，rolled_back 0', async () => {
+/** 单源桩三件套：建执行器桩 + 注册 schema + 绑定连接（原 12 处手写逐句等价） */
+function setupSingleSql() {
   const { descriptor, state } = makeFakeSqlExecutor();
   registerSql('SessA', 'sess_a', 'SA');
   datasource.setConnections({ sess_a: descriptor });
+  return { descriptor, state };
+}
+
+/** 双源桩四件套：A/B 各建桩 + 注册双 schema + 绑定双连接（原 3 处手写逐句等价） */
+function setupDualSql() {
+  const a = makeFakeSqlExecutor();
+  const b = makeFakeSqlExecutor();
+  registerSql('SessA', 'sess_a', 'SA');
+  registerSql('SessB', 'sess_b', 'SB');
+  datasource.setConnections({ sess_a: a.descriptor, sess_b: b.descriptor });
+  return { a, b };
+}
+
+/** 成功提交收尾断言：保存点已释放、零回滚、事务恰好提交一次（#19/#20 共用） */
+function assertSavepointReleased(state) {
+  assert.deepEqual(state.released_sps.map(([, n]) => n), ['sp_1']);
+  assert.equal(state.rolled_back, 0);
+  assert.equal(state.committed, 1);
+}
+
+// ─── #1 成功提交（A8 单一路径 / A1 单源） ────────────────────
+
+test('#1 会话成功提交：opened/committed/released 各 1，rolled_back 0', async () => {
+  const { descriptor, state } = setupSingleSql();
 
   await store.session(async (s) => {
     await s.insert('SessA', { v: '1' });
@@ -177,9 +200,7 @@ test('#1 会话成功提交：opened/committed/released 各 1，rolled_back 0', 
 // ─── #2 异常回滚（A2） ───────────────────────────────────────
 
 test('#2 会话体异常：整体回滚并原样上抛（A2）', async () => {
-  const { descriptor, state } = makeFakeSqlExecutor();
-  registerSql('SessA', 'sess_a', 'SA');
-  datasource.setConnections({ sess_a: descriptor });
+  const { descriptor, state } = setupSingleSql();
 
   await assert.rejects(
     () => store.session(async (s) => {
@@ -196,9 +217,7 @@ test('#2 会话体异常：整体回滚并原样上抛（A2）', async () => {
 // ─── #3 惰性开事务：空会话不占连接（A3） ─────────────────────
 
 test('#3 空会话惰性开事务：opened 0（A3）', async () => {
-  const { descriptor, state } = makeFakeSqlExecutor();
-  registerSql('SessA', 'sess_a', 'SA');
-  datasource.setConnections({ sess_a: descriptor });
+  const { descriptor, state } = setupSingleSql();
 
   await store.session(async () => {});
   assert.equal(state.opened, 0);
@@ -207,11 +226,7 @@ test('#3 空会话惰性开事务：opened 0（A3）', async () => {
 // ─── #4 跨源写 fail-closed（A1 正向） ────────────────────────
 
 test('#4 跨源写 fail-closed：抛 NonAtomicWriteError 且两源回滚（A1）', async () => {
-  const a = makeFakeSqlExecutor();
-  const b = makeFakeSqlExecutor();
-  registerSql('SessA', 'sess_a', 'SA');
-  registerSql('SessB', 'sess_b', 'SB');
-  datasource.setConnections({ sess_a: a.descriptor, sess_b: b.descriptor });
+  const { a, b } = setupDualSql();
 
   await assert.rejects(
     () => store.session(async (s) => {
@@ -233,11 +248,7 @@ test('#4 跨源写 fail-closed：抛 NonAtomicWriteError 且两源回滚（A1）
 // ─── #5 跨源读不拦截（A1 反例） ──────────────────────────────
 
 test('#5 跨源读不拦截：A 写 B 读，双源提交（A1 反例）', async () => {
-  const a = makeFakeSqlExecutor();
-  const b = makeFakeSqlExecutor();
-  registerSql('SessA', 'sess_a', 'SA');
-  registerSql('SessB', 'sess_b', 'SB');
-  datasource.setConnections({ sess_a: a.descriptor, sess_b: b.descriptor });
+  const { a, b } = setupDualSql();
 
   await store.session(async (s) => {
     await s.insert('SessA', { v: 'a' });
@@ -276,9 +287,7 @@ test('#6 缺 openTransaction：session_not_atomic 恰好告警 1 次（A9）', a
 // ─── #7 executeRaw 落会话连接（A4） ─────────────────────────
 
 test('#7 executeRaw 落在会话事务连接上（A4）', async () => {
-  const { descriptor, state } = makeFakeSqlExecutor();
-  registerSql('SessA', 'sess_a', 'SA');
-  datasource.setConnections({ sess_a: descriptor });
+  const { descriptor, state } = setupSingleSql();
 
   await store.session(async (s) => {
     await s.executeRaw('sess_a', 'SELECT 1', [], true);
@@ -291,9 +300,7 @@ test('#7 executeRaw 落在会话事务连接上（A4）', async () => {
 // ─── #8 会话内 store.transaction 并网（A5） ──────────────────
 
 test('#8 会话内 store.transaction 不另开事务（A5）', async () => {
-  const { descriptor, state } = makeFakeSqlExecutor();
-  registerSql('SessA', 'sess_a', 'SA');
-  datasource.setConnections({ sess_a: descriptor });
+  const { descriptor, state } = setupSingleSql();
   const innerRan = [];
 
   await store.session(async (s) => {
@@ -584,9 +591,7 @@ test('#18 真实 SQLite：嵌套 session 内层回滚、外层提交', async () 
 // ─── #19 嵌套 session：首次写开保存点、退出释放、共用外层事务 ──
 
 test('#19 嵌套 session：首次写开保存点、退出释放、共用外层事务', async () => {
-  const { descriptor, state } = makeFakeSqlExecutor();
-  registerSql('SessA', 'sess_a', 'SA');
-  datasource.setConnections({ sess_a: descriptor });
+  const { descriptor, state } = setupSingleSql();
 
   await store.session(async (outer) => {
     await outer.insert('SessA', { v: '1' });
@@ -597,17 +602,13 @@ test('#19 嵌套 session：首次写开保存点、退出释放、共用外层�
 
   assert.equal(state.opened, 1, '嵌套会话共用外层事务连接');
   assert.deepEqual(state.savepoints.map(([, n]) => n), ['sp_1'], '内层作用域首次写才开保存点');
-  assert.deepEqual(state.released_sps.map(([, n]) => n), ['sp_1']);
-  assert.equal(state.rolled_back, 0);
-  assert.equal(state.committed, 1);
+  assertSavepointReleased(state);
 });
 
 // ─── #20 会话内 transaction：作为嵌套作用域（失败只回滚本层） ──
 
 test('#20 会话内 transaction：作为嵌套作用域，失败只回滚本层', async () => {
-  const { descriptor, state } = makeFakeSqlExecutor();
-  registerSql('SessA', 'sess_a', 'SA');
-  datasource.setConnections({ sess_a: descriptor });
+  const { descriptor, state } = setupSingleSql();
 
   await store.session(async (s) => {
     await s.insert('SessA', { v: '1' });
@@ -624,7 +625,5 @@ test('#20 会话内 transaction：作为嵌套作用域，失败只回滚本层'
   assert.equal(state.opened, 1, '会话内 transaction 不另开事务');
   assert.deepEqual(state.savepoints.map(([, n]) => n), ['sp_1']);
   assert.deepEqual(state.rolled_to_sps.map(([, n]) => n), ['sp_1']);
-  assert.deepEqual(state.released_sps.map(([, n]) => n), ['sp_1']);
-  assert.equal(state.rolled_back, 0);
-  assert.equal(state.committed, 1);
+  assertSavepointReleased(state);
 });

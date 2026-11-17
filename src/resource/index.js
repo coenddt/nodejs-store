@@ -278,12 +278,18 @@ async function put({ bytes, fileName, mime, kind, bind, pool } = {}) {
   return { resourceId, sha1, locations };
 }
 
-/** 读：按 provider 配置序（同级按 priority）选路，失败降级到下一副本；成功后附元数据 */
-async function open(resourceId, opts = {}) {
+/** open/remove 共用前置：crud 门面、字段映射、provider 池与该资源的 location 行集 */
+async function _loadLocations(resourceId, opts) {
   const crud = _crud();
   const F = _cfg.fields;
   const poolSel = _requirePool(opts.pool);
   const rows = await crud.query(_LOC_GQL(_cfg.schema.location), { c0: { [F.location.resourceId]: resourceId } });
+  return { crud, F, poolSel, rows };
+}
+
+/** 读：按 provider 配置序（同级按 priority）选路，失败降级到下一副本；成功后附元数据 */
+async function open(resourceId, opts = {}) {
+  const { crud, F, poolSel, rows } = await _loadLocations(resourceId, opts);
   const order = Array.isArray(opts.order) && opts.order.length ? opts.order : Array.from(poolSel.keys());
   const rank = (b) => { const i = order.indexOf(b); return i < 0 ? Number.MAX_SAFE_INTEGER : i; };
   const backendOf = (r) => r[F.location.backend];
@@ -343,10 +349,7 @@ async function open(resourceId, opts = {}) {
 
 /** 删：逐副本清字节 + 删 location 行 + 删 Resource 行 */
 async function remove(resourceId, opts = {}) {
-  const crud = _crud();
-  const F = _cfg.fields;
-  const poolSel = _requirePool(opts.pool);
-  const rows = await crud.query(_LOC_GQL(_cfg.schema.location), { c0: { [F.location.resourceId]: resourceId } });
+  const { crud, F, poolSel, rows } = await _loadLocations(resourceId, opts);
   const removed = [];
   for (const loc of rows) {
     const backend = loc[F.location.backend];

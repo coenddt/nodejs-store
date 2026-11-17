@@ -9,21 +9,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const cache = require('../src/cache');
-const feedback = require('../src/feedback');
-
-/** 收集期间 emit 的事件（用后恢复原 sink，并复位 provider 防跨用例污染） */
-function collect(body) {
-  const prev = feedback.getSink();
-  const events = [];
-  feedback.setSink((e) => events.push(e));
-  try {
-    body();
-  } finally {
-    feedback.setSink(prev);
-    cache.setCacheStatus(null);
-  }
-  return events;
-}
+// 与 cache-link 共用的事件收集桩（行为见 helpers 头注释）
+const { collect } = require('./helpers/cache-capture');
 
 test('B6：无 provider → 恒 BYPASS（注记必须为真）', () => {
   cache.setCacheStatus(null);

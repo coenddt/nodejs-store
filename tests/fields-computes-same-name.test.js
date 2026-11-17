@@ -10,12 +10,13 @@
  * 运行：`cd nodejs-store; $env:LOCAL_CORE='1'; node --test tests/fields-computes-same-name.test.js`
  */
 
-const { test } = require('node:test');
-const assert = require('node:assert/strict');
+const {
+  test, assert,
+  src: { init, store, schema: _sc },
+} = require('./helpers/boot');
 
 const { connect } = require('../src/memory');
 const datasource = require('../src/datasource');
-const { init, store, schema: _sc } = require('../src');
 
 async function liveFavoriteCount(items) {
   for (const it of items) it.favoriteCount = 3;

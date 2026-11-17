@@ -262,6 +262,52 @@ async function nestedSavepointScope(source, outer, fn) {
   return out;
 }
 
+// ── D4-2 去重提取：runInTransaction 三分支共享骨架 ──
+
+/** 未处理哨兵：fn() 可合法返回任意值（含 null/undefined），不能用返回值判「未处理」 */
+const UNHANDLED = Symbol('unhandled');
+
+/**
+ * 事务前置检查（runInTransaction 嵌入式 / SQL 分支共用）：
+ *   - 执行器无 withTransaction → 降级不静默（transaction_not_atomic），按原样执行 fn；
+ *   - 同源已持外层事务 → 嵌套保存点作用域（内层失败只回滚本层）；
+ *   - 其余返回 UNHANDLED，调用方继续走包事务路径。
+ */
+function _txPrecheck(source, conn, parent, fn) {
+  if (typeof conn.withTransaction !== 'function') {
+    // 降级不静默：显式声明本事务作用域未生效（与 store.session 的 session_not_atomic 对称）
+    warnTransactionNotAtomic(source, conn.kind);
+    return fn();
+  }
+  if (parent.has(source)) {
+    // 同源嵌套事务：在已持有的事务连接上开保存点（内层失败只回滚本层，外层可继续）
+    return nestedSavepointScope(source, parent.get(source), fn);
+  }
+  return UNHANDLED;
+}
+
+/**
+ * 事务视图作用域（runInTransaction 嵌入式 / Mongo 分支共用）：
+ * 复制父作用域并注入本源视图，fn 的全部命令在新作用域内执行；
+ * fn 成功 commit、抛错 rollback（原样上抛）、release 幂等收尾。
+ */
+async function _runTxScope(source, parent, view, fn) {
+  const store = new Map(parent);
+  store.set(source, view);
+  return _txStore.run(store, async () => {
+    try {
+      const out = await fn();
+      await view.tx.commit();
+      return out;
+    } catch (e) {
+      await view.tx.rollback();
+      throw e;
+    } finally {
+      await view.tx.release();
+    }
+  });
+}
+
 /**
  * 事务作用域：在单个源上以「同连接 + 同事务」执行 fn 内的全部命令
  *
@@ -285,44 +331,17 @@ async function runInTransaction(source, fn) {
 
   if (isEmbeddedConnection(conn)) {
     // ── 嵌入式载体分支（local / memory；事务作用域）──
-    if (typeof conn.withTransaction !== 'function') {
-      // 降级不静默：显式声明本事务作用域未生效
-      warnTransactionNotAtomic(source, conn.kind);
-      return fn();
-    }
-    if (parent.has(source)) {
-      // 同源嵌套：嵌入式快照无保存点原语 → 走降级声明（nestedSavepointScope 内判定）
-      return nestedSavepointScope(source, parent.get(source), fn);
-    }
+    const pre = _txPrecheck(source, conn, parent, fn);
+    if (pre !== UNHANDLED) return pre;
     const tx = await conn.openTransaction();
     const view = { kind: conn.kind, conn, session: tx.session, tx, handle: tx.handle };
-    const store = new Map(parent);
-    store.set(source, view);
-    return _txStore.run(store, async () => {
-      try {
-        const out = await fn();
-        await tx.commit();
-        return out;
-      } catch (e) {
-        await tx.rollback();
-        throw e;
-      } finally {
-        await tx.release();
-      }
-    });
+    return _runTxScope(source, parent, view, fn);
   }
 
   if (isSqlConnection(conn)) {
     // ── SQL 分支（事务作用域）──
-    if (typeof conn.withTransaction !== 'function') {
-      // 降级不静默：与 store.session 的 session_not_atomic 对称，显式声明本事务作用域未生效
-      warnTransactionNotAtomic(source, conn.kind);
-      return fn();
-    }
-    if (parent.has(source)) {
-      // 同源嵌套事务：在已持有的事务连接上开保存点（内层失败只回滚本层，外层可继续）
-      return nestedSavepointScope(source, parent.get(source), fn);
-    }
+    const pre = _txPrecheck(source, conn, parent, fn);
+    if (pre !== UNHANDLED) return pre;
     const txDescriptor = { kind: conn.kind, exec: null, tx: null };
     const store = new Map(parent);
     store.set(source, txDescriptor);
@@ -335,7 +354,7 @@ async function runInTransaction(source, fn) {
     );
   }
 
-  // ── Mongo 分支 ──
+  // ── Mongo 分支（无 withTransaction 原语：探测可事务 → session 事务；不用 _txPrecheck）──
   if (parent.has(source)) {
     // 同源嵌套：Mongo 无保存点 → 复用降级声明（内层失败将回滚整个外层事务）
     return nestedSavepointScope(source, parent.get(source), fn);
@@ -347,20 +366,7 @@ async function runInTransaction(source, fn) {
   }
   const tx = await executors.mongo.openTransaction(conn);
   const view = { kind: 'mongo', conn, session: tx.session, tx };
-  const store = new Map(parent);
-  store.set(source, view);
-  return _txStore.run(store, async () => {
-    try {
-      const out = await fn();
-      await tx.commit();
-      return out;
-    } catch (e) {
-      await tx.rollback();
-      throw e;
-    } finally {
-      await tx.release();
-    }
-  });
+  return _runTxScope(source, parent, view, fn);
 }
 
 /**
@@ -792,6 +798,14 @@ class Session {
     return view;
   }
 
+  /** 开事务并登记到会话（_openView 三载体共用；commit/rollback 由 commitAll/rollbackAll 统一收口） */
+  async _openRegisteredTx(source, open) {
+    const tx = await open();
+    this._txs.set(source, tx);
+    this._opened.push(source);
+    return tx;
+  }
+
   /** 解析并缓存该源的事务视图；返回 { kind, exec, tx } /
    * { kind:'mongo', conn, session, tx } / null（直通） */
   async _openView(source) {
@@ -803,9 +817,7 @@ class Session {
     const connection = getConnection(source);
     if (isSqlConnection(connection)) {
       if (typeof connection.openTransaction === 'function') {
-        const tx = await connection.openTransaction();
-        this._txs.set(source, tx);
-        this._opened.push(source);
+        const tx = await this._openRegisteredTx(source, () => connection.openTransaction());
         return { kind: connection.kind, exec: tx.exec, tx };
       }
       this._warnNotAtomic(source, connection.kind);
@@ -814,9 +826,7 @@ class Session {
     // 嵌入式载体（local / memory）：快照隔离开事务；无原语 → 声明未原子并直通
     if (isEmbeddedConnection(connection)) {
       if (typeof connection.openTransaction === 'function') {
-        const tx = await connection.openTransaction();
-        this._txs.set(source, tx);
-        this._opened.push(source);
+        const tx = await this._openRegisteredTx(source, () => connection.openTransaction());
         return {
           kind: connection.kind, conn: connection, session: tx.session, tx, handle: tx.handle,
         };
@@ -827,9 +837,9 @@ class Session {
     // Mongo 源（裸驱动实例）
     const cap = await mongoTransactable(connection);
     if (cap === true) {
-      const tx = await executors.mongo.openTransaction(connection);
-      this._txs.set(source, tx);
-      this._opened.push(source);
+      const tx = await this._openRegisteredTx(
+        source, () => executors.mongo.openTransaction(connection),
+      );
       return { kind: 'mongo', conn: connection, session: tx.session, tx };
     }
     this._warnMongo(source, cap);

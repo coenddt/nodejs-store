@@ -5,31 +5,15 @@
  * 与 py-store/example/manager-transaction/impl/checks.py 一一对应。
  */
 
-let lastAutoId = null;
+const { autoSchema } = require('./auto-schema');
 
-function autoDef() {
-  return {
-    name: 'AutoOrder',
-    collection: 'auto_orders',
-    idPrefix: '',
-    timestamps: false,
-    read: ['admin', 'seller', 'buyer'],
-    write: ['admin', 'seller'],
-    fields: {
-      _id: { type: 'int', strategy: 'autoincrement' },
-      orderNo: { type: 'string' },
-      amount: { type: 'float' },
-    },
-    relations: {},
-    computes: {},
-  };
-}
+let lastAutoId = null;
 
 /** 注册 autoincrement 探针 schema（nodejs 同名重复注册 = 更新语义，天然幂等） */
 async function register_auto_schema(_h) {
   const { schema: sc } = require('../../../src');
   try {
-    sc.register(autoDef());
+    sc.register(autoSchema('AutoOrder', 'auto_orders'));
     return { ok: true, note: 'AutoOrder 已注册' };
   } catch (e) {
     return { ok: false, note: `AutoOrder 注册失败: ${e.message || e}` };

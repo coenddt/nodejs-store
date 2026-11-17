@@ -27,6 +27,13 @@ after(() => {
   for (const dir of _dirs) fs.rmSync(dir, { recursive: true, force: true });
 });
 
+/** 注册带 fn 的 defn 并断言覆盖，然后 init 连接（dir 区分目录；returns 用例共用骨架） */
+async function registerAndInit(defn, dir) {
+  _sc.register(defn);
+  _sc.assertFnsCovered([defn]);
+  await init(connect({ dir: tmpDir(dir) }));
+}
+
 test('returns: update 返回值含同步 fn 计算列', async () => {
   _sc.setFn('retItemTotal', (it) => (it.a || 0) + (it.b || 0));
   const defn = {
@@ -34,10 +41,7 @@ test('returns: update 返回值含同步 fn 计算列', async () => {
     fields: { _id: { type: 'string' }, a: { type: 'int' }, b: { type: 'int' } },
     computes: { total: { type: 'int', fn: true, depends: ['a', 'b'] } },
   };
-  _sc.register(defn);
-  _sc.assertFnsCovered([defn]);
-
-  await init(connect({ dir: tmpDir('computes') }));
+  await registerAndInit(defn, 'computes');
   const ins = await store.insert('RetItem', { a: 1, b: 2 });
   const out = await store.update('RetItem', { _id: ins._id }, { a: 10 });
   assert.equal(out.total, 12);
@@ -53,10 +57,7 @@ test('returns: 与再次读回一致（落库 / returns / 读回同值）', asyn
     },
     computes: { total: { type: 'int', fn: true, depends: ['a', 'b'] } },
   };
-  _sc.register(defn);
-  _sc.assertFnsCovered([defn]);
-
-  await init(connect({ dir: tmpDir('reread') }));
+  await registerAndInit(defn, 'reread');
   const ins = await store.insert('RetSum', { a: 2, b: 3 });
   const out = await store.update('RetSum', { _id: ins._id }, { b: 5 });
   const rows = await store.query('RetSum{ _id, a, b, n, total }');

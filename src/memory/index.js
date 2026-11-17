@@ -25,6 +25,7 @@
  */
 
 const { createDb } = require('../local/handle');
+const embeddedTx = require('../local/embedded-tx'); // D4-2 去重：事务骨架与 local 共享
 
 const MEMORY_KIND = 'memory';
 
@@ -96,41 +97,19 @@ function connect(options = {}) {
     handle: handleFor(database),
     handleFor,
 
-    /** 事务原语：快照隔离（读 io 快照 `staged`，commit 才整体写回分区） */
-    async openTransaction(db = database) {
+    /** 事务原语：快照隔离（读 io 快照 `staged`，commit 才整体写回分区）；骨架与 local 共享 */
+    openTransaction(db = database) {
       const bound = _bindIo(io, db);
-      let staged = bound.load();
-      let closed = false;
-      const txIo = {
-        load: () => staged,
-        save: (_changed, collections) => { staged = collections; },
-      };
-      return {
-        session: { snapshot: () => staged },
-        handle: createDb(txIo, db ?? null),
-        async commit() {
-          if (closed) return;
-          closed = true;
-          await bound.save(Object.keys(staged), staged);
-        },
-        async rollback() { closed = true; },
-        async release() { closed = true; },
-      };
+      return embeddedTx.stagedOpenTransaction({
+        db,
+        loadStaged: () => bound.load(),
+        commitStaged: (staged) => bound.save(Object.keys(staged), staged),
+      });
     },
 
     /** 便捷包装（与 sqlite / local 执行器 withTransaction 同形） */
-    async withTransaction(fn, db = database) {
-      const tx = await descriptor.openTransaction(db);
-      try {
-        const out = await fn(null, tx);
-        await tx.commit();
-        return out;
-      } catch (e) {
-        await tx.rollback();
-        throw e;
-      } finally {
-        await tx.release();
-      }
+    withTransaction(fn, db = database) {
+      return embeddedTx.withTransaction(() => descriptor.openTransaction(db), fn);
     },
   };
 

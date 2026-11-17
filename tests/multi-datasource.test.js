@@ -23,56 +23,13 @@
  * 运行：node scripts/test.js（置 LOCAL_CORE=1 使用仓库内 Rust 核心）
  */
 
-const { test, before } = require('node:test');
-const assert = require('node:assert/strict');
-const Database = require('better-sqlite3');
-
-const { init, store, executors, permission, schema: _sc } = require('../src');
+const {
+  test, before, assert, Database,
+  src: { init, store, executors, permission, schema: _sc },
+} = require('./helpers/boot');
 const datasource = require('../src/datasource');
-
-// ─── Mongo 桩驱动 ────────────────────────────────────────────
-
-class MemCursor {
-  constructor(docs) {
-    this.docs = docs;
-  }
-
-  async toArray() {
-    return [...this.docs];
-  }
-}
-
-class MemColl {
-  constructor(docs) {
-    this.docs = docs || [];
-  }
-
-  find() {
-    return new MemCursor(this.docs);
-  }
-
-  aggregate() {
-    return new MemCursor(this.docs);
-  }
-
-  async findOne() {
-    return this.docs.length ? { ...this.docs[0] } : null;
-  }
-
-  async countDocuments() {
-    return this.docs.length;
-  }
-
-  async insertOne(doc) {
-    this.docs.push(doc);
-  }
-
-  listIndexes() {
-    return new MemCursor([]);
-  }
-
-  async createIndex() {}
-}
+// 内存 Mongo 桩改用 tests 共享超集版（零语义论证见 helpers/mem-mongo.js 头注释）
+const { MemCursor, MemColl } = require('./helpers/mem-mongo');
 
 /** Mongo db 实形态（collection 为函数）：固定库，无法跨库 */
 class FakeDb {

@@ -84,33 +84,8 @@ const _STUBS = {
   },
 };
 
-class _MemCursor {
-  constructor(docs) {
-    this.docs = docs;
-  }
-
-  async toArray() {
-    return [...this.docs];
-  }
-}
-
-class _MemColl {
-  constructor(docs) {
-    this.docs = docs !== undefined ? docs : [];
-  }
-
-  find() {
-    return new _MemCursor(this.docs);
-  }
-
-  aggregate() {
-    return new _MemCursor(this.docs);
-  }
-
-  async findOne() {
-    return this.docs.length ? { ...this.docs[0] } : null;
-  }
-}
+// 内存 Mongo 桩改用 tests 共享超集版（零语义论证见 helpers/mem-mongo.js 头注释）
+const { MemCursor: _MemCursor, MemColl: _MemColl } = require('./helpers/mem-mongo');
 
 class _FakeDb {
   constructor(docs) {

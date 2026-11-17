@@ -11,6 +11,7 @@
 
 const { core: _core } = require('../schema');
 const { normalizeRows } = require('./_values');
+const txShared = require('./tx'); // D4-2 去重：事务骨架与 mysql/sqlite 共享（./tx）
 
 /** 创建执行器描述符（可直接作为 `init(connections)` 的一个 SQL 数据源连接） */
 function create(driver, _options = {}) {
@@ -35,57 +36,20 @@ function create(driver, _options = {}) {
   /**
    * 显式事务句柄：池 checkout 专用 client（失败直接上抛，无静默兜底）
    * + BEGIN + 幂等 commit/rollback；release 归还连接（单连接为 no-op）。
+   * 骨架在 ./tx 与 mysql 共享，方言差异仅 BEGIN/COMMIT/ROLLBACK 的驱动调用形态。
    */
-  async function openTransaction() {
-    const { openAcquire } = require('./open'); // D4-1 解环：openAcquire 下沉零依赖模块，驱动不再回指索引
-    const { conn, release } = await openAcquire(driver);
-    await conn.query('BEGIN');
-    let closed = false;
-    return {
-      exec: (plan) => runStmts(conn, plan),
-      async savepoint(name) {
-        /* 保存点（嵌套事务用）；name 由 Host 生成（sp_<n>），非用户输入 */
-        await conn.query(`SAVEPOINT ${name}`);
-      },
-      async releaseSavepoint(name) {
-        await conn.query(`RELEASE SAVEPOINT ${name}`);
-      },
-      async rollbackToSavepoint(name) {
-        await conn.query(`ROLLBACK TO SAVEPOINT ${name}`);
-      },
-      async commit() {
-        if (closed) return;
-        closed = true;
-        await conn.query('COMMIT');
-      },
-      async rollback() {
-        if (closed) return;
-        closed = true;
-        await conn.query('ROLLBACK');
-      },
-      release,
-    };
-  }
+  const openTransaction = () =>
+    txShared.pooledTransaction({
+      driver,
+      execOn: runStmts,
+      begin: (conn) => conn.query('BEGIN'),
+      commit: (conn) => conn.query('COMMIT'),
+      rollback: (conn) => conn.query('ROLLBACK'),
+    });
 
   /** 事务执行：基于 openTransaction（无第二套事务路径），任一失败整体回滚；
    *  body(exec, tx) 第二参数为事务句柄（供上层读保存点原语），可选——旧单参写法继续可用 */
-  async function withTransaction(body) {
-    const tx = await openTransaction();
-    try {
-      const out = await body(tx.exec, tx);
-      await tx.commit();
-      return out;
-    } catch (e) {
-      try {
-        await tx.rollback();
-      } catch (_) {
-        /* rollback 失败不掩盖原始错误 */
-      }
-      throw e;
-    } finally {
-      await tx.release();
-    }
-  }
+  const withTransaction = (body) => txShared.withTransaction(openTransaction, body);
 
   return {
     kind: 'postgres',

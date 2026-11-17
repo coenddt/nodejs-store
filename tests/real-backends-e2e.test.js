@@ -28,10 +28,13 @@ const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const mysql = require('mysql2/promise');
 const { Pool } = require('pg');
-const { MongoClient } = require('mongodb');
 
 const { init, store, executors, permission, schema: _sc } = require('../src');
 const naming = require('../src/naming');
+// Mongo 连接试探桩与 federation-e2e 共用（行为见 helpers 头注释）
+const { probeMongo } = require('./helpers/mongo-probe');
+// 后端 e2e 共享断言与 sql-executor 对齐（insert 读回 / introspect 产物）
+const { insertAndReadBackPost, assertWidgetsGadgetsDefs } = require('./helpers/backend-e2e');
 
 // 独立库名（可整串用 MYSQL_URI / PG_URI / MONGO_URI 环境变量覆盖，便于 CI 复用外部实例）
 const MYSQL_URI =
@@ -190,15 +193,10 @@ async function setupPostgres() {
 }
 
 async function setupMongo() {
-  const client = new MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 3000 });
-  try {
-    await client.connect();
-    await client.db().command({ ping: 1 });
-  } catch (e) {
+  const client = await probeMongo(MONGO_URI, (e) => {
     mongoCtx.reason = `MongoDB 不可达（${MONGO_URI}）: ${e.message}`;
-    await client.close().catch(() => {});
-    return;
-  }
+  });
+  if (!client) return;
   const db = client.db();
   mongoCtx.client = client;
   mongoCtx.driver = db;
@@ -231,6 +229,15 @@ after(async () => {
 
 // ─── A4：CRUD 闭环（同一套断言跑三个后端） ────────────────────
 
+/** A/B 双行 Post 种子：reset + insertMany（crudSuite 内 count / updateMany 用例共用） */
+async function seedTwoDrafts(ctx, S) {
+  await ctx.reset();
+  await store.insertMany(S, [
+    { title: 'A', status: 'draft', views: 1 },
+    { title: 'B', status: 'draft', views: 2 },
+  ]);
+}
+
 function crudSuite(ctx) {
   const S = ctx.schemaName;
   const SD = ctx.archiveSchema;
@@ -238,23 +245,12 @@ function crudSuite(ctx) {
   it('insert + query（含 _id 还原）', async (t) => {
     if (!ctx.ready) return t.skip(ctx.reason);
     await ctx.reset();
-    const doc = await store.insert(S, { title: '你好', status: 'draft', views: 3 });
-    assert.ok(doc && typeof doc._id === 'string' && doc._id.startsWith('p_'), '应生成 idPrefix 前缀 _id');
-
-    const items = await store.query(`${S}{_id, title, status, views}`);
-    assert.equal(items.length, 1);
-    assert.equal(items[0]._id, doc._id);
-    assert.equal(items[0].title, '你好');
-    assert.equal(items[0].views, 3);
+    await insertAndReadBackPost(S);
   });
 
   it('count / exists', async (t) => {
     if (!ctx.ready) return t.skip(ctx.reason);
-    await ctx.reset();
-    await store.insertMany(S, [
-      { title: 'A', status: 'draft', views: 1 },
-      { title: 'B', status: 'draft', views: 2 },
-    ]);
+    await seedTwoDrafts(ctx, S);
     assert.equal(await store.count(S, {}), 2);
     assert.equal(await store.count(S, { status: 'draft' }), 2);
     assert.equal(await store.count(S, { views: { $gte: 2 } }), 1);
@@ -276,11 +272,7 @@ function crudSuite(ctx) {
 
   it('updateMany（$inc）', async (t) => {
     if (!ctx.ready) return t.skip(ctx.reason);
-    await ctx.reset();
-    await store.insertMany(S, [
-      { title: 'A', status: 'draft', views: 1 },
-      { title: 'B', status: 'draft', views: 2 },
-    ]);
+    await seedTwoDrafts(ctx, S);
     const r = await store.updateMany(S, { status: 'draft' }, { $inc: { views: 10 } });
     assert.equal(r.modifiedCount, 2);
     const items = await store.query(`${S}{_id, views}`);
@@ -340,20 +332,7 @@ function syncSuite(ctx) {
       registerDefs: false,
     });
 
-    const widgets = defs.find((d) => d.name === 'widgets');
-    assert.ok(widgets, '应产出 widgets 定义');
-    assert.equal(widgets.collection, 'widgets');
-    assert.equal(widgets.datasource, ctx.ds);
-    assert.ok(widgets.fields._id, '主键应映射为 _id');
-    assert.equal(widgets.fields.sku.required, true, 'NOT NULL 应映射 required');
-    assert.equal(widgets.fields.price.type, 'number');
-    assert.ok(widgets.relations.gadgets, '外键应生成反向 many 关系');
-    assert.equal(widgets.relations.gadgets.type, 'many');
-
-    const gadgets = defs.find((d) => d.name === 'gadgets');
-    assert.ok(gadgets.relations.widgets, '外键侧应有 many-to-one 关系');
-    assert.equal(gadgets.relations.widgets.type, 'one');
-    assert.equal(gadgets.relations.widgets.localField, 'widget_id');
+    assertWidgetsGadgetsDefs(defs, ctx.ds);
 
     // 三元组冲突 fail fast：已注册 <ctx.schemaName>（同 source、同 collection）再注册即抛错
     const dupe = defs.find((d) => d.collection === ctx.collection);

@@ -3,19 +3,8 @@ const assert = require('node:assert');
 const os = require('node:os');
 const path = require('node:path');
 const resource = require('../src/resource');
-
-function fakeStore() {
-  const rows = [];
-  return {
-    _rows: rows,
-    async exists(schema, cond) { return rows.some((r) => r._schema === schema && r._id === cond._id); },
-    async insert(schema, data) { rows.push({ _schema: schema, ...data }); return data; },
-    async insertMany(schema, docs) { docs.forEach((d) => rows.push({ _schema: schema, ...d })); return docs; },
-    async query(gql, params) { const id = params.c0.resourceId; return rows.filter((r) => r._schema === 'ResourceLocation' && r.resourceId === id); },
-    async queryOne(gql, params) { return rows.find((r) => r._schema === 'Resource' && r._id === params.c0._id) || null; },
-    async remove(schema, cond) { for (let i = rows.length - 1; i >= 0; i--) if (rows[i]._schema === schema && (cond.resourceId ? rows[i].resourceId === cond.resourceId : rows[i]._id === cond._id)) rows.splice(i, 1); return { deletedCount: 1 }; },
-  };
-}
+// ResourceLocation 存储桩与 resource-pools 逐字重复，收敛到共享桩（行为见 helpers 头注释）
+const { fakeStore } = require('./helpers/resource-fakes');
 
 /** 通用 fake store：按物理字段名匹配（供字段映射用例） */
 function genericStore() {
@@ -32,26 +21,58 @@ function genericStore() {
   };
 }
 
-function memProvider(kind, writes) {
-  return { create: () => ({
-    kind,
+/** 内存 provider 四方法骨架（writes: Map；get 未命中抛 'miss'。memProvider 与内联注册共用） */
+function memMethods(writes) {
+  return {
     async put(k, b) { writes.set(k, Buffer.from(b)); },
     async get(k) { if (!writes.has(k)) throw new Error('miss'); return writes.get(k); },
     async remove(k) { writes.delete(k); },
     async exists(k) { return writes.has(k); },
-  }) };
+  };
+}
+
+function memProvider(kind, writes) {
+  return { create: () => ({ kind, ...memMethods(writes) }) };
+}
+
+/** 每次 open 自建 Map 的 memory provider（A5/A6 副本降级用；get 恒取 Map 值，无 miss 抛错） */
+function freshMemoryProvider() {
+  return { create: () => {
+    const w = new Map();
+    return {
+      kind: 'memory',
+      async put(k, b) { w.set(k, Buffer.from(b)); },
+      async get(k) { return w.get(k); },
+      async remove(k) { w.delete(k); },
+      async exists(k) { return w.has(k); },
+    };
+  } };
+}
+
+/** 单点故障 provider：put/get 传文本即抛错，remove 空、exists 恒 false（故障注入用例共用） */
+function registerFailingProvider(kind, failing) {
+  resource.registerProvider(kind, { create: () => ({
+    kind,
+    async put() { if (failing.put) throw new Error(failing.put); },
+    async get() { if (failing.get) throw new Error(failing.get); },
+    async remove() {},
+    async exists() { return false; },
+  })});
+}
+
+/** 捕获 feedback 事件（events 数组 + restore() 复位；A5/A6/字段映射用例共用） */
+function captureFeedback() {
+  const feedback = require('../src/feedback');
+  const events = [];
+  const prev = feedback.getSink();
+  feedback.setSink((e) => events.push(e));
+  return { events, restore: () => feedback.setSink(prev) };
 }
 
 test('put fan-out + open degrade + url', async () => {
   const store = fakeStore();
   const writes = new Map();
-  resource.registerProvider('memory', { create: () => ({
-    kind: 'memory',
-    async put(k, b) { writes.set(k, Buffer.from(b)); },
-    async get(k) { if (!writes.has(k)) throw new Error('miss'); return writes.get(k); },
-    async remove(k) { writes.delete(k); },
-    async exists(k) { return writes.has(k); },
-  })});
+  resource.registerProvider('memory', { create: () => ({ kind: 'memory', ...memMethods(writes) }) });
   const dir = path.join(os.tmpdir(), `res-${Date.now()}`);
   resource.configure({
     store,
@@ -76,13 +97,7 @@ test('put fan-out + open degrade + url', async () => {
 
 test('open：零副本行 → 抛 ERR_RESOURCE_NOT_FOUND: 前缀（spec/03 前缀层 → 适配器 404）', async () => {
   const store = fakeStore();
-  resource.registerProvider('memmiss', { create: () => ({
-    kind: 'memmiss',
-    async put() {},
-    async get() { throw new Error('miss'); },
-    async remove() {},
-    async exists() { return false; },
-  })});
+  registerFailingProvider('memmiss', { get: 'miss' });
   resource.configure({ store, providers: [{ kind: 'memmiss' }] });
 
   const PREFIX = 'ERR_RESOURCE_NOT_FOUND:';
@@ -104,13 +119,7 @@ test('open：有副本行但 provider 读取失败 → 原样重抛、不带前�
   const prev = feedback.getSink();
   feedback.setSink(() => {});
   try {
-    resource.registerProvider('iobad', { create: () => ({
-      kind: 'iobad',
-      async put() {},
-      async get() { throw new Error('io down'); },
-      async remove() {},
-      async exists() { return false; },
-    })});
+    registerFailingProvider('iobad', { get: 'io down' });
     resource.configure({ store, providers: [{ kind: 'iobad' }] });
     store._rows.push({ _schema: 'ResourceLocation', resourceId: 'a'.repeat(40), backend: 'iobad', key: 'k', status: 'ok', priority: 0 });
 
@@ -129,28 +138,10 @@ test('open：有副本行但 provider 读取失败 → 原样重抛、不带前�
 
 test('A5 首个副本读失败 → 降级到下一副本 + resource_location_degraded 反馈', async () => {
   const store = fakeStore();
-  const feedback = require('../src/feedback');
-  const events = [];
-  const prev = feedback.getSink();
-  feedback.setSink((e) => events.push(e));
+  const { events, restore } = captureFeedback();
   try {
-    resource.registerProvider('badget', { create: () => ({
-      kind: 'badget',
-      async put() {},
-      async get() { throw new Error('disk boom'); },
-      async remove() {},
-      async exists() { return false; },
-    })});
-    resource.registerProvider('memory', { create: () => {
-      const w = new Map();
-      return {
-        kind: 'memory',
-        async put(k, b) { w.set(k, Buffer.from(b)); },
-        async get(k) { return w.get(k); },
-        async remove(k) { w.delete(k); },
-        async exists(k) { return w.has(k); },
-      };
-    }});
+    registerFailingProvider('badget', { get: 'disk boom' });
+    resource.registerProvider('memory', freshMemoryProvider());
     resource.configure({ store, providers: [{ kind: 'badget' }, { kind: 'memory' }], url: {} });
 
     const out = await resource.put({ bytes: Buffer.from('hello') });
@@ -159,34 +150,16 @@ test('A5 首个副本读失败 → 降级到下一副本 + resource_location_deg
     assert.strictEqual(got.bytes.toString(), 'hello');
     assert.ok(events.some((e) => e.code === 'resourceLocationDegraded'));
   } finally {
-    feedback.setSink(prev);
+    restore();
   }
 });
 
 test('A6 副本写失败 → status=failed + resource_location_write_failed 反馈；其余副本可用', async () => {
   const store = fakeStore();
-  const feedback = require('../src/feedback');
-  const events = [];
-  const prev = feedback.getSink();
-  feedback.setSink((e) => events.push(e));
+  const { events, restore } = captureFeedback();
   try {
-    resource.registerProvider('broken', { create: () => ({
-      kind: 'broken',
-      async put() { throw new Error('boom'); },
-      async get() { throw new Error('boom'); },
-      async remove() {},
-      async exists() { return false; },
-    })});
-    resource.registerProvider('memory', { create: () => {
-      const w = new Map();
-      return {
-        kind: 'memory',
-        async put(k, b) { w.set(k, Buffer.from(b)); },
-        async get(k) { return w.get(k); },
-        async remove(k) { w.delete(k); },
-        async exists(k) { return w.has(k); },
-      };
-    }});
+    registerFailingProvider('broken', { put: 'boom', get: 'boom' });
+    resource.registerProvider('memory', freshMemoryProvider());
     resource.configure({ store, providers: [{ kind: 'memory' }, { kind: 'broken' }], url: {} });
 
     const out = await resource.put({ bytes: Buffer.from('x') });
@@ -197,7 +170,7 @@ test('A6 副本写失败 → status=failed + resource_location_write_failed 反�
     const got = await resource.open(out.resourceId);
     assert.strictEqual(got.backend, 'memory');
   } finally {
-    feedback.setSink(prev);
+    restore();
   }
 });
 
@@ -293,10 +266,7 @@ test('字段映射：meta 缺失 → 仍出字节 + resource_meta_missing 反馈
   const store = genericStore();
   const writes = new Map();
   store.queryOne = async () => null;                              // 模拟 Resource 行缺失
-  const feedback = require('../src/feedback');
-  const events = [];
-  const prev = feedback.getSink();
-  feedback.setSink((e) => events.push(e));
+  const { events, restore } = captureFeedback();
   try {
     resource.registerProvider('memmiss2', memProvider('memmiss2', writes));
     resource.configure({ store, providers: [{ kind: 'memmiss2' }] });
@@ -307,6 +277,6 @@ test('字段映射：meta 缺失 → 仍出字节 + resource_meta_missing 反馈
     assert.strictEqual(got.mime, null);
     assert.ok(events.some((e) => e.code === 'resourceMetaMissing'));
   } finally {
-    feedback.setSink(prev);
+    restore();
   }
 });

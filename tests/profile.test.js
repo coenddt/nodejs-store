@@ -15,14 +15,11 @@
  * 运行：node scripts/test.js（scripts/test.js 会置 LOCAL_CORE=1）
  */
 
-const { test, before } = require('node:test');
-const assert = require('node:assert/strict');
-const Database = require('better-sqlite3');
-
 const {
-  init, store, executors, permission, feedback, schema: _sc,
-  text2query, ProfileViolation,
-} = require('../src');
+  test, before, assert, Database, bootSingleTable,
+  src: { init, store, executors, permission, schema: _sc },
+} = require('./helpers/boot');
+const { feedback, text2query, ProfileViolation } = require('../src');
 const { _call } = require('../src/crud');
 const { _guardRouteOverride } = require('../src/crud/query');
 
@@ -34,26 +31,32 @@ function createDb() {
   return db;
 }
 
-_sc.register({
-  name: 'PqModel',
-  collection: 'pq_model',
-  idPrefix: 'pq_',
-  timestamps: false,
-  fields: { title: { type: 'string' } },
-  relations: {},
-  datasource: SRC,
-});
-
-before(async () => {
-  await init({ [SRC]: executors.createConnection('sqlite', createDb()) });
-  permission.setContext(undefined);
-});
+bootSingleTable(
+  {
+    name: 'PqModel',
+    collection: 'pq_model',
+    idPrefix: 'pq_',
+    timestamps: false,
+    fields: { title: { type: 'string' } },
+    relations: {},
+    datasource: SRC,
+  },
+  { createDb, srcName: SRC },
+);
 
 /** 每用例复位（档位为进程级全局，防用例间串扰） */
 function _reset() {
   _sc.setProfile('standard');
   permission.setContext(undefined);
   feedback.setSink(null);
+}
+
+/** 复位并挂事件收集 sink（拦截/放行断言用例共用），返回 events 数组 */
+function resetWithEventCapture() {
+  _reset();
+  const events = [];
+  feedback.setSink((e) => events.push(e));
+  return events;
 }
 
 // ── 1. 档位读写 ───────────────────────────────────────────────
@@ -113,9 +116,7 @@ test('profile: text2query 异常抛出仍恢复原档', async () => {
 // ── 3. text2query 档强制 ctx + 反馈 ───────────────────────────
 
 test('profile: text2query 档无 ctx —— ProfileViolation + emit profile_blocked', async () => {
-  _reset();
-  const events = [];
-  feedback.setSink((e) => events.push(e));
+  const events = resetWithEventCapture();
   await assert.rejects(
     () => text2query(() => store.query('PqModel{ title }')),
     (e) => {
@@ -154,9 +155,7 @@ test('profile: text2query 档带用户 ctx 放行', async () => {
 // ── 4. _call 前缀映射（含 feature 提取） ──────────────────────
 
 test('profile: _call 将 ERR_TEXT2QUERY 前缀映射为 ProfileViolation 并提取 feature', async () => {
-  _reset();
-  const events = [];
-  feedback.setSink((e) => events.push(e));
+  const events = resetWithEventCapture();
   assert.throws(
     () => _call(() => { throw new Error('ERR_TEXT2QUERY:text2query 档禁用 [$pipeline 直通]（功能收缩）'); }),
     (e) => {
@@ -186,9 +185,7 @@ test('profile: standard 档无 ctx 照常查询', async () => {
 // ── 6. routeOverride 受信来源 Host 兜底 ───────────────────────
 
 test('profile: text2query 档传 routeOverride —— Host 兜底拒 + emit', async () => {
-  _reset();
-  const events = [];
-  feedback.setSink((e) => events.push(e));
+  const events = resetWithEventCapture();
   await assert.rejects(
     () => text2query(() => store.query('PqModel{ title }', null, { source: SRC })),
     (e) => {
@@ -210,9 +207,7 @@ test('profile: text2query 档传 routeOverride —— Host 兜底拒 + emit', as
 });
 
 test('profile: standard 档 routeOverride 受信可用（Host 兜底放行）', async () => {
-  _reset();
-  const events = [];
-  feedback.setSink((e) => events.push(e));
+  const events = resetWithEventCapture();
   _guardRouteOverride({ source: SRC });
   _guardRouteOverride(null);
   assert.equal(events.length, 0);

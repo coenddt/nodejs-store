@@ -17,10 +17,7 @@ const { schema: _sc, crud: _crud_mod, permission: perm, init: _init } = require(
 // 内置最小 schema（与业务工程 CommercialLedger 同构）
 // ─────────────────────────────────────────────────────────────
 
-_sc.register({
-  name: 'CommercialLedger', collection: 'commercial_ledger', idPrefix: 'CL', timestamps: true,
-  fields: { unit: 'string', income: 'float' }, relations: {}, read: null, write: null,
-});
+require('./helpers/boot').registerCommercialLedger();
 _sc.register({
   name: 'GoalLedger', collection: 'goal_ledger', idPrefix: 'GL', timestamps: true,
   fields: { income: 'float' }, relations: {}, read: null, write: null,
@@ -56,82 +53,8 @@ test('perm.scopedRoles / runAsInternal', async () => {
 
 // ---------- crud 行为测试（find 优化 / 两阶段 / 标准批次 / 写路径） ----------
 
-class _MemCursor {
-  constructor(docs) {
-    this.docs = docs;
-  }
-
-  async toArray() {
-    return [...this.docs];
-  }
-}
-
-class _MemColl {
-  /** 内存版 collection：覆盖 crud 写路径所需全部方法 */
-  constructor(docs) {
-    this.docs = docs !== undefined ? docs : [];
-  }
-
-  find(_query, _projection) {
-    return new _MemCursor(this.docs);
-  }
-
-  aggregate(_pipeline) {
-    return new _MemCursor(this.docs);
-  }
-
-  async findOne(_query, _projection) {
-    return this.docs.length ? { ...this.docs[0] } : null;
-  }
-
-  async countDocuments(_filter) {
-    return this.docs.length;
-  }
-
-  async insertOne(doc) {
-    this.docs.push(doc);
-    return { insertedId: doc._id };
-  }
-
-  async insertMany(docs) {
-    this.docs.push(...docs);
-    return { insertedCount: docs.length };
-  }
-
-  /** 归档幂等（insertMany + upsertById）走 replaceOne(upsert)（对齐 exec.js） */
-  async replaceOne(condition, doc, options) {
-    const i = this.docs.findIndex((d) => d._id === condition._id);
-    if (i >= 0) {
-      this.docs[i] = { ...doc };
-      return { modifiedCount: 1 };
-    }
-    if (options && options.upsert) this.docs.push({ ...doc });
-    return { modifiedCount: 0 };
-  }
-
-  async findOneAndUpdate(condition, update, options) {
-    const base = this.docs.length ? { ...this.docs[0] } : {};
-    for (const st of Object.values(update)) {
-      if (st && typeof st === 'object') Object.assign(base, st);
-    }
-    if (options && options.upsert && !this.docs.length) this.docs.push(base);
-    return base;
-  }
-
-  async updateMany(_condition, _data) {
-    return { modifiedCount: this.docs.length };
-  }
-
-  async deleteMany(_condition) {
-    const n = this.docs.length;
-    this.docs = [];
-    return { deletedCount: n };
-  }
-
-  listIndexes() {
-    return new _MemCursor([]);
-  }
-}
+// 内存 Mongo 桩改用 tests 共享超集版（零语义论证见 helpers/mem-mongo.js 头注释）
+const { MemCursor: _MemCursor, MemColl: _MemColl } = require('./helpers/mem-mongo');
 
 class _FakeDb {
   /** 按 collection 名分配独立 coll；未知名自动建空 _MemColl（供 queryOne 空结果等） */

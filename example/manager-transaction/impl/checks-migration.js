@@ -10,6 +10,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+const { autoSchema } = require('./auto-schema');
+
 const SCEN = path.resolve(__dirname, '..');
 let ORDER_DEFS = null;
 
@@ -170,16 +172,7 @@ async function migrate_destructive(_h) {
 /** T4-05（sqlite 内存库）：old=null → 建表+索引+归档；注册后自增可读写 */
 async function migrate_add_table(h) {
   const { ddl, schema: sc, store } = require('../../../src');
-  const fresh = {
-    name: 'MigOrder', collection: 'mig_orders', idPrefix: '', timestamps: false,
-    read: ['admin', 'seller', 'buyer'], write: ['admin', 'seller'],
-    fields: {
-      _id: { type: 'int', strategy: 'autoincrement' },
-      orderNo: { type: 'string' }, amount: { type: 'float' },
-    },
-    relations: {}, computes: {},
-    indexes: [{ keys: { orderNo: 1 }, unique: true }],
-  };
+  const fresh = autoSchema('MigOrder', 'mig_orders', [{ keys: { orderNo: 1 }, unique: true }]);
   const stmts = ddl.generateMigration('sqlite', null, fresh);
   if (stmts.length !== 4) return { ok: false, note: `新表语句数断言失败: ${stmts.length}` };
   await execStmts(h, stmts);

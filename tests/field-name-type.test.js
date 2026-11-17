@@ -10,12 +10,13 @@
  * 运行：`cd nodejs-store; $env:LOCAL_CORE='1'; node --test tests/field-name-type.test.js`
  */
 
-const { test } = require('node:test');
-const assert = require('node:assert/strict');
+const {
+  test, assert,
+  src: { init, store, schema: _sc },
+} = require('./helpers/boot');
 
 const { connect } = require('../src/memory');
 const datasource = require('../src/datasource');
-const { init, store, schema: _sc } = require('../src');
 
 test('field name `type`: 注册 + insert(default) + GQL 查询 + update + remove 全链路', async () => {
   _sc.register({

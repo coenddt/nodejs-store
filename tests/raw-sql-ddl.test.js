@@ -266,6 +266,26 @@ function fakeTxMongo(captured) {
   };
 }
 
+/** 事务视图单次调用断言：恰好一次且 session 为事务会话（executeNative/aggregate 事务用例共用） */
+function assertOneCallOnTxSession(fake, captured) {
+  assert.equal(captured.calls.length, 1);
+  assert.equal(captured.calls[0].opts.session, fake.txSession);
+}
+
+/** execMongo aggregate db 桩：collection(name).aggregate(pipeline, opts) 记录调用并返回 toArray rows（转发用例共用） */
+function fakeAggDb(rows) {
+  const calls = [];
+  const db = {
+    collection: (name) => ({
+      aggregate: (pipeline, opts) => {
+        calls.push({ name, pipeline, opts });
+        return { toArray: async () => rows };
+      },
+    }),
+  };
+  return { db, calls };
+}
+
 test('executeNative 事务视图自动透传 session', async () => {
   const captured = { calls: [] };
   const fake = fakeTxMongo(captured);
@@ -276,8 +296,7 @@ test('executeNative 事务视图自动透传 session', async () => {
     assert.deepEqual(out, { rows: [{ n: 1 }] });
   });
 
-  assert.equal(captured.calls.length, 1);
-  assert.equal(captured.calls[0].opts.session, fake.txSession);
+  assertOneCallOnTxSession(fake, captured);
 });
 
 test('executeNative options.session 不可被用户覆盖', async () => {
@@ -289,8 +308,7 @@ test('executeNative options.session 不可被用户覆盖', async () => {
     await store.executeNative('db', 'orders', [], { session: 'USER' });
   });
 
-  assert.equal(captured.calls.length, 1);
-  assert.equal(captured.calls[0].opts.session, fake.txSession);
+  assertOneCallOnTxSession(fake, captured);
 });
 
 test('executeNative 对 SQL 源显式报错并指引 executeRaw', async () => {
@@ -388,20 +406,11 @@ test('aggregate 事务内自动透传 session（复用 executeNative 通道）',
     assert.deepEqual(out, { rows: [{ n: 1 }] });
   });
 
-  assert.equal(captured.calls.length, 1);
-  assert.equal(captured.calls[0].opts.session, fake.txSession);
+  assertOneCallOnTxSession(fake, captured);
 });
 
 test('execMongo aggregate 转发原生 options', async () => {
-  const calls = [];
-  const db = {
-    collection: (name) => ({
-      aggregate: (pipeline, opts) => {
-        calls.push({ name, pipeline, opts });
-        return { toArray: async () => [{ n: 1 }] };
-      },
-    }),
-  };
+  const { db, calls } = fakeAggDb([{ n: 1 }]);
 
   const rows = await mongoExecutor.execMongo(
     db,
@@ -414,15 +423,7 @@ test('execMongo aggregate 转发原生 options', async () => {
 });
 
 test('execMongo aggregate 无 options 时零回归', async () => {
-  const calls = [];
-  const db = {
-    collection: (name) => ({
-      aggregate: (pipeline, opts) => {
-        calls.push({ name, pipeline, opts });
-        return { toArray: async () => [] };
-      },
-    }),
-  };
+  const { db, calls } = fakeAggDb([]);
 
   await mongoExecutor.execMongo(db, { kind: 'aggregate', collection: 'orders', pipeline: [{ $match: { a: 1 } }] }, null);
 

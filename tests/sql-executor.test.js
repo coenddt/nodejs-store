@@ -11,11 +11,12 @@
  * 运行：node scripts/test.js（scripts/test.js 会置 LOCAL_CORE=1）
  */
 
-const { test, before } = require('node:test');
-const assert = require('node:assert/strict');
-const Database = require('better-sqlite3');
-
-const { init, store, executors, permission, schema: _sc } = require('../src');
+const {
+  test, before, assert, Database,
+  src: { init, store, executors, permission, schema: _sc },
+} = require('./helpers/boot');
+// 后端 e2e 共享断言与 real-backends-e2e 对齐（insert 读回 / introspect 产物）
+const { insertAndReadBackPost, assertWidgetsGadgetsDefs } = require('./helpers/backend-e2e');
 
 const SRC = 'sqlite_e2e';
 
@@ -40,6 +41,15 @@ async function freshStore() {
   return db;
 }
 
+/** 双行 Post 种子：freshStore + insertMany 两行（count / updateMany 用例共用） */
+async function seedTwoPosts() {
+  await freshStore();
+  await store.insertMany('Post', [
+    { title: 'A', status: 'draft', views: 1 },
+    { title: 'B', status: 'draft', views: 2 },
+  ]);
+}
+
 _sc.register({
   name: 'Post',
   collection: 'posts',
@@ -62,22 +72,11 @@ before(() => {
 
 test('sqlite e2e: insert + query（含 _id 还原）', async () => {
   await freshStore();
-  const doc = await store.insert('Post', { title: '你好', status: 'draft', views: 3 });
-  assert.ok(doc && typeof doc._id === 'string' && doc._id.startsWith('p_'), '应生成 idPrefix 前缀 _id');
-
-  const items = await store.query('Post{_id, title, status, views}');
-  assert.equal(items.length, 1);
-  assert.equal(items[0]._id, doc._id);
-  assert.equal(items[0].title, '你好');
-  assert.equal(items[0].views, 3);
+  await insertAndReadBackPost('Post');
 });
 
 test('sqlite e2e: count / exists', async () => {
-  await freshStore();
-  await store.insertMany('Post', [
-    { title: 'A', status: 'draft', views: 1 },
-    { title: 'B', status: 'draft', views: 2 },
-  ]);
+  await seedTwoPosts();
   assert.equal(await store.count('Post', {}), 2);
   assert.equal(await store.count('Post', { status: 'draft' }), 2);
   assert.equal(await store.count('Post', { views: { $gte: 2 } }), 1);
@@ -97,11 +96,7 @@ test('sqlite e2e: update（findOneAndUpdate → RETURNING 回读）', async () =
 });
 
 test('sqlite e2e: updateMany（$inc）', async () => {
-  await freshStore();
-  await store.insertMany('Post', [
-    { title: 'A', status: 'draft', views: 1 },
-    { title: 'B', status: 'draft', views: 2 },
-  ]);
+  await seedTwoPosts();
   const r = await store.updateMany('Post', { status: 'draft' }, { $inc: { views: 10 } });
   assert.equal(r.modifiedCount, 2);
   const items = await store.query('Post{_id, views}');
@@ -156,21 +151,7 @@ test('sqlite sync: introspect → schemaFromRows → register', async () => {
 
   const defs = await store.syncSchema({ backend: 'sqlite', driver: db, datasource: SRC });
 
-  const widgets = defs.find((d) => d.name === 'widgets');
-  assert.ok(widgets, '应产出 widgets 定义');
-  assert.equal(widgets.collection, 'widgets');
-  assert.equal(widgets.datasource, SRC);
-  assert.ok(widgets.fields._id, '主键应映射为 _id');
-  assert.equal(widgets.fields.sku.required, true, 'NOT NULL 应映射 required');
-  assert.equal(widgets.fields.price.type, 'number');
-  // 反向关系：widgets 侧应有 gadgets 的 many
-  assert.ok(widgets.relations.gadgets, '外键应生成反向 many 关系');
-  assert.equal(widgets.relations.gadgets.type, 'many');
-
-  const gadgets = defs.find((d) => d.name === 'gadgets');
-  assert.ok(gadgets.relations.widgets, '外键侧应有 many-to-one 关系');
-  assert.equal(gadgets.relations.widgets.type, 'one');
-  assert.equal(gadgets.relations.widgets.localField, 'widget_id');
+  assertWidgetsGadgetsDefs(defs, SRC);
 
   assert.ok(store.has('widgets'), 'syncSchema 应完成注册');
 });

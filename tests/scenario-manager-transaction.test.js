@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * manager-transaction 场景矩阵 · node:test 壳（真实库 e2e；复刻 scenario-course-platform.test.js）
+ * manager-transaction 场景矩阵 · node:test 壳（真实库 e2e；与 scenario-course-platform.test.js 共用 helpers/scenario-shell 壳）
  *
  * 阶段0 基线预期：T1-02/T1-03/T1-04/T2-01/T2-02/T3-01/T3-02 为**红**（能力缺失），
  * T1-01/T1-05 为**守护绿**。用例编号↔增补阶段任务映射见
@@ -10,59 +10,21 @@
  * 运行：`$env:LOCAL_CORE='1'; $env:NODE_ENV='test'; node --test tests/scenario-manager-transaction.test.js`
  */
 
-const { describe, it, before, after } = require('node:test');
-const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
 const harness = require('../example/manager-transaction/impl/harness');
+// test 壳骨架（before 串行跑后端 + describe 断言 + 报告落点）收编至 helpers/scenario-shell
+const { mountScenarioMatrix, reportPaths } = require('./helpers/scenario-shell');
 
 const BACKENDS = harness.BACKENDS;
 const CASES = harness.loadCases();
 const ROOT = path.resolve(__dirname, '..');
 
-const RUNS = {};
-
-before(async () => {
-  let oracle = null;
-  for (const kind of BACKENDS) {
-    const res = await harness.runBackend(kind, oracle); // 串行：mongo 先行产 oracle
-    RUNS[kind] = res;
-    if (kind === 'mongodb' && res.available) oracle = res.oracle;
-  }
-});
-
-function stepsNote(step) {
-  return `step${step.idx}(${step.op}/${step.expectKind || '-'}): ${step.note}`;
-}
-
-for (const kind of BACKENDS) {
-  describe(`manager-transaction · ${kind}`, () => {
-    for (const c of CASES) {
-      it(`${c.id} ${c.title}`, (t) => {
-        if (c.backends && !c.backends.includes(kind)) return t.skip('backends 子集限定');
-        const res = RUNS[kind];
-        assert.ok(res, `${kind} 未执行`);
-        if (!res.available) return t.skip(res.skipReason);
-        const r = res.results.find((x) => x.id === c.id);
-        assert.ok(r, `${kind} 缺少用例结果 ${c.id}`);
-        const failing = r.steps.filter((s) => !s.ok);
-        assert.deepEqual(failing.map(stepsNote), [], `[${kind}] ${c.id} ${c.title} 断言失败`);
-      });
-    }
-  });
-}
-
 // ──────────────────────────────────────────────────────────── 报告 ──
 
-after(() => {
-  const today = new Date();
-  const year = String(today.getFullYear());
-  const month = String(today.getMonth() + 1).padStart(2, '0');
-  const iso = `${year}-${month}-${String(today.getDate()).padStart(2, '0')}`;
-  const outDir = path.join(ROOT, 'doc', 'test-eval', year, month);
-  fs.mkdirSync(outDir, { recursive: true });
-  const outPath = path.join(outDir, `manager-transaction-场景矩阵-${iso}.md`);
+function writeManagerReport(RUNS) {
+  const { iso, outPath } = reportPaths(ROOT, 'manager-transaction');
 
   const L = [];
   L.push(`# manager-transaction 场景矩阵 · 多后端对拍报告（${iso}，nodejs-store）`);
@@ -117,4 +79,12 @@ after(() => {
   }
   fs.writeFileSync(outPath, L.join('\n'), 'utf8');
   console.log(`报告: ${outPath}`);
+}
+
+mountScenarioMatrix({
+  harness,
+  cases: CASES,
+  suiteLabel: 'manager-transaction',
+  extraSkip: (kind, c) => (c.backends && !c.backends.includes(kind) ? 'backends 子集限定' : null),
+  writeReport: writeManagerReport,
 });

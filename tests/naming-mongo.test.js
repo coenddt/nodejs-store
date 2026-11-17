@@ -107,27 +107,8 @@ test('_toLogical: 未注册 collection（无法建逆表）原样返回（不臆
 
 // ── 集成：Mongo 落库物理集合名 + 逻辑键回读 ──────────────────
 
-class _MemCursor {
-  constructor(docs) { this.docs = docs; }
-
-  async toArray() { return [...this.docs]; }
-}
-
-class _MemColl {
-  constructor(docs) { this.docs = docs || []; }
-
-  find() { return new _MemCursor(this.docs); }
-
-  aggregate() { return new _MemCursor(this.docs); }
-
-  async findOne() { return this.docs.length ? { ...this.docs[0] } : null; }
-
-  async countDocuments() { return this.docs.length; }
-
-  async insertOne(doc) { this.docs.push(doc); return { insertedId: doc._id }; }
-
-  listIndexes() { return new _MemCursor([]); }
-}
+// 内存 Mongo 桩改用 tests 共享超集版（零语义论证见 helpers/mem-mongo.js 头注释）
+const { MemCursor: _MemCursor, MemColl: _MemColl } = require('./helpers/mem-mongo');
 
 class _FakeDb {
   constructor(colls) { this.colls = colls || {}; this.accessed = []; }

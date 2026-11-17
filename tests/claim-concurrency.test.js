@@ -46,12 +46,17 @@ const DDL = `CREATE TABLE IF NOT EXISTS claim_jobs (
   _id TEXT PRIMARY KEY, status TEXT, claimed_by TEXT, lease_until INT,
   __present TEXT)`;
 
-function openDb(rows) {
-  const db = new Database(':memory:');
+/** 建库 + DDL + 预置 pending 行（内存库/文件库两形态共用初始化序列） */
+function seedJobs(db, rows) {
   db.exec(DDL);
   const ins = db.prepare(
     'INSERT INTO claim_jobs (_id, status, __present) VALUES (?, ?, ?)');
   for (let i = 0; i < rows; i++) ins.run(`j${String(i).padStart(3, '0')}`, 'pending', 'Y');
+}
+
+function openDb(rows) {
+  const db = new Database(':memory:');
+  seedJobs(db, rows);
   return db;
 }
 
@@ -148,10 +153,7 @@ function rmWithRetry(target, { tries = 10, delayMs = 200 } = {}) {
 function makeFileDb(rows) {
   const dbPath = path.join(os.tmpdir(), `claim_stress_${process.pid}_${Date.now()}.db`);
   const db = new Database(dbPath);
-  db.exec(DDL);
-  const ins = db.prepare(
-    'INSERT INTO claim_jobs (_id, status, __present) VALUES (?, ?, ?)');
-  for (let i = 0; i < rows; i++) ins.run(`j${String(i).padStart(3, '0')}`, 'pending', 'Y');
+  seedJobs(db, rows);
   db.close();
   return dbPath;
 }

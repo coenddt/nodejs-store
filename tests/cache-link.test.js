@@ -8,7 +8,7 @@
  *     异常/非法值 ⇒ `BYPASS` + feedback 留痕。
  * A9：载体不可用（Redis 连接/命令失败）⇒ 显式 `Err`（`RedisIoError`），禁静默当空快照。
  *
- * 既有 `tests/cache.test.js` 是注记位语义的回归基线，本文件不触碰它。
+ * 既有 `tests/cache.test.js` 是注记位语义的回归基线（collect 桩已收编至 helpers/cache-capture），本文件不触碰其用例语义。
  * 运行：$env:LOCAL_CORE='1'; node --test tests/cache-link.test.js
  */
 
@@ -16,25 +16,12 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const cache = require('../src/cache');
-const feedback = require('../src/feedback');
 const { schema: _sc } = require('../src');
 const { createLinkCacheProvider } = require('../src/cache/provider');
 const { runWithSelection, currentSelection } = require('../src/cache/context');
 const { createRedisIo, RedisIoError } = require('../src/cache/redis-io');
-
-/** 收集期间 emit 的事件（用后恢复原 sink，并复位 provider 防跨用例污染） */
-function collect(body) {
-  const prev = feedback.getSink();
-  const events = [];
-  feedback.setSink((e) => events.push(e));
-  try {
-    body();
-  } finally {
-    feedback.setSink(prev);
-    cache.setCacheStatus(null);
-  }
-  return events;
-}
+// 与 cache.test.js 基线共用的事件收集桩（行为见 helpers 头注释）
+const { collect } = require('./helpers/cache-capture');
 
 const L_CACHE_FIRST = {
   User: [

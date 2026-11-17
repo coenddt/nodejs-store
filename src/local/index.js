@@ -21,6 +21,7 @@
 
 const path = require('node:path');
 const { createDb } = require('./handle');
+const embeddedTx = require('./embedded-tx'); // D4-2 去重：事务骨架与 memory 共享
 const {
   readSnapshot, writeCollections, withDirLock, _dirFor,
 } = require('./store');
@@ -58,42 +59,20 @@ function connect(options = {}) {
     handle: handleFor(database),
     handleFor,
 
-    /** 事务原语：快照隔离（读内存 `staged`，commit 才落盘） */
-    async openTransaction(db = database) {
+    /** 事务原语：快照隔离（读内存 `staged`，commit 才落盘）；骨架与 memory 共享（./embedded-tx） */
+    openTransaction(db = database) {
       const target = _dirFor(dir, db);
-      let staged = readSnapshot(dir, db);
-      let closed = false;
-      const txIo = {
-        load: () => staged,
-        save: (_changed, collections) => { staged = collections; },
-      };
-      return {
-        session: { snapshot: () => staged },
-        handle: createDb(txIo, db ?? null),
-        async commit() {
-          if (closed) return;
-          closed = true;
-          const snapshot = staged;
-          await withDirLock(target, () => writeCollections(dir, Object.keys(snapshot), snapshot, db));
-        },
-        async rollback() { closed = true; },
-        async release() { closed = true; },
-      };
+      return embeddedTx.stagedOpenTransaction({
+        db,
+        loadStaged: () => readSnapshot(dir, db),
+        commitStaged: (staged) =>
+          withDirLock(target, () => writeCollections(dir, Object.keys(staged), staged, db)),
+      });
     },
 
     /** 便捷包装（与 sqlite 执行器 withTransaction 同形） */
-    async withTransaction(fn, db = database) {
-      const tx = await descriptor.openTransaction(db);
-      try {
-        const out = await fn(null, tx);
-        await tx.commit();
-        return out;
-      } catch (e) {
-        await tx.rollback();
-        throw e;
-      } finally {
-        await tx.release();
-      }
+    withTransaction(fn, db = database) {
+      return embeddedTx.withTransaction(() => descriptor.openTransaction(db), fn);
     },
   };
 

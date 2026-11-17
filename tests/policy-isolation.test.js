@@ -73,6 +73,13 @@ function barrier(n) {
   };
 }
 
+/** worker 内双 emit 夹 barrier 等待：两次隔离事件由并发时钟对齐（A1/A5 用例共用） */
+async function emitPairWithBarrier(tag, wait) {
+  feedback.emit({ type: 'isolation', code: `${tag}-1`, layer: 'host' });
+  await wait();
+  feedback.emit({ type: 'isolation', code: `${tag}-2`, layer: 'host' });
+}
+
 // ── A1：档位视图 + sink 事件隔离 ──────────────────────────────
 
 test('policy-isolation A1: 两并发作用域 profile 视图各归各（await 让出后不串）', async () => {
@@ -108,9 +115,7 @@ test('policy-isolation A1: 两并发作用域 sink 事件隔离（events 互不�
   async function worker(tag) {
     const events = [];
     await withScope({ view: viewOf({}), sink: (e) => events.push(e) }, async () => {
-      feedback.emit({ type: 'isolation', code: `${tag}-1`, layer: 'host' });
-      await wait();
-      feedback.emit({ type: 'isolation', code: `${tag}-2`, layer: 'host' });
+      await emitPairWithBarrier(tag, wait);
     });
     collected[tag] = events;
   }
@@ -286,11 +291,9 @@ test('policy-isolation A5: 落库 sink 的 tenant/env 取作用域 meta（并发
   try {
     const wait = barrier(2);
     async function worker(tag, tenant, env) {
-      await withScope({ view: viewOf({}), meta: { tenant, env } }, async () => {
-        feedback.emit({ type: 'isolation', code: `${tag}-1`, layer: 'host' });
-        await wait();
-        feedback.emit({ type: 'isolation', code: `${tag}-2`, layer: 'host' });
-      });
+    await withScope({ view: viewOf({}), meta: { tenant, env } }, async () => {
+      await emitPairWithBarrier(tag, wait);
+    });
     }
     await Promise.all([worker('a', 't1', 'e1'), worker('b', 't2', 'e2')]);
     await feedback.flush();

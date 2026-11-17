@@ -25,10 +25,11 @@
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const mysql = require('mysql2/promise');
-const { MongoClient } = require('mongodb');
 
 const { init, store, executors, permission, schema: _sc } = require('../src');
 const naming = require('../src/naming');
+// Mongo 连接试探桩与 real-backends-e2e 共用（行为见 helpers 头注释）
+const { probeMongo } = require('./helpers/mongo-probe');
 
 // 独立库名（可整串用 MYSQL_URI / MONGO_URI 环境变量覆盖，便于 CI 复用外部实例）
 const MYSQL_URI =
@@ -52,15 +53,10 @@ const MYSQL_DDL = [
 const state = { mongoReady: false, mysqlReady: false, reason: '[环境依赖] 数据库不可达' };
 
 async function setupMongo() {
-  const client = new MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 3000 });
-  try {
-    await client.connect();
-    await client.db().command({ ping: 1 });
-  } catch (e) {
+  const client = await probeMongo(MONGO_URI, (e) => {
     state.reason = `MongoDB 不可达（${MONGO_URI}）: ${e.message}`;
-    await client.close().catch(() => {});
-    return null;
-  }
+  });
+  if (!client) return null;
   const db = client.db();
   await db.collection(naming.physical('fed_users')).deleteMany({});
   state.mongoClient = client;
