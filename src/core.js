@@ -11,7 +11,7 @@
  *   LOCAL_CORE=1 且 NODE_ENV !== 'production'
  */
 
-const path = require('path');
+const path = require('node:path');
 
 function _requireDevFallback() {
   // 开发期兜底：仅 LOCAL_CORE=1 且非 production 时启用，

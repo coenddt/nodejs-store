@@ -9,8 +9,8 @@
  * 本模块**不含**任何落点/主从判据（禁双端漂移；总纲 §5 + 06 §4.1）。
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const schema = require('./schema');
 
