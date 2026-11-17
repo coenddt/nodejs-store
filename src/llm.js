@@ -141,6 +141,9 @@ function makeOpenaiCompat(/** @type {any} */ {
   if (typeof baseUrl !== 'string' || !baseUrl.trim()) {
     throw new TypeError('makeOpenaiCompat 需要非空 baseUrl');
   }
+  // scheme 刻意不做白名单：OpenAI 兼容端点大量部署在内网自建服务上（Ollama / vLLM /
+  // LM Studio 等以 http://127.0.0.1:<port> 暴露），强制 https 会直接砍掉这些场景；
+  // 传输安全由宿主部署面负责（与 py 侧一致）。
   if (typeof model !== 'string' || !model) {
     throw new TypeError('makeOpenaiCompat 需要非空 model');
   }
