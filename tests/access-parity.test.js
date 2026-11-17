@@ -52,9 +52,9 @@ function pythonAvailable() {
  * nodejs-store）不具备这两个前提，显式跳过并给出原因，不静默、不误报失败。
  */
 const PARITY_SKIP = !fs.existsSync(PY_SCRIPT)
-  ? `缺少同级 py-store 仓：${PY_SCRIPT}`
+  ? `[环境依赖] 缺少同级 py-store 仓：${PY_SCRIPT}`
   : !pythonAvailable()
-    ? '缺少可用的 python 解释器'
+    ? '[环境依赖] 缺少可用的 python 解释器'
     : false;
 const PARITY_OPTS = PARITY_SKIP ? { skip: PARITY_SKIP } : {};
 

@@ -15,7 +15,7 @@ const PY_SCRIPT = path.join(__dirname, '..', '..', 'py-store', 'scripts', 'parit
 
 test('拒绝文案与 py 端逐字节一致', (t) => {
   if (!fs.existsSync(PY_SCRIPT)) {
-    t.skip('相邻 py-store 仓缺失，跳过对拍');
+    t.skip('[环境依赖] 相邻 py-store 仓缺失，跳过对拍');
     return;
   }
   const nodeOut = execFileSync(process.execPath, [path.join(__dirname, '..', 'scripts', 'parity-deny.js')]).toString().trim();

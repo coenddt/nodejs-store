@@ -119,7 +119,7 @@ test('exists: 有权通过（静态白名单 + RBAC 授权）', async () => {
   } finally { permission.setContext(undefined); store.setRbac(null); }
 });
 
-test('exists: 条件引用字段白名单外字段应拒绝', { skip: 'core plan_exists_with_ctx 仅校验表级 read/RBAC（rust-store/core/src/command/write.rs:186-205），条件字段白名单未校验 —— 跨方向项' }, async () => {
+test('exists: 条件引用字段白名单外字段应拒绝', { skip: '[长期挂起] core plan_exists_with_ctx 仅校验表级 read/RBAC（rust-store/core/src/command/write.rs:186-205），条件字段白名单未校验 —— 跨方向项' }, async () => {
   await freshStore();
   store.setRbac(POLICY);
   permission.setContext({ userId: 'u1', roles: ['viewer'] });

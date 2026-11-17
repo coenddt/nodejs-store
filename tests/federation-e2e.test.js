@@ -49,7 +49,7 @@ const MYSQL_DDL = [
    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
 
-const state = { mongoReady: false, mysqlReady: false, reason: '数据库不可达' };
+const state = { mongoReady: false, mysqlReady: false, reason: '[环境依赖] 数据库不可达' };
 
 async function setupMongo() {
   const client = new MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 3000 });

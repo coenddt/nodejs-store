@@ -29,7 +29,7 @@ const NESTED_PATH = 'signers.userId';
 
 let client = null;
 let db = null;
-let reason = 'MongoDB 不可达';
+let reason = '[环境依赖] MongoDB 不可达';
 
 before(async () => {
   permission.setContext(undefined);
@@ -38,7 +38,7 @@ before(async () => {
     await client.connect();
     await client.db().command({ ping: 1 });
   } catch (e) {
-    reason = `MongoDB 不可达（${MONGO_URI}）: ${e.message}`;
+    reason = `[环境依赖] MongoDB 不可达（${MONGO_URI}）: ${e.message}`;
     await client.close().catch(() => {});
     client = null;
     return;

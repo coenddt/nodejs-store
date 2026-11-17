@@ -32,7 +32,7 @@ const load = (name) => JSON.parse(fs.readFileSync(path.join(HOST_FIXTURES, name)
 // 目录 → 显式跳过并说明原因（绝不静默；本地含相邻仓库时照常执行）。
 const SKIP = fs.existsSync(HOST_FIXTURES)
   ? false
-  : `缺少共享 fixture 目录（${HOST_FIXTURES}）：需在含相邻 rust-store 仓库的工作区运行`;
+  : `[环境依赖] 缺少共享 fixture 目录（${HOST_FIXTURES}）：需在含相邻 rust-store 仓库的工作区运行`;
 
 // ─── 1. 占位符替换 ──────────────────────────────────────────
 

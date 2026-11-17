@@ -22,7 +22,7 @@ const PY_SCRIPT = path.join(__dirname, '..', '..', 'py-store', 'scripts', 'parit
 
 test('两侧脚本共用同一份 fixture（逐字一致）', (t) => {
   if (!fs.existsSync(PY_SCRIPT)) {
-    t.skip('相邻 py-store 仓缺失，跳过 fixture 一致性断言');
+    t.skip('[环境依赖] 相邻 py-store 仓缺失，跳过 fixture 一致性断言');
     return;
   }
   const nodeText = fs.readFileSync(NODE_SCRIPT, 'utf8');
@@ -45,7 +45,7 @@ test('node 侧对拍输出单行合法 JSON（自身合法，不依赖 py 仓）
 
 test('local 数据源双端逐字节一致', (t) => {
   if (!fs.existsSync(PY_SCRIPT)) {
-    t.skip('相邻 py-store 仓缺失，跳过对拍');
+    t.skip('[环境依赖] 相邻 py-store 仓缺失，跳过对拍');
     return;
   }
   const nodeOut = execFileSync(process.execPath, [NODE_SCRIPT], { encoding: 'utf8' }).trim();
