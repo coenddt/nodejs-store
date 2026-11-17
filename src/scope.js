@@ -1,5 +1,5 @@
 'use strict';
-const { AsyncLocalStorage } = require('async_hooks');
+const { AsyncLocalStorage } = require('node:async_hooks');
 
 const _als = new AsyncLocalStorage();
 // store = { view: Registry(派生实例), sink: fn|null, meta: {tenant,env}|null, secure: bool|null }

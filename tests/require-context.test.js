@@ -41,8 +41,12 @@ before(async () => {
 });
 
 test('require_context: 默认关闭 = fail-open（无 ctx 照常查询/写入）', async () => {
-  await store.query('RcPost{ title }');
-  await store.insert('RcPost', { title: '默认放行' });
+  const before = await store.query('RcPost{ title }');
+  assert.ok(Array.isArray(before), 'fail-open：无 ctx 查询照常返回数组');
+  const inserted = await store.insert('RcPost', { title: '默认放行' });
+  assert.ok(inserted && inserted._id, 'fail-open：无 ctx 写入照常返回带 _id 的记录');
+  const after = await store.query('RcPost{ title }');
+  assert.equal(after.length, before.length + 1, '写入落库可查');
 });
 
 test('require_context: 开启后缺 ctx 抛 ERR_NO_CONTEXT（读/写全路径）', async () => {
@@ -70,7 +74,9 @@ test('require_context: 用户上下文放行', async () => {
 test('require_context: 关闭后恢复 fail-open', async () => {
   permission.setContext(undefined);
   store.setRequireContext(false);
-  await store.query('RcPost{ title }');
+  const items = await store.query('RcPost{ title }');
+  assert.ok(Array.isArray(items), '恢复 fail-open：无 ctx 查询不再抛 NoContextError');
+  assert.ok(items.length >= 3, '此前 3 条写入（默认放行/系统/用户）仍可读');
 });
 
 // ── secureMode 统一安全模式（fail-secure 一键入口；见 src/secure.js） ──

@@ -141,7 +141,13 @@ test('profile: text2query 档无 ctx —— ProfileViolation + emit profile_bloc
 test('profile: text2query 档带用户 ctx 放行', async () => {
   _reset();
   permission.setContext({ userId: 'u1', roles: ['user'] });
-  await text2query(() => store.query('PqModel{ title }'));
+  let inside = null;
+  const items = await text2query(async () => {
+    inside = _sc.getProfile();
+    return store.query('PqModel{ title }');
+  });
+  assert.equal(inside, 'text2query', '上下文内档位应为 text2query');
+  assert.ok(Array.isArray(items), '带 ctx 放行 = 查询正常返回数组（不抛 ProfileViolation）');
   _reset();
 });
 

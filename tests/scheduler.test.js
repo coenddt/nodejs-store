@@ -167,8 +167,13 @@ test('assertTriggerFnsCovered 覆盖 schedule 的 fnRef（缺实现显式报错�
 // ─── 循环控制 ────────────────────────────────────────────────
 
 test('start/stop 幂等', () => {
+  assert.equal(scheduler.isRunning(), false);
   scheduler.start();
-  scheduler.start();
+  assert.equal(scheduler.isRunning(), true);
+  scheduler.start(); // 二次 start 幂等：不重建循环
+  assert.equal(scheduler.isRunning(), true);
   scheduler.stop();
-  scheduler.stop();
+  assert.equal(scheduler.isRunning(), false);
+  scheduler.stop(); // 二次 stop 幂等
+  assert.equal(scheduler.isRunning(), false);
 });

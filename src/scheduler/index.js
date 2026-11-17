@@ -153,4 +153,9 @@ function stop() {
   }
 }
 
-module.exports = { parseCron, cronMatches, tickOnce, start, stop };
+/** 循环是否在跑（start/stop 幂等的可观测面，只读） */
+function isRunning() {
+  return _timer !== null;
+}
+
+module.exports = { parseCron, cronMatches, tickOnce, start, stop, isRunning };

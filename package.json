@@ -70,7 +70,8 @@
     "rust-store-node": "^6.0.0"
   },
   "optionalDependencies": {
-    "@aws-sdk/client-s3": "^3.1146.0"
+    "@aws-sdk/client-s3": "^3.1146.0",
+    "store-gateway-node": ">=0.3.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",

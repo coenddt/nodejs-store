@@ -439,7 +439,15 @@ async function mongoTransactable(connection) {
   let hello;
   try {
     hello = await client.db('admin').command({ hello: 1 });
-  } catch (_) {
+  } catch (e) {
+    // 探测失败 → 按语义返回 unknown（不写缓存、下次重探），但显式留痕（禁静默失守）
+    _emitFeedback({
+      type: 'mongo_transaction_probe_failed',
+      code: 'mongoTransactionProbeFailed',
+      layer: 'datasource',
+      message: `数据源 Mongo 事务能力探测失败（按 unknown 处理，不缓存）：${e && e.message ? e.message : e}`,
+      hint: '检查 admin 库 hello 命令可达性（认证/网络）；探测成功前事务判定按 unknown 走',
+    });
     return null;
   }
   const cap = Boolean(hello.setName) || hello.msg === 'isdbgrid';
