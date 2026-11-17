@@ -23,12 +23,9 @@ const ROOT = path.resolve(__dirname, '..');
 
 // ──────────────────────────────────────────────────────────── 报告 ──
 
-function writeManagerReport(RUNS) {
-  const { iso, outPath } = reportPaths(ROOT, 'manager-transaction');
-
+/** 报告一：环境与后端可达性列表 + 判定规则引文 */
+function _mtSection1(RUNS) {
   const L = [];
-  L.push(`# manager-transaction 场景矩阵 · 多后端对拍报告（${iso}，nodejs-store）`);
-  L.push('');
   L.push('## 一、环境与后端可达性');
   L.push('');
   for (const kind of BACKENDS) {
@@ -44,10 +41,11 @@ function writeManagerReport(RUNS) {
   L.push('> 本报告只出证据，不修实现。判定规则：SQL 结果集与 Mongo(oracle) 逐行相等'
          + '或显式 Err/unsupported+告警；静默不一致判缺陷。');
   L.push('');
-  L.push('## 二、逐用例结果（阶段0：T1/T2/T3 组，红用例为增补路线验收标尺）');
-  L.push('');
-  L.push('| 用例 | 组 | mongodb | postgres | mysql | sqlite |');
-  L.push('|---|---|---|---|---|---|');
+  return L;
+}
+
+/** 逐用例状态累积：`byCase[id][kind] = status`、`allIds` 按首见序 */
+function _mtByCase(RUNS) {
   const byCase = {};
   const allIds = [];
   for (const kind of BACKENDS) {
@@ -57,26 +55,55 @@ function writeManagerReport(RUNS) {
       if (!allIds.includes(r.id)) allIds.push(r.id);
     }
   }
+  return { byCase, allIds };
+}
+
+/** 报告二：逐用例结果矩阵表 */
+function _mtSection2(RUNS) {
+  const L = [];
+  L.push('## 二、逐用例结果（阶段0：T1/T2/T3 组，红用例为增补路线验收标尺）');
+  L.push('');
+  L.push('| 用例 | 组 | mongodb | postgres | mysql | sqlite |');
+  L.push('|---|---|---|---|---|---|');
+  const { byCase, allIds } = _mtByCase(RUNS);
   for (const cid of allIds) {
     const row = byCase[cid] || {};
     L.push(`| ${cid} | ${cid.split('-')[0]} | `
       + BACKENDS.map((k) => row[k] || '—').join(' | ') + ' |');
   }
   L.push('');
+  return L;
+}
+
+/** 报告三：失败明细（证据原样摘录） */
+function _mtSection3(RUNS) {
+  const L = [];
   L.push('## 三、失败明细（证据原样摘录）');
   L.push('');
   for (const kind of BACKENDS) {
-    for (const r of (RUNS[kind] && RUNS[kind].results) || []) {
-      if (r.status !== 'pass') {
-        L.push(`### [${kind}] ${r.id} ${r.title}`);
-        L.push('');
-        for (const s of r.steps) {
-          if (!s.ok) L.push(`- step${s.idx} × ${s.op}（期望 ${s.expectKind || '-'}）：${s.note}`);
-        }
-        L.push('');
+    const rows = (RUNS[kind] && RUNS[kind].results) || [];
+    for (const r of rows) {
+      if (r.status === 'pass') continue;
+      L.push(`### [${kind}] ${r.id} ${r.title}`);
+      L.push('');
+      for (const s of r.steps) {
+        if (!s.ok) L.push(`- step${s.idx} × ${s.op}（期望 ${s.expectKind || '-'}）：${s.note}`);
       }
+      L.push('');
     }
   }
+  return L;
+}
+
+function writeManagerReport(RUNS) {
+  const { iso, outPath } = reportPaths(ROOT, 'manager-transaction');
+
+  const L = [];
+  L.push(`# manager-transaction 场景矩阵 · 多后端对拍报告（${iso}，nodejs-store）`);
+  L.push('');
+  L.push(..._mtSection1(RUNS));
+  L.push(..._mtSection2(RUNS));
+  L.push(..._mtSection3(RUNS));
   fs.writeFileSync(outPath, L.join('\n'), 'utf8');
   console.log(`报告: ${outPath}`);
 }

@@ -24,6 +24,15 @@ const introspect = require('./introspect');
  * @param {boolean}  [opts.registerDefs=true] 是否直接注册（false 时仅返回 defs）
  * @returns {Promise<Array>} 合并后的 schemaJSON 数组
  */
+/** 落点注写：datasource / database / schema 逐 def 注写（缺省不动） */
+function _applyBind(defs, bind) {
+  let out = defs;
+  if (bind.datasource) out = out.map((d) => ({ ...d, datasource: bind.datasource }));
+  if (bind.database) out = out.map((d) => ({ ...d, database: bind.database }));
+  if (bind.schema) out = out.map((d) => ({ ...d, schema: bind.schema }));
+  return out;
+}
+
 async function syncSchema({
   backend,
   driver,
@@ -37,9 +46,7 @@ async function syncSchema({
   const rows = await introspect.run(backend, driver, introspectOptions);
   let defs = _core.schemaFromRows(rows, backend);
   if (overlay && overlay.length) defs = _core.mergeSchema(defs, overlay);
-  if (datasource) defs = defs.map((d) => ({ ...d, datasource }));
-  if (database) defs = defs.map((d) => ({ ...d, database }));
-  if (schema) defs = defs.map((d) => ({ ...d, schema }));
+  defs = _applyBind(defs, { datasource, database, schema });
   if (registerDefs) for (const d of defs) register(d);
   return defs;
 }

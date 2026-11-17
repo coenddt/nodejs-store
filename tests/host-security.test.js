@@ -15,7 +15,6 @@ const Database = require('better-sqlite3');
 
 const { init, store, executors, permission, schema: _sc } = require('../src');
 
-const SRC = 'sqlite_host_sec';
 
 const POLICY = {
   mode: 'enforce',

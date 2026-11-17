@@ -25,18 +25,27 @@ function setTriggerFn(fnRef, impl) {
   _fnRefs.add(fnRef);
 }
 
+/** 单 trigger 声明项：fnRef 合法且未注入 → 返回该 ref，否则 null */
+function _missingRef(t) {
+  const ref = t && typeof t.fnRef === 'string' ? t.fnRef : null;
+  return ref && !_fnRefs.has(ref) ? ref : null;
+}
+
+/** 单 defn 的 triggers 声明收集：全部缺失 fnRef 追加进 missing */
+function _collectMissingRefs(defn, missing) {
+  for (const list of Object.values((defn && defn.triggers) || {})) {
+    for (const t of list || []) {
+      const ref = _missingRef(t);
+      if (ref) missing.push(ref);
+    }
+  }
+}
+
 /** 启动期校验：schema 的 triggers 里声明的 fnRef 必须都有实现（缺则显式抛错，不静默）。
  * 注意：声明形状的 fnRef 在顶层（规划展开后才包成 `callback:{fnRef,args}`），见 core schema/triggers.rs */
 function assertTriggerFnsCovered(defns) {
   const missing = [];
-  for (const defn of defns || []) {
-    for (const list of Object.values((defn && defn.triggers) || {})) {
-      for (const t of list || []) {
-        const ref = t && typeof t.fnRef === 'string' ? t.fnRef : null;
-        if (ref && !_fnRefs.has(ref)) missing.push(ref);
-      }
-    }
-  }
+  for (const defn of defns || []) _collectMissingRefs(defn, missing);
   if (missing.length) {
     const err = new Error(`ERR_TRIGGER_FN_MISSING:未注入触发器回调实现 ${missing.join(', ')}`);
     err.code = 'ERR_TRIGGER_FN_MISSING';
@@ -76,19 +85,22 @@ function _deepEq(a, b) {
  * 未命中的占位符**显式报错**（`ERR_TRIGGER_PLACEHOLDER`）——占位符必须独占字符串值，
  * 不支持 `"order-{{root._id}}"` 这类内嵌拼接（禁静默漂移）。
  */
-function resolveTriggerPlaceholders(value, scope) {
-  if (typeof value === 'string') {
-    if (_NOW_PH.test(value)) return scope.now;
-    let m = value.match(_ROOT_PH);
-    if (m) return _dig(scope.root, m[1]);
-    m = value.match(_BEFORE_PH);
-    if (m) return _dig(scope.before, m[1]);
-    if (value.includes('{{root.') || value.includes('{{before.') || value.includes('{{now}}')) {
-      throw new Error(
-        `ERR_TRIGGER_PLACEHOLDER:占位符必须独占字符串值（不支持内嵌拼接）：${value}`);
-    }
-    return value;
+/** 字符串分支：整值占位符替换（now/root/before）；命中内嵌拼接显式报错 */
+function _resolveStr(value, scope) {
+  if (_NOW_PH.test(value)) return scope.now;
+  let m = value.match(_ROOT_PH);
+  if (m) return _dig(scope.root, m[1]);
+  m = value.match(_BEFORE_PH);
+  if (m) return _dig(scope.before, m[1]);
+  if (value.includes('{{root.') || value.includes('{{before.') || value.includes('{{now}}')) {
+    throw new Error(
+      `ERR_TRIGGER_PLACEHOLDER:占位符必须独占字符串值（不支持内嵌拼接）：${value}`);
   }
+  return value;
+}
+
+function resolveTriggerPlaceholders(value, scope) {
+  if (typeof value === 'string') return _resolveStr(value, scope);
   if (Array.isArray(value)) {
     return value.map((v) => resolveTriggerPlaceholders(v, scope));
   }
@@ -104,6 +116,27 @@ function resolveTriggerPlaceholders(value, scope) {
 
 const _WHEN_OPS = new Set(['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'in', 'and', 'or', 'not']);
 
+/** 双目比较算子表（resolve 后比较；实参求值顺序左→右，与原 switch 一致） */
+const _WHEN_CMP = {
+  eq: (a, b) => a === b,
+  ne: (a, b) => a !== b,
+  gt: (a, b) => a > b,
+  gte: (a, b) => a >= b,
+  lt: (a, b) => a < b,
+  lte: (a, b) => a <= b,
+};
+
+/** 占位符 resolve（evalWhen 统一取值入口） */
+const _rv = (v, scope) => resolveTriggerPlaceholders(v, scope);
+
+/** 集合/逻辑算子分流：in/and/or；末尾兜底即 'not'（未知算子已被 _WHEN_OPS 拦截，原 switch default 不可达） */
+function _evalSetOp(op, arg, scope) {
+  if (op === 'in') return (_rv(arg[1], scope) || []).includes(_rv(arg[0], scope));
+  if (op === 'and') return (arg || []).every((w) => evalWhen(w, scope));
+  if (op === 'or') return (arg || []).some((w) => evalWhen(w, scope));
+  return !evalWhen(arg, scope);
+}
+
 function evalWhen(when, scope) {
   if (when === null || when === undefined) return true;
   const keys = Object.keys(when);
@@ -111,20 +144,9 @@ function evalWhen(when, scope) {
   const op = keys[0];
   if (!_WHEN_OPS.has(op)) throw new Error(`ERR_TRIGGER_WHEN:未知算子 ${op}`);
   const arg = when[op];
-  const rv = (v) => resolveTriggerPlaceholders(v, scope);
-  switch (op) {
-    case 'eq': return rv(arg[0]) === rv(arg[1]);
-    case 'ne': return rv(arg[0]) !== rv(arg[1]);
-    case 'gt': return rv(arg[0]) > rv(arg[1]);
-    case 'gte': return rv(arg[0]) >= rv(arg[1]);
-    case 'lt': return rv(arg[0]) < rv(arg[1]);
-    case 'lte': return rv(arg[0]) <= rv(arg[1]);
-    case 'in': return (rv(arg[1]) || []).includes(rv(arg[0]));
-    case 'and': return (arg || []).every((w) => evalWhen(w, scope));
-    case 'or': return (arg || []).some((w) => evalWhen(w, scope));
-    case 'not': return !evalWhen(arg, scope);
-    default: throw new Error(`ERR_TRIGGER_WHEN:未知算子 ${op}`);
-  }
+  const cmp = _WHEN_CMP[op];
+  if (cmp) return cmp(_rv(arg[0], scope), _rv(arg[1], scope));
+  return _evalSetOp(op, arg, scope);
 }
 
 // ─── 命中判定 + 执行器 ───────────────────────────────────────

@@ -17,23 +17,20 @@
  * 降级声明）由 datasource 层负责。Mongo **无** `SAVEPOINT` 原语，故不提供保存点系列。
  */
 
+/** 单键改写规则：运算符对象与普通对象递归；普通键显式 null → 等值三态改写；其余原样 */
+function _explicitVal(val, isOp) {
+  if (val === null && !isOp) return { $eq: null, $exists: true };
+  if (val !== null && typeof val === 'object') return _explicitNull(val);
+  return val;
+}
+
 /** 递归改写 filter：`field: null`（标量等值）→ `field: {$eq: null, $exists: true}`。 */
 function _explicitNull(v) {
   if (Array.isArray(v)) return v.map(_explicitNull);
   if (v && typeof v === 'object') {
     const out = {};
     for (const [k, val] of Object.entries(v)) {
-      if (k.startsWith('$') && (val !== null && typeof val === 'object')) {
-        out[k] = _explicitNull(val);
-      } else if (k.startsWith('$')) {
-        out[k] = val;
-      } else if (val !== null && typeof val === 'object') {
-        out[k] = _explicitNull(val);
-      } else if (val === null) {
-        out[k] = { $eq: null, $exists: true };
-      } else {
-        out[k] = val;
-      }
+      out[k] = _explicitVal(val, k.startsWith('$'));
     }
     return out;
   }
@@ -98,78 +95,96 @@ async function openTransaction(connection) {
   };
 }
 
+/** find/findOne 共用的 projection opts */
+function _projOpts(session, cmd) {
+  return _opts(session, cmd.projection ? { projection: cmd.projection } : undefined);
+}
+
+/** insertOne（阶段2，no-error-masking）：Mongo 无自增语义 —— `_id` 缺失的文档只可能来自
+ * 声明 strategy=autoincrement 的 schema（常规 schema 该形态已被 core 拦截）。
+ * 禁止 ObjectId 静默顶替自增契约，显式报错。 */
+async function _insertOneDoc(coll, cmd, session) {
+  const doc = cmd.doc || {};
+  if (!doc._id) {
+    throw new Error(
+      'AUTOINCREMENT_NOT_SUPPORTED: schema 声明了 strategy="autoincrement"，'
+      + 'MongoDB 后端无自增语义（禁 ObjectId 顶替）；请使用 SQL 数据源');
+  }
+  await coll.insertOne(doc, _opts(session));
+  return doc;
+}
+
+/** insertMany：upsertById（归档幂等）逐条覆盖；否则整批插入（_id 缺失显式报错） */
+async function _insertManyDocs(coll, cmd, session) {
+  if (cmd.upsertById) {
+    // 归档幂等（core planArchiveDocs）：按 _id 逐条覆盖 —— 「归档成功但删除失败」
+    // 的重试不再因 _id 冲突整批失败。SQL 侧由 dialect 的 ON CONFLICT/REPLACE 承接。
+    for (const doc of cmd.docs) {
+      await coll.replaceOne({ _id: doc._id }, doc, _opts(session, { upsert: true }));
+    }
+    return { insertedCount: cmd.docs.length };
+  }
+  if (cmd.docs.some((d) => !(d && d._id))) {
+    throw new Error(
+      'AUTOINCREMENT_NOT_SUPPORTED: schema 声明了 strategy="autoincrement"，'
+      + 'MongoDB 后端无自增语义（禁 ObjectId 顶替）；请使用 SQL 数据源');
+  }
+  await coll.insertMany(cmd.docs, _opts(session));
+  return { insertedCount: cmd.docs.length };
+}
+
+/** 并发原语（C1）仅 SQL 三后端有方言路径：Mongo 无行锁语义等价物，
+ * 禁止静默走通用路径或伪装成功 —— 显式报错并指引改用 SQL 源。 */
+function _claimUnsupported(cmd) {
+  const { PushdownUnsupportedError } = require('../errors'); // D4-1 解环：错误类下沉，mongo 不再回指 datasource
+  throw new PushdownUnsupportedError(
+    cmd.source || '', cmd.kind, ['concurrencyPrimitivesSqlOnly'],
+    ['claim/compareAndSet 仅 SQL 源支持（MongoDB 无行锁等价物）；请使用 SQL 源']);
+}
+
+// kind → 执行器（Object.create(null) 防原型键误命中；claim/compareAndSet 共用拒绝路径）
+const _HANDLERS = Object.assign(Object.create(null), {
+  find: (coll, cmd, session) => {
+    _normFilter(cmd);
+    return coll.find(cmd.filter, _projOpts(session, cmd)).toArray();
+  },
+  aggregate: (coll, cmd, session) => {
+    // cmd.options 为原生聚合透传项（executeNative 注入；GQL 路径无此键，零回归）
+    _normPipeline(cmd);
+    return coll.aggregate(cmd.pipeline, _opts(session, cmd.options)).toArray();
+  },
+  countDocuments: (coll, cmd, session) => {
+    _normFilter(cmd);
+    return coll.countDocuments(cmd.filter, _opts(session));
+  },
+  findOne: (coll, cmd, session) => {
+    _normFilter(cmd);
+    return coll.findOne(cmd.filter, _projOpts(session, cmd));
+  },
+  insertOne: (coll, cmd, session) => _insertOneDoc(coll, cmd, session),
+  insertMany: (coll, cmd, session) => _insertManyDocs(coll, cmd, session),
+  findOneAndUpdate: (coll, cmd, session) => {
+    _normFilter(cmd);
+    return coll.findOneAndUpdate(cmd.filter, cmd.update, _opts(session, cmd.options));
+  },
+  updateMany: (coll, cmd, session) => {
+    _normFilter(cmd);
+    return coll.updateMany(cmd.filter, cmd.update, _opts(session));
+  },
+  deleteMany: (coll, cmd, session) => {
+    _normFilter(cmd);
+    return coll.deleteMany(cmd.filter, _opts(session));
+  },
+  claim: (coll, cmd) => _claimUnsupported(cmd),
+  compareAndSet: (coll, cmd) => _claimUnsupported(cmd),
+});
+
 /** Command JSON → MongoDB 原生驱动调用（session 非空时全部操作携带该 session） */
 async function execMongo(db, cmd, session) {
   const coll = db.collection(cmd.collection);
-  switch (cmd.kind) {
-    case 'find': {
-      _normFilter(cmd);
-      const opts = _opts(session, cmd.projection ? { projection: cmd.projection } : undefined);
-      return coll.find(cmd.filter, opts).toArray();
-    }
-    case 'aggregate':
-      // cmd.options 为原生聚合透传项（executeNative 注入；GQL 路径无此键，零回归）
-      _normPipeline(cmd);
-      return coll.aggregate(cmd.pipeline, _opts(session, cmd.options)).toArray();
-    case 'countDocuments':
-      _normFilter(cmd);
-      return coll.countDocuments(cmd.filter, _opts(session));
-    case 'findOne': {
-      _normFilter(cmd);
-      const opts = _opts(session, cmd.projection ? { projection: cmd.projection } : undefined);
-      return coll.findOne(cmd.filter, opts);
-    }
-    case 'insertOne': {
-      const doc = cmd.doc || {};
-      // 阶段2（no-error-masking）：Mongo 无自增语义 —— `_id` 缺失的文档只可能来自
-      // 声明 strategy=autoincrement 的 schema（常规 schema 该形态已被 core 拦截）。
-      // 禁止 ObjectId 静默顶替自增契约，显式报错。
-      if (!doc._id) {
-        throw new Error(
-          'AUTOINCREMENT_NOT_SUPPORTED: schema 声明了 strategy="autoincrement"，'
-          + 'MongoDB 后端无自增语义（禁 ObjectId 顶替）；请使用 SQL 数据源');
-      }
-      await coll.insertOne(doc, _opts(session));
-      return doc;
-    }
-    case 'insertMany':
-      if (cmd.upsertById) {
-        // 归档幂等（core planArchiveDocs）：按 _id 逐条覆盖 —— 「归档成功但删除失败」
-        // 的重试不再因 _id 冲突整批失败。SQL 侧由 dialect 的 ON CONFLICT/REPLACE 承接。
-        for (const doc of cmd.docs) {
-          await coll.replaceOne({ _id: doc._id }, doc, _opts(session, { upsert: true }));
-        }
-        return { insertedCount: cmd.docs.length };
-      }
-      if (cmd.docs.some((d) => !(d && d._id))) {
-        throw new Error(
-          'AUTOINCREMENT_NOT_SUPPORTED: schema 声明了 strategy="autoincrement"，'
-          + 'MongoDB 后端无自增语义（禁 ObjectId 顶替）；请使用 SQL 数据源');
-      }
-      await coll.insertMany(cmd.docs, _opts(session));
-      return { insertedCount: cmd.docs.length };
-    case 'findOneAndUpdate':
-      _normFilter(cmd);
-      return coll.findOneAndUpdate(cmd.filter, cmd.update, _opts(session, cmd.options));
-    case 'updateMany':
-      _normFilter(cmd);
-      return coll.updateMany(cmd.filter, cmd.update, _opts(session));
-    case 'deleteMany':
-      _normFilter(cmd);
-      return coll.deleteMany(cmd.filter, _opts(session));
-    case 'claim':
-    case 'compareAndSet': {
-      // 并发原语（C1）仅 SQL 三后端有方言路径：Mongo 无行锁语义等价物，
-      // 禁止静默走通用路径或伪装成功 —— 显式报错并指引改用 SQL 源。
-      // D4-1 解环：错误类下沉后 mongo 不再指向 datasource（环 6 断开）。
-      const { PushdownUnsupportedError } = require('../errors'); // D4-1 解环：错误类下沉，mongo 不再回指 datasource
-      throw new PushdownUnsupportedError(
-        cmd.source || '', cmd.kind, ['concurrencyPrimitivesSqlOnly'],
-        ['claim/compareAndSet 仅 SQL 源支持（MongoDB 无行锁等价物）；请使用 SQL 源']);
-    }
-    default:
-      throw new Error(`未支持的命令: ${cmd.kind}`);
-  }
+  const handler = _HANDLERS[cmd.kind];
+  if (!handler) throw new Error(`未支持的命令: ${cmd.kind}`);
+  return handler(coll, cmd, session);
 }
 
 module.exports = { execMongo, openTransaction };

@@ -14,6 +14,45 @@ function _quote(name) {
   return `"${String(name).replace(/"/g, '""')}"`;
 }
 
+/** 单表列清单：PRAGMA table_info → 规范化行（追加进 columns） */
+function _columnsOf(db, name, columns) {
+  for (const c of db.prepare(`PRAGMA table_info(${_quote(name)})`).all()) {
+    columns.push({
+      table: name,
+      name: c.name,
+      type: c.type || '',
+      notnull: c.notnull ? 1 : 0,
+      pk: c.pk ? 1 : 0,
+    });
+  }
+}
+
+/** 单表外键清单：PRAGMA foreign_key_list（无目标列回 `_id`；追加进 fks） */
+function _fksOf(db, name, fks) {
+  for (const f of db.prepare(`PRAGMA foreign_key_list(${_quote(name)})`).all()) {
+    fks.push({
+      table: name,
+      column: f.from,
+      refTable: f.table,
+      refColumn: f.to || '_id',
+    });
+  }
+}
+
+/** 单表索引清单：PRAGMA index_list/index_info（主键索引不重复登记；追加进 indexes） */
+function _indexesOf(db, name, indexes) {
+  for (const idx of db.prepare(`PRAGMA index_list(${_quote(name)})`).all()) {
+    if (idx.origin === 'pk') continue; // 主键索引不重复登记
+    const info = db.prepare(`PRAGMA index_info(${_quote(idx.name)})`).all();
+    indexes.push({
+      table: name,
+      name: idx.name,
+      columns: info.map((i) => i.name),
+      unique: idx.unique ? 1 : 0,
+    });
+  }
+}
+
 function introspect(db, { database = null } = {}) {
   if (!db || typeof db.prepare !== 'function') {
     throw new TypeError('sqlite introspection 需要 better-sqlite3 Database 实例');
@@ -41,36 +80,9 @@ function introspect(db, { database = null } = {}) {
 
   for (const { name } of tableRows) {
     tables.push(database != null ? { name, database } : { name });
-
-    for (const c of db.prepare(`PRAGMA table_info(${_quote(name)})`).all()) {
-      columns.push({
-        table: name,
-        name: c.name,
-        type: c.type || '',
-        notnull: c.notnull ? 1 : 0,
-        pk: c.pk ? 1 : 0,
-      });
-    }
-
-    for (const f of db.prepare(`PRAGMA foreign_key_list(${_quote(name)})`).all()) {
-      fks.push({
-        table: name,
-        column: f.from,
-        refTable: f.table,
-        refColumn: f.to || '_id',
-      });
-    }
-
-    for (const idx of db.prepare(`PRAGMA index_list(${_quote(name)})`).all()) {
-      if (idx.origin === 'pk') continue; // 主键索引不重复登记
-      const info = db.prepare(`PRAGMA index_info(${_quote(idx.name)})`).all();
-      indexes.push({
-        table: name,
-        name: idx.name,
-        columns: info.map((i) => i.name),
-        unique: idx.unique ? 1 : 0,
-      });
-    }
+    _columnsOf(db, name, columns);
+    _fksOf(db, name, fks);
+    _indexesOf(db, name, indexes);
   }
 
   return { tables, columns, fks, indexes };

@@ -14,7 +14,7 @@ const { normalizeRows } = require('./_values');
 const txShared = require('./tx'); // D4-2 去重：事务骨架与 mysql/sqlite 共享（./tx）
 
 /** 创建执行器描述符（可直接作为 `init(connections)` 的一个 SQL 数据源连接） */
-function create(driver, _options = {}) {
+function create(driver) {
   if (!driver || typeof driver.query !== 'function') {
     throw new TypeError('postgres 执行器需要 pg 的 Pool/Client 实例');
   }

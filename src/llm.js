@@ -77,6 +77,57 @@ function getLlm(name) {
  * 失败全部显式抛 LlmError（.detail 结构化），禁静默返回空串——
  * 空 content 的实证成因与防御见模块 docstring 与设计文档 W3。
  */
+/** jsonMode 契约预检 + response_format 注入（缺 'json' 字样显式报错，禁静默改写） */
+function _applyJsonMode(body, messages, model) {
+  // 契约预检：json_object 要求 prompt 含 "json" 字样（DeepSeek 实测 400 实证）。
+  // 缺失显式报错交上游装配修复，禁静默改写调用方消息面（no-error-masking）
+  const joined = messages.map((m) => String((m && m.content) ?? '')).join(' ').toLowerCase();
+  if (!joined.includes('json')) {
+    throw new LlmError({
+      code: 'llmJsonPromptMissing',
+      model,
+      message: "json_mode=true 要求 messages（system/user）中包含 'json' 字样",
+      hint: "ask() 的 system 输出契约模板已固定含 'JSON' 措辞；自定义 knowledge 时须保留",
+    });
+  }
+  body.response_format = { type: 'json_object' };
+}
+
+/** POST /chat/completions；网络层断连/超时结构化暴露（不吞错、不重试） */
+async function _postChat(baseUrl, apiKey, body, model, timeoutMs) {
+  let resp;
+  try {
+    resp = await fetch(`${baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        // 默认 UA「node」被 DeepSeek 网关断连（py 侧 urllib 同因实证），显式覆盖
+        'User-Agent': 'nodejs-store-ask/0.1',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (e) {
+    // 网络层断连 / 超时 / 重置，结构化暴露（不吞错、不重试）
+    throw new LlmError({ code: 'llmNetworkError', model, detail: String((e && e.message) || e) });
+  }
+  return resp;
+}
+
+/** 空 content 错误构造（携 finish_reason 与推理 token 数，禁静默返回空串） */
+function _emptyContentErr(data, choice, model) {
+  return new LlmError({
+    code: 'llmEmptyContent',
+    model,
+    finish_reason: choice.finish_reason ?? null,
+    reasoning_tokens: (data.usage && data.usage.completion_tokens_details)
+      ? (data.usage.completion_tokens_details.reasoning_tokens ?? null)
+      : null,
+    message: 'LLM 返回空 content（多为 max_tokens 被推理耗尽，调大 max_tokens 或降 effort）',
+  });
+}
+
 function makeOpenaiCompat({
   baseUrl,
   model,
@@ -95,41 +146,12 @@ function makeOpenaiCompat({
 
   async function llm(messages) {
     const body = { model, messages, max_tokens: maxTokens };
-    if (jsonMode) {
-      // 契约预检：json_object 要求 prompt 含 "json" 字样（DeepSeek 实测 400 实证）。
-      // 缺失显式报错交上游装配修复，禁静默改写调用方消息面（no-error-masking）
-      const joined = messages.map((m) => String((m && m.content) ?? '')).join(' ').toLowerCase();
-      if (!joined.includes('json')) {
-        throw new LlmError({
-          code: 'llmJsonPromptMissing',
-          model,
-          message: "json_mode=true 要求 messages（system/user）中包含 'json' 字样",
-          hint: "ask() 的 system 输出契约模板已固定含 'JSON' 措辞；自定义 knowledge 时须保留",
-        });
-      }
-      body.response_format = { type: 'json_object' };
-    }
+    if (jsonMode) _applyJsonMode(body, messages, model);
     if (effort !== null && effort !== undefined) {
       body.reasoning_effort = effort;
     }
 
-    let resp;
-    try {
-      resp = await fetch(`${baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-          // 默认 UA「node」被 DeepSeek 网关断连（py 侧 urllib 同因实证），显式覆盖
-          'User-Agent': 'nodejs-store-ask/0.1',
-        },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-    } catch (e) {
-      // 网络层断连 / 超时 / 重置，结构化暴露（不吞错、不重试）
-      throw new LlmError({ code: 'llmNetworkError', model, detail: String((e && e.message) || e) });
-    }
+    const resp = await _postChat(baseUrl, apiKey, body, model, timeoutMs);
     if (!resp.ok) {
       const text = await resp.text().catch(() => '');
       throw new LlmError({ code: 'llmHttpError', status: resp.status, model, body: String(text).slice(0, 500) });
@@ -138,15 +160,7 @@ function makeOpenaiCompat({
     const choice = (Array.isArray(data.choices) && data.choices[0]) || {};
     const content = choice.message ? choice.message.content : undefined;
     if (!content) {
-      throw new LlmError({
-        code: 'llmEmptyContent',
-        model,
-        finish_reason: choice.finish_reason ?? null,
-        reasoning_tokens: (data.usage && data.usage.completion_tokens_details)
-          ? (data.usage.completion_tokens_details.reasoning_tokens ?? null)
-          : null,
-        message: 'LLM 返回空 content（多为 max_tokens 被推理耗尽，调大 max_tokens 或降 effort）',
-      });
+      throw _emptyContentErr(data, choice, model);
     }
     return content;
   }

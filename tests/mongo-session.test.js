@@ -252,7 +252,7 @@ const MONGO_TX_URI = process.env.MONGO_URI_TX || 'mongodb://127.0.0.1:27017/mong
 /** 连本机 Mongo；不可达或非副本集（如 CI standalone）→ skip；返回 { client, db } 或 null */
 async function realRsDbOrSkip(t) {
   let MongoClient;
-  try { ({ MongoClient } = require('mongodb')); } catch (_) { t.skip('[环境依赖] 缺 mongodb 驱动'); return null; }
+  try { ({ MongoClient } = require('mongodb')); } catch { t.skip('[环境依赖] 缺 mongodb 驱动'); return null; }
   const client = new MongoClient(MONGO_TX_URI, { serverSelectionTimeoutMS: 3000 });
   try {
     await client.connect();
@@ -262,7 +262,7 @@ async function realRsDbOrSkip(t) {
       t.skip('[环境依赖] 本机 Mongo 非副本集（如 CI standalone）→ 跳过');
       return null;
     }
-  } catch (_) {
+  } catch {
     await client.close();
     t.skip('[环境依赖] 本机 MongoDB 不可达');
     return null;

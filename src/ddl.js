@@ -65,40 +65,59 @@ const METRIC_OPS = {
   ip: 'vector_ip_ops',
 };
 
-/** 向量索引 → CREATE INDEX（PG 原生；MySQL/SQLite 显式反馈不支持；flat 不建索引） */
-function vectorIndexStmt(defn, backend, field, opts) {
-  if (backend !== 'postgres') {
-    _emitFeedback({
-      type: 'ddl_vector_index_unsupported',
-      code: 'vectorIndexUnsupported',
-      layer: 'host',
-      message: `表 ${defn.collection} 的向量索引（字段 ${field}）在 ${backend} 无原生实现，已跳过`,
-      hint: '该后端按应用层精确检索执行；检索结果将标记 degraded=true',
-      backend,
-      schema: defn.name,
-    });
-    return [];
-  }
+/** MySQL/SQLite 无原生向量索引：显式反馈并跳过（检索走应用层精确扫描，degraded） */
+function _vectorSkipFeedback(defn, backend, field) {
+  _emitFeedback({
+    type: 'ddl_vector_index_unsupported',
+    code: 'vectorIndexUnsupported',
+    layer: 'host',
+    message: `表 ${defn.collection} 的向量索引（字段 ${field}）在 ${backend} 无原生实现，已跳过`,
+    hint: '该后端按应用层精确检索执行；检索结果将标记 degraded=true',
+    backend,
+    schema: defn.name,
+  });
+  return [];
+}
+
+/** method=flat：不建近似索引的显式反馈 */
+function _vectorFlatFeedback(defn, backend, field) {
+  _emitFeedback({
+    type: 'ddl_vector_index_flat',
+    code: 'vectorIndexFlatNoIndex',
+    layer: 'host',
+    message: `表 ${defn.collection} 的向量索引（字段 ${field}）声明 method=flat，未创建近似索引`,
+    hint: 'flat 表示精确扫描；查询仍可用，native=false',
+    backend, schema: defn.name,
+  });
+  return [];
+}
+
+/** 向量字段 dim 取值 + 正整数校验（错误优先级与原顺序一致） */
+function _vecDimOf(defn, field) {
   const fdef = (defn.fields || {})[field];
   const dim = fdef && typeof fdef === 'object' ? fdef.dim : undefined;
   if (!Number.isInteger(dim) || dim <= 0) {
     throw new Error(`DDL 生成：向量索引字段 ${field} 缺少正整数 dim`);
   }
+  return { dim, fdef };
+}
+
+/** pgvector WITH 子句：hnsw 与 ivfflat 各自的参数（默认值与原实现同值） */
+function _vecWithClause(method, opts) {
+  return method === 'hnsw'
+    ? ` WITH (m = ${opts.m || 16}, ef_construction = ${opts.efConstruction || 64})`
+    : ` WITH (lists = ${opts.lists || 100})`;
+}
+
+/** 向量索引 → CREATE INDEX（PG 原生；MySQL/SQLite 显式反馈不支持；flat 不建索引） */
+function vectorIndexStmt(defn, backend, field, opts) {
+  if (backend !== 'postgres') return _vectorSkipFeedback(defn, backend, field);
+  const { dim, fdef } = _vecDimOf(defn, field);
   const method = opts.method || 'hnsw';
   if (!VECTOR_METHODS.includes(method)) {
     throw new Error(`DDL 生成：向量索引 method 仅支持 ${VECTOR_METHODS.join('/')}，实际 ${JSON.stringify(method)}`);
   }
-  if (method === 'flat') {
-    _emitFeedback({
-      type: 'ddl_vector_index_flat',
-      code: 'vectorIndexFlatNoIndex',
-      layer: 'host',
-      message: `表 ${defn.collection} 的向量索引（字段 ${field}）声明 method=flat，未创建近似索引`,
-      hint: 'flat 表示精确扫描；查询仍可用，native=false',
-      backend, schema: defn.name,
-    });
-    return [];
-  }
+  if (method === 'flat') return _vectorFlatFeedback(defn, backend, field);
   if (dim > PGVECTOR_INDEX_MAX_DIM) {
     throw new Error(
       `DDL 生成：向量索引字段 ${field} 的 dim=${dim} 超过 pgvector 索引上限 ${PGVECTOR_INDEX_MAX_DIM}（改用 method='flat' 走精确扫描）`
@@ -112,12 +131,9 @@ function vectorIndexStmt(defn, backend, field, opts) {
   const table = ptable(backend, defn);
   const col = pname(backend, field);
   const name = 'idx_' + table + '_' + col + '_vec';
-  const withClause = method === 'hnsw'
-    ? ` WITH (m = ${opts.m || 16}, ef_construction = ${opts.efConstruction || 64})`
-    : ` WITH (lists = ${opts.lists || 100})`;
   return [
     `CREATE INDEX ${q(backend, name)} ON ${q(backend, table)} `
-    + `USING ${method} (${q(backend, col)} ${opclass})${withClause}`,
+    + `USING ${method} (${q(backend, col)} ${opclass})${_vecWithClause(method, opts)}`,
   ];
 }
 
@@ -201,6 +217,28 @@ function builtinFieldNames(defn, backend) {
   return names;
 }
 
+/** 单声明字段 → 列元组 [col, type, pk, auto]；未知类型抛错（错误文案与原实现逐字一致） */
+function _columnOf(defn, backend, i, name, fdef) {
+  const col = pname(backend, name); // 列标识符按目标介质翻译（snake_case）
+  if (name === '_id') {
+    const strategy = fdef && typeof fdef === 'object' ? fdef.strategy : undefined;
+    return [col, strategy === 'autoincrement' ? ID_AUTO_TYPE[i] : ID_TYPE[i], true,
+      strategy === 'autoincrement'];
+  }
+  const ftype = declaredType(fdef);
+  if (ftype === 'vector') return [col, vectorType(backend, fdef), false, false];
+  if (NON_COLUMN.includes(ftype)) {
+    // object/array → 单列 JSON 文本（同 core field_column_ref::Json）
+    return [col, JSON_TYPE[i], false, false];
+  }
+  if (!Object.prototype.hasOwnProperty.call(TYPES, ftype)) {
+    throw new Error(
+      `DDL 生成：字段 "${defn.name}.${name}" 类型 ${JSON.stringify(ftype)} 未知，支持 ${Object.keys(TYPES).sort()}`,
+    );
+  }
+  return [col, TYPES[ftype][i], false, false];
+}
+
 /** 返回 [[name, sqlType, pk, auto]]，顺序：声明的字段（标量 / object·array JSON 列）→
  * timestamps → 归属键（owner 行控隐含）→ __present */
 function columns(defn, backend) {
@@ -208,29 +246,7 @@ function columns(defn, backend) {
   const cols = [];
   const fields = defn.fields || {};
   for (const [name, fdef] of Object.entries(fields)) {
-    const ftype = declaredType(fdef);
-    const col = pname(backend, name); // 列标识符按目标介质翻译（snake_case）
-    if (name === '_id') {
-      const strategy = fdef && typeof fdef === 'object' ? fdef.strategy : undefined;
-      cols.push([col, strategy === 'autoincrement' ? ID_AUTO_TYPE[i] : ID_TYPE[i], true,
-        strategy === 'autoincrement']);
-      continue;
-    }
-    if (ftype === 'vector') {
-      cols.push([col, vectorType(backend, fdef), false, false]);
-      continue;
-    }
-    if (NON_COLUMN.includes(ftype)) {
-      // object/array → 单列 JSON 文本（同 core field_column_ref::Json）
-      cols.push([col, JSON_TYPE[i], false, false]);
-      continue;
-    }
-    if (!Object.prototype.hasOwnProperty.call(TYPES, ftype)) {
-      throw new Error(
-        `DDL 生成：字段 "${defn.name}.${name}" 类型 ${JSON.stringify(ftype)} 未知，支持 ${Object.keys(TYPES).sort()}`,
-      );
-    }
-    cols.push([col, TYPES[ftype][i], false, false]);
+    cols.push(_columnOf(defn, backend, i, name, fdef));
   }
   if (!cols.some((c) => c[2])) {
     throw new Error(`DDL 生成：schema "${defn.name}" 缺少 _id 字段`);
@@ -278,6 +294,29 @@ function warnPresentOverflow(defn, cols) {
   }
 }
 
+/** 向量索引条目分流：keys 中有 "vector" 值时返回其语句（非单字段抛错）；否则 null 走普通索引 */
+function _vectorIndexEntry(defn, backend, idx) {
+  const keys = idx.keys;
+  const vecKey = Object.entries(keys).find(([, v]) => v === 'vector');
+  if (!vecKey) return null;
+  if (Object.keys(keys).length !== 1) {
+    throw new Error('DDL 生成：向量索引必须是单字段（keys 仅一个 "字段": "vector"）');
+  }
+  return vectorIndexStmt(defn, backend, vecKey[0], idx.options || {});
+}
+
+/** 普通复合索引 → CREATE [UNIQUE] INDEX 语句（keys 值 1/-1 → ASC/DESC） */
+function _plainIndexStmt(backend, idx, table) {
+  const keys = idx.keys;
+  const unique = Boolean(idx.unique || (idx.options && idx.options.unique));
+  const physKeys = Object.keys(keys).map((k) => pname(backend, k));
+  const cols = Object.entries(keys)
+    .map(([, v], i) => `${q(backend, physKeys[i])} ${v === -1 ? 'DESC' : 'ASC'}`)
+    .join(', ');
+  const name = 'idx_' + table + '_' + physKeys.join('_');
+  return `CREATE ${unique ? 'UNIQUE ' : ''}INDEX ${q(backend, name)} ON ${q(backend, table)} (${cols})`;
+}
+
 /** schema.indexes → CREATE [UNIQUE] INDEX 语句列表（阶段 3 索引落地）。
  * 索引名 `idx_<collection>_<f1>_<f2>`（对齐 SQL 常规命名）；keys 值 1/-1 → ASC/DESC。 */
 function indexStmts(defn, backend) {
@@ -287,21 +326,12 @@ function indexStmts(defn, backend) {
     if (!idx || typeof idx !== 'object') continue;
     const keys = idx.keys;
     if (!keys || typeof keys !== 'object' || !Object.keys(keys).length) continue;
-    const vecKey = Object.entries(keys).find(([, v]) => v === 'vector');
-    if (vecKey) {
-      if (Object.keys(keys).length !== 1) {
-        throw new Error('DDL 生成：向量索引必须是单字段（keys 仅一个 "字段": "vector"）');
-      }
-      out.push(...vectorIndexStmt(defn, backend, vecKey[0], idx.options || {}));
+    const vec = _vectorIndexEntry(defn, backend, idx);
+    if (vec) {
+      out.push(...vec);
       continue;
     }
-    const unique = Boolean(idx.unique || (idx.options && idx.options.unique));
-    const physKeys = Object.keys(keys).map((k) => pname(backend, k));
-    const cols = Object.entries(keys)
-      .map(([, v], i) => `${q(backend, physKeys[i])} ${v === -1 ? 'DESC' : 'ASC'}`)
-      .join(', ');
-    const name = 'idx_' + table + '_' + physKeys.join('_');
-    out.push(`CREATE ${unique ? 'UNIQUE ' : ''}INDEX ${q(backend, name)} ON ${q(backend, table)} (${cols})`);
+    out.push(_plainIndexStmt(backend, idx, table));
   }
   return out;
 }
@@ -402,7 +432,9 @@ function archiveDefnOf(defn) {
   const hasDeleted = Object.keys(fields).some((k) => k === 'deletedAt' || k === 'deleted_at');
   if (!hasDeleted) fields.deletedAt = { type: 'number' };
   if (fields._id && typeof fields._id === 'object') {
-    const { strategy, ...rest } = fields._id;
+    // 剥离 autoincrement 策略（归档表 _id 不自增）——展开+delete 与解构 rest 同值等价
+    const rest = { ...fields._id };
+    delete rest.strategy;
     fields._id = rest;
   }
   return {
@@ -415,6 +447,102 @@ function archiveDefnOf(defn) {
     // `no column named created_at`（默认 timestamps 的表 remove 直接失败）。
     _isArchive: true,
   };
+}
+
+/** _id 主键 diff：类型与 strategy 变更均不支持（错误文案与原实现逐字一致） */
+function _diffFieldId(oldFields, nf, errors) {
+  const of = oldFields._id;
+  if (of !== undefined && declaredType(of) !== declaredType(nf)) {
+    errors.push(`_id 主键类型变更不支持（${declaredType(of)} → ${declaredType(nf)}）`);
+  }
+  const oStrat = of && typeof of === 'object' ? of.strategy : undefined;
+  const nStrat = nf && typeof nf === 'object' ? nf.strategy : undefined;
+  if (oStrat !== nStrat) {
+    errors.push(`_id 主键策略变更不支持（${JSON.stringify(oStrat)} → ${JSON.stringify(nStrat)}）`);
+  }
+}
+
+/** 新列 diff：类型未知记错误；否则记 addColumn（continue → return 同序等价） */
+function _diffNewField(name, nf, nfType, changes, errors) {
+  if (!Object.prototype.hasOwnProperty.call(TYPES, nfType) && !NON_COLUMN.includes(nfType)
+      && nfType !== 'vector') {
+    errors.push(`新列 "${name}" 类型 ${JSON.stringify(nfType)} 未知`);
+    return;
+  }
+  changes.push({
+    op: 'addColumn', name,
+    field: nf && typeof nf === 'object' ? nf : { type: nf },
+  });
+}
+
+/** 读 vector 字段元数据：dim（缺省 undefined）/ metric（缺省 cosine） */
+function _vectorMetaOf(f) {
+  return {
+    dim: f && typeof f === 'object' ? f.dim : undefined,
+    metric: (f && typeof f === 'object' && f.metric) || 'cosine',
+  };
+}
+
+/** vector 同型字段的 dim / metric 元数据比对（默认 cosine；元数据变更不支持） */
+function _diffVectorMeta(name, of, nf, errors) {
+  const { dim: od, metric: om } = _vectorMetaOf(of);
+  const { dim: nd, metric: nm } = _vectorMetaOf(nf);
+  if (od !== nd || om !== nm) {
+    errors.push(
+      `字段 "${name}" 的 vector 元数据变更不支持（dim ${JSON.stringify(od)} → ${JSON.stringify(nd)}，`
+      + `metric ${JSON.stringify(om)} → ${JSON.stringify(nm)}）；需显式重建列与向量索引`);
+  }
+}
+
+/** 同名两侧字段类型 diff：同型（vector 再比元数据）→ 返回；放宽记 widenColumn；否则记错误 */
+function _diffFieldType(of, nf, name, changes, errors) {
+  const ofType = declaredType(of);
+  const nfType = declaredType(nf);
+  if (ofType === nfType) {
+    if (nfType === 'vector') _diffVectorMeta(name, of, nf, errors);
+    return;
+  }
+  if (nfType && (WIDEN[ofType] || []).includes(nfType)) {
+    changes.push({ op: 'widenColumn', name, from: ofType, to: nfType });
+  } else {
+    errors.push(
+      `字段 "${name}" 类型 ${JSON.stringify(ofType)} → ${JSON.stringify(nfType)} 非放宽变更`
+      + '（首批仅支持单向放宽：int→long/float/double、long→float/double、float→double）');
+  }
+}
+
+/** 删除字段 diff：old 有 new 无 → 破坏性变更记错误 */
+function _diffRemovedFields(oldFields, newFields, errors) {
+  for (const name of Object.keys(oldFields)) {
+    if (!(name in newFields)) {
+      errors.push(`删除字段 "${name}" 不支持（破坏性变更；请显式走数据迁移脚本）`);
+    }
+  }
+}
+
+/** 索引 diff：new 侧新出现的索引记 addIndex。相等判定用稳定序列化（键序无关 + JS 数字
+ * 语义），对齐 py diff_defs 的 stable_stringify：JSON.stringify 键序敏感会让「同键不同序」
+ * 误判为新增索引（P9）。 */
+function _diffIndexes(oldDefn, newDefn, changes) {
+  const indexKeys = (defn) => (defn.indexes || [])
+    .filter((ix) => ix && typeof ix === 'object' && ix.keys
+      && typeof ix.keys === 'object' && Object.keys(ix.keys).length);
+  const { _stableStringify } = require('./metadef');
+  const oldIdx = new Set(indexKeys(oldDefn).map(_stableStringify));
+  for (const ix of indexKeys(newDefn)) {
+    if (!oldIdx.has(_stableStringify(ix))) {
+      changes.push({ op: 'addIndex', index: ix });
+    }
+  }
+}
+
+/** collection 改名 diff：不一致记错误（破坏性变更） */
+function _assertCollectionUnchanged(oldDefn, newDefn, errors) {
+  const oldColl = oldDefn.collection || oldDefn.name;
+  const newColl = newDefn.collection || newDefn.name;
+  if (oldColl !== newColl) {
+    errors.push(`collection 改名不支持（${JSON.stringify(oldColl)} → ${JSON.stringify(newColl)}；破坏性变更）`);
+  }
 }
 
 /** 新旧 schema def 对比 → { changes, errors }（后端无关，纯函数；白名单外记入 errors） */
@@ -430,79 +558,71 @@ function diffDefs(oldDefn, newDefn) {
 
   for (const [name, nf] of Object.entries(newFields)) {
     if (name === '_id') {
-      const of = oldFields._id;
-      if (of !== undefined && declaredType(of) !== declaredType(nf)) {
-        errors.push(`_id 主键类型变更不支持（${declaredType(of)} → ${declaredType(nf)}）`);
-      }
-      const oStrat = of && typeof of === 'object' ? of.strategy : undefined;
-      const nStrat = nf && typeof nf === 'object' ? nf.strategy : undefined;
-      if (oStrat !== nStrat) {
-        errors.push(`_id 主键策略变更不支持（${JSON.stringify(oStrat)} → ${JSON.stringify(nStrat)}）`);
-      }
+      _diffFieldId(oldFields, nf, errors);
       continue;
     }
-    const nfType = declaredType(nf);
     if (!(name in oldFields)) {
-      if (!Object.prototype.hasOwnProperty.call(TYPES, nfType) && !NON_COLUMN.includes(nfType)
-          && nfType !== 'vector') {
-        errors.push(`新列 "${name}" 类型 ${JSON.stringify(nfType)} 未知`);
-        continue;
-      }
-      changes.push({
-        op: 'addColumn', name,
-        field: nf && typeof nf === 'object' ? nf : { type: nf },
-      });
+      _diffNewField(name, nf, declaredType(nf), changes, errors);
       continue;
     }
-    const of = oldFields[name];
-    const ofType = declaredType(of);
-    if (ofType === nfType) {
-      if (nfType === 'vector') {
-        const od = of && typeof of === 'object' ? of.dim : undefined;
-        const nd = nf && typeof nf === 'object' ? nf.dim : undefined;
-        const om = (of && typeof of === 'object' && of.metric) || 'cosine';
-        const nm = (nf && typeof nf === 'object' && nf.metric) || 'cosine';
-        if (od !== nd || om !== nm) {
-          errors.push(
-            `字段 "${name}" 的 vector 元数据变更不支持（dim ${JSON.stringify(od)} → ${JSON.stringify(nd)}，`
-            + `metric ${JSON.stringify(om)} → ${JSON.stringify(nm)}）；需显式重建列与向量索引`);
-        }
-      }
-      continue;
-    }
-    if (nfType && (WIDEN[ofType] || []).includes(nfType)) {
-      changes.push({ op: 'widenColumn', name, from: ofType, to: nfType });
-    } else {
-      errors.push(
-        `字段 "${name}" 类型 ${JSON.stringify(ofType)} → ${JSON.stringify(nfType)} 非放宽变更`
-        + '（首批仅支持单向放宽：int→long/float/double、long→float/double、float→double）');
-    }
+    _diffFieldType(oldFields[name], nf, name, changes, errors);
   }
-  for (const name of Object.keys(oldFields)) {
-    if (!(name in newFields)) {
-      errors.push(`删除字段 "${name}" 不支持（破坏性变更；请显式走数据迁移脚本）`);
-    }
-  }
-
-  const indexKeys = (defn) => (defn.indexes || [])
-    .filter((ix) => ix && typeof ix === 'object' && ix.keys
-      && typeof ix.keys === 'object' && Object.keys(ix.keys).length);
-  // 索引相等判定用稳定序列化（键序无关 + JS 数字语义），对齐 py diff_defs 的
-  // stable_stringify：JSON.stringify 键序敏感会让「同键不同序」误判为新增索引（P9）。
-  const { _stableStringify } = require('./metadef');
-  const oldIdx = new Set(indexKeys(oldDefn).map(_stableStringify));
-  for (const ix of indexKeys(newDefn)) {
-    if (!oldIdx.has(_stableStringify(ix))) {
-      changes.push({ op: 'addIndex', index: ix });
-    }
-  }
-
-  const oldColl = oldDefn.collection || oldDefn.name;
-  const newColl = newDefn.collection || newDefn.name;
-  if (oldColl !== newColl) {
-    errors.push(`collection 改名不支持（${JSON.stringify(oldColl)} → ${JSON.stringify(newColl)}；破坏性变更）`);
-  }
+  _diffRemovedFields(oldFields, newFields, errors);
+  _diffIndexes(oldDefn, newDefn, changes);
+  _assertCollectionUnchanged(oldDefn, newDefn, errors);
   return { changes, errors };
+}
+
+/** addTable 分支：主表 + 索引 + 归档表（archive:false（漉金Core 接入扩展 02）→ 同步跳过） */
+function _genAddTable(newDefn, backend, stmts) {
+  stmts.push(createTable(newDefn, backend));
+  stmts.push(...indexStmts(newDefn, backend));
+  if (newDefn.archive !== false) {
+    const arch = archiveDefnOf(newDefn);
+    stmts.push(createTable(arch, backend));
+    stmts.push(...indexStmts(arch, backend));
+  }
+}
+
+/** addColumn 分支：ADD COLUMN（default 校验）+ 归档表跟随 */
+function _genAddColumn(ch, newDefn, backend, table, stmts) {
+  const ftype = declaredType(ch.field);
+  const colType = fieldSqlType(backend, ch.field);
+  const deflt = ch.field && typeof ch.field === 'object' ? ch.field.default : undefined;
+  const colName = pname(backend, ch.name); // 物理列名（与 createTable 一致）
+  let colSql = `${q(backend, colName)} ${colType}`;
+  if (deflt !== undefined && deflt !== null) {
+    if (NON_COLUMN.includes(ftype) || ftype === 'vector') {
+      throw new Error(
+        `MIGRATION_UNSUPPORTED: 新列 "${ch.name}"（${ftype} 列）不支持 DEFAULT`
+        + '（建新表可设 default；老表新增列必须「加列 + 回填」两步：先 ADD COLUMN 不带 default，'
+        + '再回填存量行——漏回填的行按新列过滤会全表不可见；存量行缺失语义由 __present 哨兵表达）');
+    }
+    colSql += ` DEFAULT ${sqlLiteral(deflt)}`;
+  }
+  stmts.push(`ALTER TABLE ${q(backend, table)} ADD COLUMN ${colSql}`);
+  // 归档表跟随：不同步则归档 insert（显式拷贝全列）因缺列报错；
+  // archive:false（漉金Core 接入扩展 02）无归档表，跳过
+  if (newDefn.archive !== false) {
+    stmts.push(`ALTER TABLE ${q(backend, `${table}_deleted`)} ADD COLUMN ${colSql}`);
+  }
+}
+
+/** widenColumn 分支：SQLite 不支持；MySQL MODIFY / PG ALTER TYPE USING */
+function _genWidenColumn(ch, newDefn, backend, table, stmts) {
+  const colType = fieldSqlType(backend, newDefn.fields[ch.name]);
+  if (backend === 'sqlite') {
+    throw new Error(
+      'MIGRATION_UNSUPPORTED: SQLite 不支持类型变更 '
+      + `（${ch.from} → ${ch.to} 需重建表）；加列/加索引/加表已支持`);
+  }
+  if (backend === 'mysql') {
+    stmts.push(`ALTER TABLE ${q(backend, table)} MODIFY COLUMN ${q(backend, pname(backend, ch.name))} ${colType}`);
+  } else {
+    stmts.push(
+      `ALTER TABLE ${q(backend, table)} ALTER COLUMN ${q(backend, pname(backend, ch.name))} `
+      + `TYPE ${colType} USING ${q(backend, pname(backend, ch.name))}::${colType}`);
+  }
 }
 
 /** 新旧 schema def → 迁移 SQL 文本列表（per-dialect；只产文本、不执行） */
@@ -521,51 +641,10 @@ function generateMigration(backend, oldDefn, newDefn) {
   const stmts = [];
   const order = { addColumn: 0, widenColumn: 1, addIndex: 2 };
   for (const ch of [...plan.changes].sort((a, b) => (order[a.op] ?? 9) - (order[b.op] ?? 9))) {
-    if (ch.op === 'addTable') {
-      stmts.push(createTable(newDefn, backend));
-      stmts.push(...indexStmts(newDefn, backend));
-      // archive:false（漉金Core 接入扩展 02）→ core 不派生归档模型，迁移侧同步跳过
-      if (newDefn.archive !== false) {
-        const arch = archiveDefnOf(newDefn);
-        stmts.push(createTable(arch, backend));
-        stmts.push(...indexStmts(arch, backend));
-      }
-    } else if (ch.op === 'addColumn') {
-      const ftype = declaredType(ch.field);
-      const colType = fieldSqlType(backend, ch.field);
-      const deflt = ch.field && typeof ch.field === 'object' ? ch.field.default : undefined;
-      const colName = pname(backend, ch.name); // 物理列名（与 createTable 一致）
-      let colSql = `${q(backend, colName)} ${colType}`;
-      if (deflt !== undefined && deflt !== null) {
-        if (NON_COLUMN.includes(ftype) || ftype === 'vector') {
-          throw new Error(
-            `MIGRATION_UNSUPPORTED: 新列 "${ch.name}"（${ftype} 列）不支持 DEFAULT`
-            + '（建新表可设 default；老表新增列必须「加列 + 回填」两步：先 ADD COLUMN 不带 default，'
-            + '再回填存量行——漏回填的行按新列过滤会全表不可见；存量行缺失语义由 __present 哨兵表达）');
-        }
-        colSql += ` DEFAULT ${sqlLiteral(deflt)}`;
-      }
-      stmts.push(`ALTER TABLE ${q(backend, table)} ADD COLUMN ${colSql}`);
-      // 归档表跟随：不同步则归档 insert（显式拷贝全列）因缺列报错；
-      // archive:false（漉金Core 接入扩展 02）无归档表，跳过
-      if (newDefn.archive !== false) {
-        stmts.push(`ALTER TABLE ${q(backend, `${table}_deleted`)} ADD COLUMN ${colSql}`);
-      }
-    } else if (ch.op === 'widenColumn') {
-      const colType = fieldSqlType(backend, newDefn.fields[ch.name]);
-      if (backend === 'sqlite') {
-        throw new Error(
-          'MIGRATION_UNSUPPORTED: SQLite 不支持类型变更 '
-          + `（${ch.from} → ${ch.to} 需重建表）；加列/加索引/加表已支持`);
-      }
-      if (backend === 'mysql') {
-        stmts.push(`ALTER TABLE ${q(backend, table)} MODIFY COLUMN ${q(backend, pname(backend, ch.name))} ${colType}`);
-      } else {
-        stmts.push(
-          `ALTER TABLE ${q(backend, table)} ALTER COLUMN ${q(backend, pname(backend, ch.name))} `
-          + `TYPE ${colType} USING ${q(backend, pname(backend, ch.name))}::${colType}`);
-      }
-    } else if (ch.op === 'addIndex') {
+    if (ch.op === 'addTable') _genAddTable(newDefn, backend, stmts);
+    else if (ch.op === 'addColumn') _genAddColumn(ch, newDefn, backend, table, stmts);
+    else if (ch.op === 'widenColumn') _genWidenColumn(ch, newDefn, backend, table, stmts);
+    else if (ch.op === 'addIndex') {
       stmts.push(...indexStmts({ collection: table, fields: newDefn.fields, indexes: [ch.index] }, backend));
     } else {
       throw new Error(`MIGRATION_UNSUPPORTED: 未知变更 ${ch.op}`);

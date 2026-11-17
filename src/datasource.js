@@ -619,22 +619,34 @@ async function _execSqlDirect(source, connection, cmd) {
  *   - 返回 `{ rows, affectedRows }`。
  *   对齐 py_store/datasource.py#execute_raw。
  */
-async function executeRaw(source, sql, params = null, isWrite = null) {
-  if (params != null && !Array.isArray(params) && typeof params !== 'object') {
-    throw new RawSqlError(`原生 SQL params 仅支持数组（位置档）或对象（命名档），收到 ${typeof params}`);
-  }
+/** SQL 源判定：非 SQL 源显式报错（原生 SQL 入口仅支持 mysql/postgres/sqlite） */
+function _rawConnOf(source) {
   const conn0 = connectionFor(source);
   if (!conn0 || !SQL_KINDS.has(conn0.kind)) {
     throw new RawSqlError(
       `数据源 ${source} 不是 SQL 源（原生 SQL 入口仅支持 mysql/postgres/sqlite）`,
     );
   }
+  return conn0;
+}
+
+/** raw 入口前置校验与编译：params 形态、SQL 源判定、core 编译（core 抛错转 RawSqlError） */
+function _compileRaw(source, sql, params, isWrite) {
+  if (params != null && !Array.isArray(params) && typeof params !== 'object') {
+    throw new RawSqlError(`原生 SQL params 仅支持数组（位置档）或对象（命名档），收到 ${typeof params}`);
+  }
+  const conn0 = _rawConnOf(source);
   let compiled;
   try {
     compiled = getCore().rawStmtCompile(conn0.kind, sql, params ?? null, isWrite ?? null);
   } catch (e) {
     throw new RawSqlError((e && e.message) || String(e));
   }
+  return compiled;
+}
+
+async function executeRaw(source, sql, params = null, isWrite = null) {
+  const compiled = _compileRaw(source, sql, params, isWrite);
   const conn = await resolveConnection(source, compiled.isWrite);
   if (!conn || typeof conn.exec !== 'function') {
     throw new RawSqlError(`SQL 数据源 ${source}(${conn && conn.kind}) 的执行器未接入`);
@@ -670,6 +682,14 @@ function pipelineWrites(pipeline) {
  *   - 返回 `{ rows }`。
  *   对齐 py_store/datasource.py#execute_native。
  */
+/** Mongo 连接解析原生句柄：嵌入式取 handle；client 形态经 mongoDb 包 db（事务视图用 conn.conn） */
+function _nativeCtx(conn, source) {
+  const isTxView = !!conn && conn.kind === 'mongo';
+  const isEmbedded = isEmbeddedConnection(conn);
+  const db = isEmbedded ? conn.handle : mongoDb(isTxView ? conn.conn : conn, source, null);
+  return { db, isTxView };
+}
+
 async function executeNative(source, collection, pipeline = [], options = null) {
   const conn = await resolveConnection(source, pipelineWrites(pipeline));
   if (isSqlConnection(conn)) {
@@ -678,9 +698,7 @@ async function executeNative(source, collection, pipeline = [], options = null) 
       + '按 schema 的 aggregate/query（pipeline 由 core 翻译成方言 SQL）在 SQL 源可用——两者适用源不同）',
     );
   }
-  const isTxView = !!conn && conn.kind === 'mongo';
-  const isEmbedded = isEmbeddedConnection(conn);
-  const db = isEmbedded ? conn.handle : mongoDb(isTxView ? conn.conn : conn, source, null);
+  const { db, isTxView } = _nativeCtx(conn, source);
   if (!db) {
     throw new NativeCommandError(
       `数据源 ${source} 不是 Mongo 源（原生 Mongo 命令入口仅支持 mongo）`,
@@ -695,6 +713,18 @@ async function executeNative(source, collection, pipeline = [], options = null) 
   // 属性路径调用（monkeypatch 可拦截）；session 由事务强制注入（_opts 内覆盖用户值）
   const rows = await executors.mongo.execMongo(db, cmd, isTxView ? conn.session : null);
   return { rows };
+}
+
+/** 提交失败：回滚其余全部已开事务（其余的失败同样收集进 errors，不掩盖首个提交错误） */
+async function _rollbackOthers(txs, opened, source, errors) {
+  for (const other of opened) {
+    if (other === source) continue;
+    try {
+      await txs.get(other).rollback();
+    } catch (exc2) {
+      errors.push([other, exc2]);
+    }
+  }
 }
 
 /**
@@ -752,14 +782,7 @@ class Session {
           await this._txs.get(source).commit();
         } catch (exc) {                     // 提交失败：其余全部回滚
           errors.push([source, exc]);
-          for (const other of this._opened) {
-            if (other === source) continue;
-            try {
-              await this._txs.get(other).rollback();
-            } catch (exc2) {
-              errors.push([other, exc2]);
-            }
-          }
+          await _rollbackOthers(this._txs, this._opened, source, errors);
           break;
         }
       }

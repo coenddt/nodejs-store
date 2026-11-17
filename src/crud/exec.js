@@ -202,6 +202,12 @@ async function _exec(cmd) {
   return _execOn(cmd.source || datasource.DEFAULT_SOURCE, cmd);
 }
 
+/** 单命令源收集：命令非空则记入 out（source 缺省回 DEFAULT_SOURCE） */
+function _collectCmdSource(out, cmd) {
+  const c = cmd || {};
+  if (c && Object.keys(c).length > 0) out.add(c.source || datasource.DEFAULT_SOURCE);
+}
+
 /** 从规划结果中提取数据源集合（探针 / 写 / 查 / 删 / mutation 步骤命令）
  *
  * `sources` 必须由规划结果提取，不得写死 `default`（多租户路由场景下的
@@ -209,19 +215,13 @@ async function _exec(cmd) {
  */
 function sourcesOf(plan) {
   const out = new Set();
+  const p = plan || {};
   for (const key of ['needsProbe', 'command', 'findCommand', 'deleteCommand']) {
-    const cmd = (plan || {})[key] || {};
-    if (cmd && Object.keys(cmd).length > 0) out.add(cmd.source || datasource.DEFAULT_SOURCE);
+    _collectCmdSource(out, p[key]);
   }
-  for (const step of (plan || {}).steps || []) {
-    const cmd = (step || {}).command || {};
-    if (cmd && Object.keys(cmd).length > 0) out.add(cmd.source || datasource.DEFAULT_SOURCE);
-  }
+  for (const step of p.steps || []) _collectCmdSource(out, (step || {}).command);
   // 触发链命令的源（plan_insert 直接产出 triggers；plan_update 二次规划才产出）
-  for (const t of (plan || {}).triggers || []) {
-    const cmd = (t || {}).command || {};
-    if (cmd && Object.keys(cmd).length > 0) out.add(cmd.source || datasource.DEFAULT_SOURCE);
-  }
+  for (const t of p.triggers || []) _collectCmdSource(out, (t || {}).command);
   return out.size > 0 ? out : new Set([datasource.DEFAULT_SOURCE]);
 }
 

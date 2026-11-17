@@ -168,33 +168,34 @@ function _scanPlaceholders(value) {
   return out;
 }
 
-/** 校验单个占位符表达式：input.<path> / dec:<a>,<b> / <as>.<path>（前向） */
-function _checkExpr(inner, definedAs, errors, where) {
-  if (inner.startsWith(_INPUT)) {
-    const path = inner.slice(_INPUT.length);
-    if (!path || path.split('.').some((s) => _NUM_SEG.test(s))) {
-      errors.push(`${where}: 占位符 {{${inner}}} 路径非法`
-        + '（首批不支持数组下标段，需要逐行处理请走宿主代码编排）');
-    }
+/** input.<path> 段：路径非空且不含数组下标段 */
+function _checkInputExpr(inner, errors, where) {
+  const path = inner.slice(_INPUT.length);
+  if (!path || path.split('.').some((s) => _NUM_SEG.test(s))) {
+    errors.push(`${where}: 占位符 {{${inner}}} 路径非法`
+      + '（首批不支持数组下标段，需要逐行处理请走宿主代码编排）');
+  }
+}
+
+/** dec:<a>,<b> 段：恰两操作数，各为占位符（递归校验）或数字字面量 */
+function _checkDecExpr(inner, definedAs, errors, where) {
+  const parts = inner.slice(_DEC.length).split(',');
+  if (parts.length !== 2) {
+    errors.push(`${where}: 占位符 {{${inner}}} dec 须恰两个操作数 dec:<a>,<b>`);
     return;
   }
-  if (inner.startsWith(_DEC)) {
-    const parts = inner.slice(_DEC.length).split(',');
-    if (parts.length !== 2) {
-      errors.push(`${where}: 占位符 {{${inner}}} dec 须恰两个操作数 dec:<a>,<b>`);
-      return;
+  for (const raw of parts) {
+    const p = raw.trim();
+    if (p.startsWith('{{') && p.endsWith('}}')) {
+      _checkExpr(p.slice(2, -2), definedAs, errors, where);
+    } else if (!_NUM_LIT.test(p)) {
+      errors.push(`${where}: 占位符 {{${inner}}} 操作数 '${p}' 须为占位符或数字字面量`);
     }
-    for (const raw of parts) {
-      const p = raw.trim();
-      if (p.startsWith('{{') && p.endsWith('}}')) {
-        _checkExpr(p.slice(2, -2), definedAs, errors, where);
-      } else if (!_NUM_LIT.test(p)) {
-        errors.push(`${where}: 占位符 {{${inner}}} 操作数 '${p}' 须为占位符或数字字面量`);
-      }
-    }
-    return;
   }
-  // <as>.<path>
+}
+
+/** <as>.<path> 段：as 名已定义（前向引用）+ 路径无数组下标段 */
+function _checkAsExpr(inner, definedAs, errors, where) {
   const segs = inner.split('.');
   const asName = segs[0];
   if (!asName) {
@@ -213,27 +214,15 @@ function _checkExpr(inner, definedAs, errors, where) {
   }
 }
 
-/**
- * Workflow defn 静态校验 → 错误列表（空 = 通过）。纯函数，白名单外全量收集。
- *
- * 检查项：顶层/步骤字段白名单、op 白名单、必填字段、as 唯一、占位符前向引用、
- * when 结构（恰一个白名单算子 + 合法参数键）、upsert 必带 match、gql 禁占位符
- * （参数化走 params 绑定，防注入）。
- */
-function validateDefn(defn) {
-  const errors = [];
-  if (!defn || typeof defn !== 'object' || Array.isArray(defn)) return ['defn 须为 JSON 对象'];
-  const name = defn.name;
-  if (!name || typeof name !== 'string') {
-    errors.push('name 必填（非空字符串）');
-  } else if (name.startsWith('__')) {
-    errors.push(`name "${name}" 以 __ 开头（前缀保留给内建 schema，禁止用于工作流）`);
-  }
-  for (const k of Object.keys(defn)) {
-    if (!_TOP_FIELDS.has(k)) {
-      errors.push(`未知顶层字段 "${k}"（白名单: ${JSON.stringify([..._TOP_FIELDS].sort())}）`);
-    }
-  }
+/** 校验单个占位符表达式：input.<path> / dec:<a>,<b> / <as>.<path>（前向） */
+function _checkExpr(inner, definedAs, errors, where) {
+  if (inner.startsWith(_INPUT)) return _checkInputExpr(inner, errors, where);
+  if (inner.startsWith(_DEC)) return _checkDecExpr(inner, definedAs, errors, where);
+  return _checkAsExpr(inner, definedAs, errors, where);
+}
+
+/** read/write/run 白名单形态；空名单按「未配置」放行（旧语义），emit 可定位告警 */
+function _checkWhitelists(defn, errors) {
   for (const k of ['read', 'write', 'run']) {
     const v = defn[k];
     if (v != null && (!Array.isArray(v) || !v.every((r) => typeof r === 'string'))) {
@@ -249,63 +238,113 @@ function validateDefn(defn) {
       });
     }
   }
+}
+
+/** 顶层字段：name 形态、白名单、read/write/run 白名单、denyRead 开关 */
+function _checkTopFields(defn, errors) {
+  const name = defn.name;
+  if (!name || typeof name !== 'string') {
+    errors.push('name 必填（非空字符串）');
+  } else if (name.startsWith('__')) {
+    errors.push(`name "${name}" 以 __ 开头（前缀保留给内建 schema，禁止用于工作流）`);
+  }
+  for (const k of Object.keys(defn)) {
+    if (!_TOP_FIELDS.has(k)) {
+      errors.push(`未知顶层字段 "${k}"（白名单: ${JSON.stringify([..._TOP_FIELDS].sort())}）`);
+    }
+  }
+  _checkWhitelists(defn, errors);
   if (defn.denyRead && typeof defn.denyRead !== 'boolean') {
     errors.push('denyRead 须为布尔值（显式拒绝读开关，口径以 core 为准）');
   }
+}
 
+/** 步骤形态：对象判定 + op 白名单；失败即告警并返回 null（后续检查跳过） */
+function _stepShape(step, where, errors) {
+  if (!step || typeof step !== 'object' || Array.isArray(step)) {
+    errors.push(`${where}: 步骤须为 JSON 对象`);
+    return null;
+  }
+  const op = step.op;
+  if (!_OPS.includes(op)) {
+    errors.push(`${where}: WORKFLOW_UNSUPPORTED 未知步骤类型 ${JSON.stringify(op)}`
+      + `（首批白名单: ${JSON.stringify(_OPS)}；循环/并行/子工作流/审批节点均不支持）`);
+    return null;
+  }
+  return op;
+}
+
+/** 步骤字段白名单与必填字段（按 op 查表） */
+function _stepFields(step, where, op, errors) {
+  for (const k of Object.keys(step)) {
+    if (!_STEP_FIELDS[op].has(k)) {
+      errors.push(`${where}: 未知步骤字段 "${k}"（${op} 白名单: `
+        + `${JSON.stringify([..._STEP_FIELDS[op]].sort())}）`);
+    }
+  }
+  for (const k of _STEP_REQUIRED[op]) {
+    if (step[k] == null || step[k] === '') {
+      errors.push(`${where}: ${op} 步骤缺少必填字段 "${k}"`);
+    }
+  }
+}
+
+/** 步骤语义：as 唯一、upsert 必带 match、when 结构 */
+function _stepSemantics(step, where, op, definedAs, errors) {
+  const asName = step.as;
+  if ((op === 'query' || op === 'mutation') && asName && definedAs.has(asName)) {
+    errors.push(`${where}: as "${asName}" 重复（引用歧义，禁止覆盖）`);
+  }
+  if (op === 'mutation' && step.upsert && !step.match) {
+    errors.push(`${where}: upsert: true 须提供 match 条件`);
+  }
+  if (step.when != null) _validateWhen(step.when, errors, `${where}.when`);
+}
+
+/** gql 占位符禁用 + 占位符前向引用扫描（gql 除外——已禁） */
+function _stepPlaceholders(step, where, op, definedAs, errors) {
+  if (op === 'query' && typeof step.gql === 'string' && _GQL_PH.test(step.gql)) {
+    errors.push(`${where}: gql 内嵌占位符不支持（注入面）；动态参数请走 params 绑定`);
+  }
+  const scanPool = {};
+  for (const k of Object.keys(step)) {
+    if (k !== 'op' && k !== 'gql') scanPool[k] = step[k];
+  }
+  for (const { inner } of _scanPlaceholders(scanPool)) {
+    _checkExpr(inner, definedAs, errors, where);
+  }
+}
+
+/** 单个步骤校验（顺序与原实现一致：形态 → 字段 → 语义 → 占位符 → 登记 as） */
+function _validateStep(step, i, definedAs, errors) {
+  const where = `steps[${i}]`;
+  const op = _stepShape(step, where, errors);
+  if (op == null) return;
+  _stepFields(step, where, op, errors);
+  // 前向引用集合：不含当前步骤自身的 as（自引用在执行期必然悬空——结果尚不存在）；直接用 definedAs
+  _stepSemantics(step, where, op, definedAs, errors);
+  _stepPlaceholders(step, where, op, definedAs, errors);
+  if ((op === 'query' || op === 'mutation') && step.as) definedAs.add(step.as);
+}
+
+/**
+ * Workflow defn 静态校验 → 错误列表（空 = 通过）。纯函数，白名单外全量收集。
+ *
+ * 检查项：顶层/步骤字段白名单、op 白名单、必填字段、as 唯一、占位符前向引用、
+ * when 结构（恰一个白名单算子 + 合法参数键）、upsert 必带 match、gql 禁占位符
+ * （参数化走 params 绑定，防注入）。
+ */
+function validateDefn(defn) {
+  const errors = [];
+  if (!defn || typeof defn !== 'object' || Array.isArray(defn)) return ['defn 须为 JSON 对象'];
+  _checkTopFields(defn, errors);
   const steps = defn.steps;
   if (!Array.isArray(steps) || !steps.length) {
     errors.push('steps 必填（非空数组，线性步骤序列）');
     return errors;
   }
-
   const definedAs = new Set();
-  steps.forEach((step, i) => {
-    const where = `steps[${i}]`;
-    if (!step || typeof step !== 'object' || Array.isArray(step)) {
-      errors.push(`${where}: 步骤须为 JSON 对象`);
-      return;
-    }
-    const op = step.op;
-    if (!_OPS.includes(op)) {
-      errors.push(`${where}: WORKFLOW_UNSUPPORTED 未知步骤类型 ${JSON.stringify(op)}`
-        + `（首批白名单: ${JSON.stringify(_OPS)}；循环/并行/子工作流/审批节点均不支持）`);
-      return;
-    }
-    for (const k of Object.keys(step)) {
-      if (!_STEP_FIELDS[op].has(k)) {
-        errors.push(`${where}: 未知步骤字段 "${k}"（${op} 白名单: `
-          + `${JSON.stringify([..._STEP_FIELDS[op]].sort())}）`);
-      }
-    }
-    for (const k of _STEP_REQUIRED[op]) {
-      if (step[k] == null || step[k] === '') {
-        errors.push(`${where}: ${op} 步骤缺少必填字段 "${k}"`);
-      }
-    }
-    const asName = step.as;
-    if ((op === 'query' || op === 'mutation') && asName && definedAs.has(asName)) {
-      errors.push(`${where}: as "${asName}" 重复（引用歧义，禁止覆盖）`);
-    }
-    // 前向引用集合：不含当前步骤自身的 as（自引用在执行期必然悬空——结果尚不存在）；直接用 definedAs
-    if (op === 'mutation' && step.upsert && !step.match) {
-      errors.push(`${where}: upsert: true 须提供 match 条件`);
-    }
-    if (op === 'query' && typeof step.gql === 'string' && _GQL_PH.test(step.gql)) {
-      errors.push(`${where}: gql 内嵌占位符不支持（注入面）；动态参数请走 params 绑定`);
-    }
-    // 占位符前向引用：扫描该步全部占位符字段（gql 除外——已禁）
-    const scanPool = {};
-    for (const k of Object.keys(step)) {
-      if (k !== 'op' && k !== 'gql') scanPool[k] = step[k];
-    }
-    for (const { inner } of _scanPlaceholders(scanPool)) {
-      _checkExpr(inner, definedAs, errors, where);
-    }
-    // when 结构
-    if (step.when != null) _validateWhen(step.when, errors, `${where}.when`);
-    if ((op === 'query' || op === 'mutation') && asName) definedAs.add(asName);
-  });
+  steps.forEach((step, i) => _validateStep(step, i, definedAs, errors));
   return errors;
 }
 
@@ -320,49 +359,60 @@ function validateDefn(defn) {
  *
  * 与 `validateDefn`（纯函数、只做结构白名单）分职：本函数需要 core 注册表，故独立、不入 validateDefn。
  */
+/** 对象分支：收集本层 `params` 槽位键（去前导 @）+ 递归下钻全部值 */
+function _collectParamKeysObj(v, out) {
+  const p = v.params;
+  if (p && typeof p === 'object' && !Array.isArray(p)) {
+    // core `ast.params` 的值为 `@key` 形态（含前导 @，实测 core parse.rs 保留 ref 原值）；
+    // 归一化去掉前导 @，使错误文案为 `@c0` 而非 `@@c0`。
+    for (const k of Object.values(p)) {
+      if (typeof k === 'string' && k) out.add(k.startsWith('@') ? k.slice(1) : k);
+    }
+  }
+  Object.values(v).forEach((x) => _collectParamKeys(x, out));
+}
+
 function _collectParamKeys(v, out = new Set()) {
   if (Array.isArray(v)) {
     v.forEach((x) => _collectParamKeys(x, out));
     return out;
   }
-  if (v && typeof v === 'object') {
-    const p = v.params;
-    if (p && typeof p === 'object' && !Array.isArray(p)) {
-      // core `ast.params` 的值为 `@key` 形态（含前导 @，实测 core parse.rs 保留 ref 原值）；
-      // 归一化去掉前导 @，使错误文案为 `@c0` 而非 `@@c0`。
-      for (const k of Object.values(p)) {
-        if (typeof k === 'string' && k) out.add(k.startsWith('@') ? k.slice(1) : k);
-      }
-    }
-    Object.values(v).forEach((x) => _collectParamKeys(x, out));
-  }
+  if (v && typeof v === 'object') _collectParamKeysObj(v, out);
   return out;
+}
+
+/** 参数键完备检查：gql 引用的每个 @key 须在 step.params 顶层存在（缺键运行期被静默丢弃） */
+function _planableParams(step, where, built, errors) {
+  const p = step.params;
+  const provided = new Set(
+    p && typeof p === 'object' && !Array.isArray(p) ? Object.keys(p) : [],
+  );
+  for (const key of [..._collectParamKeys(built && built.ast)].sort()) {
+    if (!provided.has(key)) {
+      errors.push(`${where}: gql 引用了未提供的参数 @${key}（params 须提供该键）`);
+    }
+  }
+}
+
+/** 单个 query 步骤：buildPipeline 可规划 + 参数键完备 */
+function _planableStep(step, i, errors) {
+  if (!step || step.op !== 'query' || typeof step.gql !== 'string') return;
+  const where = `steps[${i}]`;
+  let built;
+  try {
+    built = getCore().buildPipeline(step.gql, {}, null);
+  } catch (e) {
+    errors.push(`${where}: gql 不可规划: ${e && e.message ? e.message : String(e)}`);
+    return;
+  }
+  _planableParams(step, where, built, errors);
 }
 
 function validatePlanable(defn) {
   const errors = [];
   const steps = defn && Array.isArray(defn.steps) ? defn.steps : null;
   if (!steps) return errors;
-  steps.forEach((step, i) => {
-    if (!step || step.op !== 'query' || typeof step.gql !== 'string') return;
-    const where = `steps[${i}]`;
-    let built;
-    try {
-      built = getCore().buildPipeline(step.gql, {}, null);
-    } catch (e) {
-      errors.push(`${where}: gql 不可规划: ${e && e.message ? e.message : String(e)}`);
-      return;
-    }
-    const p = step.params;
-    const provided = new Set(
-      p && typeof p === 'object' && !Array.isArray(p) ? Object.keys(p) : [],
-    );
-    for (const key of [..._collectParamKeys(built && built.ast)].sort()) {
-      if (!provided.has(key)) {
-        errors.push(`${where}: gql 引用了未提供的参数 @${key}（params 须提供该键）`);
-      }
-    }
-  });
+  steps.forEach((step, i) => _planableStep(step, i, errors));
   return errors;
 }
 
@@ -542,6 +592,15 @@ function _jsonEq(a, b) {
 
 // ─── when 守卫判定 ───────────────────────────────────────────
 
+/** exists 分支：路径存在性断言（is 键缺省 = 断言存在；显式 is null/false → 期望不存在） */
+function _evalExists(when, paramKey, left, right) {
+  const present = left !== null && left !== undefined;
+  const want = paramKey in when
+    ? (right !== null && right !== undefined && right !== false)
+    : true;
+  return present === want;
+}
+
 /** when 判定（取值位非 strict：路径取不到 → null 三态，服务 exists/is null 断言） */
 function _evalWhen(when, inputMap, ctxMap) {
   const { op, paramKey } = _splitWhen(when);
@@ -549,14 +608,7 @@ function _evalWhen(when, inputMap, ctxMap) {
   const right = paramKey in when
     ? _resolveTree(when[paramKey], inputMap, ctxMap, false)
     : null;
-  if (op === 'exists') {
-    const present = left !== null && left !== undefined;
-    // is 键缺省 = 断言存在；显式 is（null/false → 期望不存在，其余 → 期望存在）
-    const want = paramKey in when
-      ? (right !== null && right !== undefined && right !== false)
-      : true;
-    return present === want;
-  }
+  if (op === 'exists') return _evalExists(when, paramKey, left, right);
   if (op === 'is' || op === 'eq') return _jsonEq(left, right);
   if (op === 'ne') return !_jsonEq(left, right);
   // lt / lte / gt / gte：数值比较；类型不可比显式 Err（不猜）
@@ -639,53 +691,76 @@ async function _execStep(step, inputMap, ctxMap, routeOverride, index) {
 }
 
 /**
+ * when 判定段：不满足 → skipped 留痕并返回 false；判定失败 → failed 留痕并抛
+ * _StepFailure（带步骤下标）。满足 → true。
+ */
+function _stepWhenOk(step, i, st) {
+  const when = step.when;
+  if (when == null) return true;
+  const asName = step.as ?? null;
+  let ok;
+  try {
+    ok = _evalWhen(when, st.inputMap, st.ctxMap);
+  } catch (e) {
+    if (!(e instanceof _StepFailure)) throw e;
+    st.trace.push({ as: asName, op: step.op, state: 'failed', error: String(e.message) });
+    e.index = i;
+    throw e;
+  }
+  if (!ok) {
+    st.trace.push({ as: asName, op: step.op, state: 'skipped' });
+    return false;
+  }
+  return true;
+}
+
+/**
+ * 执行段（when 已过、dry 已分流）：解析占位符（步骤内）→ 执行 → 结果按 as 入上下文
+ * → 迹追加。失败统一转 _StepFailure 留痕后抛出。
+ */
+async function _execStepEntry(step, i, st, entry) {
+  let result;
+  try {
+    result = await _execStep(step, st.inputMap, st.ctxMap, st.routeOverride, i);
+  } catch (e) {
+    if (e instanceof _StepFailure) {
+      st.trace.push({ ...entry, state: 'failed', error: String(e.message) });
+      if (e.index == null) e.index = i;
+      throw e;
+    }
+    const msg = `步骤 ${i}（${step.op}）执行失败: ${e && e.message ? e.message : e}`;
+    st.trace.push({ ...entry, state: 'failed', error: msg });
+    throw new _StepFailure(msg, i);
+  }
+  if (entry.as) st.ctxMap[entry.as] = result;
+  entry.result = result;
+  st.trace.push(entry);
+}
+
+/** 单步骤：when 判定 → dry-run 分流 → 执行留痕（skipped/wouldRun/ran/failed 均留痕） */
+async function _runOneStep(step, i, st) {
+  const asName = step.as ?? null;
+  const op = step.op;
+  // a. when 判定 → 不满足记 skipped（显式留痕，绝不静默跳过），后续步骤照常
+  if (!_stepWhenOk(step, i, st)) return;
+  // b. dry-run：mutation / fail 不执行，记 wouldRun（§0.7）
+  if (st.dry && (op === 'mutation' || op === 'fail')) {
+    st.trace.push({ as: asName, op, state: 'wouldRun' });
+    return;
+  }
+  // c/d. 解析占位符（步骤内）→ 执行 → 结果按 as 入上下文 → 迹追加
+  const entry = { as: asName, op, state: 'ran' };
+  await _execStepEntry(step, i, st, entry);
+}
+
+/**
  * 线性步骤循环：迹与 defn.steps 一一对应（skipped/wouldRun/ran/failed 均留痕）。
  * 失败抛 _StepFailure（带步骤下标）——外层收尾统一落 failed 终态 + 整体回滚。
+ * 执行态打包为单对象 st `{inputMap, ctxMap, trace, dry, routeOverride}`（原六参收敛）。
  */
-async function _runSteps(defn, inputMap, ctxMap, trace, dry, routeOverride) {
+async function _runSteps(defn, st) {
   for (const [i, step] of defn.steps.entries()) {
-    const op = step.op;
-    const asName = step.as ?? null;
-    // a. when 判定 → 不满足记 skipped（显式留痕，绝不静默跳过），后续步骤照常
-    const when = step.when;
-    let ok = true;
-    if (when != null) {
-      try {
-        ok = _evalWhen(when, inputMap, ctxMap);
-      } catch (e) {
-        if (!(e instanceof _StepFailure)) throw e;
-        trace.push({ as: asName, op, state: 'failed', error: String(e.message) });
-        e.index = i;
-        throw e;
-      }
-    }
-    if (!ok) {
-      trace.push({ as: asName, op, state: 'skipped' });
-      continue;
-    }
-    // b. dry-run：mutation / fail 不执行，记 wouldRun（§0.7）
-    if (dry && (op === 'mutation' || op === 'fail')) {
-      trace.push({ as: asName, op, state: 'wouldRun' });
-      continue;
-    }
-    // c/d. 解析占位符（步骤内）→ 执行 → 结果按 as 入上下文 → 迹追加
-    const entry = { as: asName, op, state: 'ran' };
-    let result;
-    try {
-      result = await _execStep(step, inputMap, ctxMap, routeOverride, i);
-    } catch (e) {
-      if (e instanceof _StepFailure) {
-        trace.push({ ...entry, state: 'failed', error: String(e.message) });
-        if (e.index == null) e.index = i;
-        throw e;
-      }
-      const msg = `步骤 ${i}（${op}）执行失败: ${e && e.message ? e.message : e}`;
-      trace.push({ ...entry, state: 'failed', error: msg });
-      throw new _StepFailure(msg, i);
-    }
-    if (asName) ctxMap[asName] = result;
-    entry.result = result;
-    trace.push(entry);
+    await _runOneStep(step, i, st);
   }
 }
 
@@ -720,6 +795,61 @@ function _withMeta(runDoc, saved) {
   };
 }
 
+/** 权限判定（§0.6）：fail-secure 优先于 dry-run——null = 放行，否则为 rejected 文案 */
+function _rejectReason(d, ctx) {
+  if (_requireContext() && ctx == null) {
+    return 'ERR_NO_CONTEXT: 上下文强制开启，无 ctx 拒跑（fail-secure 优先于 dry-run）';
+  }
+  if (!_evaluate(_runWhitelist(d), ctx)) {
+    return `run 白名单拦截: 触发者角色不在 run 白名单内（${JSON.stringify(_runWhitelist(d) || [])}）`;
+  }
+  return null;
+}
+
+/** run 记录落库 running 并取 rid（先于步骤：中断可观测） */
+async function _startRunning(runDoc) {
+  const saved = await _persistWrite(runDoc);
+  return { saved, rid: saved ? saved._id ?? null : null };
+}
+
+/** 步骤循环包络：单源 run 整体原子（runAtomic 包住步骤循环）；多源/预扫失败降级裸跑 */
+async function _executeAll(d, st, ctx, now) {
+  if (st.dry) {
+    await _runSteps(d, st);
+    return;
+  }
+  const sources = _prescanSources(d, st.routeOverride, now, ctx);
+  if (sources !== null && sources.size === 1) {
+    await runAtomic(sources, () => _runSteps(d, st));
+    return;
+  }
+  if (sources !== null && sources.size > 1) _warnNonAtomic(sources);
+  await _runSteps(d, st);
+}
+
+/** 步骤循环 + 终态归集：_StepFailure → failed/dryFailed 留痕；编程错误照常抛 */
+async function _runAndSettle(d, st, ctx, now, dry) {
+  let status = dry ? 'drySucceeded' : 'succeeded';
+  let error = null;
+  let stepIndex = null;
+  try {
+    await _executeAll(d, st, ctx, now);
+  } catch (e) {
+    if (!(e instanceof _StepFailure)) throw e;
+    status = dry ? 'dryFailed' : 'failed';
+    error = String(e.message);
+    stepIndex = e.index;
+  }
+  return { status, error, stepIndex };
+}
+
+/** run 入参形态校验（编程错误照常抛 TypeError，不入 run 终态） */
+function _checkRunInput(input) {
+  if (input != null && (typeof input !== 'object' || Array.isArray(input))) {
+    throw new TypeError(`run(name, input) 的 input 须为 dict，收到 ${typeof input}`);
+  }
+}
+
 /**
  * 触发工作流 → 完整 run 文档（§3）
  *
@@ -735,9 +865,7 @@ async function run(name, input = null, { dryRun = false, routeOverride = null } 
   ensureBuiltin();
   const d = _workflows.get(name);
   if (!d) throw new Error(`Workflow 未注册: ${name}`);
-  if (input != null && (typeof input !== 'object' || Array.isArray(input))) {
-    throw new TypeError(`run(name, input) 的 input 须为 dict，收到 ${typeof input}`);
-  }
+  _checkRunInput(input);
   const inp = { ...(input || {}) };
   const ctx = getContext() ?? null;
   const now = Date.now();
@@ -750,13 +878,7 @@ async function run(name, input = null, { dryRun = false, routeOverride = null } 
 
   // 1. 权限（§0.6）：fail-secure 优先于 dry-run（N3 实测裁决）——require_context 开启
   //    且无 ctx → rejected 拒跑；run 白名单外 → rejected（落库可审计，一次落终态）
-  const require = _requireContext();
-  let rejected = null;
-  if (require && ctx == null) {
-    rejected = 'ERR_NO_CONTEXT: 上下文强制开启，无 ctx 拒跑（fail-secure 优先于 dry-run）';
-  } else if (!_evaluate(_runWhitelist(d), ctx)) {
-    rejected = `run 白名单拦截: 触发者角色不在 run 白名单内（${JSON.stringify(_runWhitelist(d) || [])}）`;
-  }
+  const rejected = _rejectReason(d, ctx);
   if (rejected !== null) {
     runDoc.status = 'rejected';
     runDoc.error = rejected;
@@ -765,40 +887,19 @@ async function run(name, input = null, { dryRun = false, routeOverride = null } 
   }
 
   // 2. 状态落库 running（先于步骤：中断可观测）
-  const saved = await _persistWrite(runDoc);
-  const rid = saved ? saved._id ?? null : null;
+  const { saved, rid } = await _startRunning(runDoc);
 
-  // 3. 步骤循环（单源时整体原子；失败 _StepFailure 冒泡出事务 → 整体回滚）
-  const trace = runDoc.steps;
-  const ctxMap = Object.create(null);
-  const _execute = () => _runSteps(d, inp, ctxMap, trace, dry, routeOverride);
-
-  let status = dry ? 'drySucceeded' : 'succeeded';
-  let error = null;
-  let stepIndex = null;
-  try {
-    if (!dry) {
-      const sources = _prescanSources(d, routeOverride, now, ctx);
-      if (sources !== null && sources.size === 1) {
-        await runAtomic(sources, _execute);
-      } else {
-        if (sources !== null && sources.size > 1) _warnNonAtomic(sources);
-        await _execute();
-      }
-    } else {
-      await _execute();
-    }
-  } catch (e) {
-    if (!(e instanceof _StepFailure)) throw e;
-    status = dry ? 'dryFailed' : 'failed';
-    error = String(e.message);
-    stepIndex = e.index;
-  }
-  // 4. 收尾终态（事务外独立提交）
+  // 3/4. 步骤循环（单源时整体原子；失败 _StepFailure 冒泡出事务 → 整体回滚）
+  //      + 终态归集，收尾 update 事务外独立提交
+  const st = {
+    inputMap: inp, ctxMap: Object.create(null), trace: runDoc.steps,
+    dry, routeOverride,
+  };
+  const { status, error, stepIndex } = await _runAndSettle(d, st, ctx, now, dry);
   runDoc.status = status;
   runDoc.error = error;
   runDoc.stepIndex = stepIndex;
-  await _persistUpdate(rid, { status, steps: trace, error, stepIndex });
+  await _persistUpdate(rid, { status, steps: st.trace, error, stepIndex });
   return _withMeta(runDoc, saved);
 }
 

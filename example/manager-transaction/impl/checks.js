@@ -10,7 +10,7 @@ const { autoSchema } = require('./auto-schema');
 let lastAutoId = null;
 
 /** 注册 autoincrement 探针 schema（nodejs 同名重复注册 = 更新语义，天然幂等） */
-async function register_auto_schema(_h) {
+async function register_auto_schema() {
   const { schema: sc } = require('../../../src');
   try {
     sc.register(autoSchema('AutoOrder', 'auto_orders'));

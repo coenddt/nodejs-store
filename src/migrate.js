@@ -119,14 +119,18 @@ function _alignTypes(backend, oldDefn, physNew) {
   const oldFields = (oldDefn && oldDefn.fields) || {};
   const fields = { ...physNew.fields };
   for (const [k, v] of Object.entries(fields)) {
-    const o = oldFields[k];
-    const ot = o && (typeof o === 'object' ? o.type : o);
-    const nt = v && typeof v === 'object' ? v.type : v;
-    if (ot === 'number' && _NUMBER_FAMILY.has(nt)) {
-      fields[k] = typeof v === 'object' ? { ...v, type: 'number' } : 'number';
-    }
+    fields[k] = _alignedField(oldFields[k], v);
   }
   return { ...physNew, fields };
+}
+
+/** 单字段粒度对齐：old 侧为 number 且 new 侧同名同族 → 归一为 number；否则原样保留 */
+function _alignedField(o, v) {
+  const ot = o && (typeof o === 'object' ? o.type : o);
+  if (ot !== 'number') return v;
+  const nt = v && typeof v === 'object' ? v.type : v;
+  if (!_NUMBER_FAMILY.has(nt)) return v;
+  return typeof v === 'object' ? { ...v, type: 'number' } : 'number';
 }
 
 /**
@@ -143,14 +147,23 @@ function _alignTypes(backend, oldDefn, physNew) {
  * @param {string|null} [o.env] 环境段（null → 空串段）
  * @returns {Promise<{applied: Array<{name, from, to, version}>, skipped: Array<{name, reason}>}>}
  */
-async function migrate({ backend, source, defs, oldDefs = null, driver = null,
-  tenant = null, env = null } = {}) {
+/** 入参校验（defs 为 {name: defn} 对象）——拆出主编排保持单函数复杂度达标 */
+function _assertArgs(backend, source, defs) {
   if (!backend || !source || !defs || typeof defs !== 'object' || Array.isArray(defs)) {
     throw new MetaDefError('migrate: backend/source/defs 必填（defs 为 {name: defn} 对象）');
   }
-  // 版本表保障：有 driver 时一次完整 introspect（两用：版本表探测 + oldDefs=null 转 defn）；
-  // 无 driver 时退化为 executeRaw 只读探测。缺失才建（core 产 DDL；CREATE TABLE 非 IF NOT
-  // EXISTS，幂等由探测保证）。ddl.generate 返回 `\n\n` 拼接语句串，executeRaw 单次单语句。
+}
+
+/** 段归一：null/undefined → 空串（与 metadef 既有 null 处理一致） */
+function _segOf(v) { return v == null ? '' : v; }
+
+/**
+ * 版本表保障：有 driver 时一次完整 introspect（两用：版本表探测 + oldDefs=null 转 defn）；
+ * 无 driver 时退化为 executeRaw 只读探测。缺失才建（core 产 DDL；CREATE TABLE 非 IF NOT
+ * EXISTS，幂等由探测保证）。ddl.generate 返回 `\n\n` 拼接语句串，executeRaw 单次单语句。
+ * 返回 probe（driver 模式的探测结果；无 driver 为 null）。
+ */
+async function _ensureVersionTable({ backend, source, driver }) {
   let probe = null;
   let hasVersionTable = false;
   if (driver) {
@@ -167,132 +180,176 @@ async function migrate({ backend, source, defs, oldDefs = null, driver = null,
       }
     });
   }
-  // ① 旧版定义：oldDefs 显式传入者优先；null → 复用本次探测行转 defn（需 driver）。
-  // schemaFromRows 的 name 是物理表名（如 `notes`），与 defs 的 schema 名（如 `Note`）
-  // 不同键——按 name 与 collection 双索引，查找时以 defs 侧 collection 兜底对齐
-  let old = oldDefs;
-  if (old === null || old === undefined) {
-    if (!probe) {
-      throw new MetaDefError(
-        'migrate: oldDefs 为 null 时需传 driver（introspect 需原生驱动实例，同 syncSchema 惯例）；'
-        + '或显式传入 oldDefs 跳过探测');
+  return probe;
+}
+
+/**
+ * ① 旧版定义：oldDefs 显式传入者优先；null → 复用本次探测行转 defn（需 driver）。
+ * schemaFromRows 的 name 是物理表名（如 `notes`），与 defs 的 schema 名（如 `Note`）
+ * 不同键——按 name 与 collection 双索引，查找时以 defs 侧 collection 兜底对齐
+ */
+function _resolveOldDefs(oldDefs, probe, backend) {
+  if (oldDefs !== null && oldDefs !== undefined) return oldDefs;
+  if (!probe) {
+    throw new MetaDefError(
+      'migrate: oldDefs 为 null 时需传 driver（introspect 需原生驱动实例，同 syncSchema 惯例）；'
+      + '或显式传入 oldDefs 跳过探测');
+  }
+  const old = {};
+  for (const d of core.schemaFromRows(probe, backend)) {
+    old[d.name] = d;
+    if (d.collection && d.collection !== d.name) old[d.collection] = d;
+  }
+  return old;
+}
+
+/**
+ * ⓪ 物理内建列完整性（仅 introspect 模式）：camelCase 时代的老表缺 `__present` /
+ * `created_by` / `created_at` 等内建列。先按当前 DDL 自动补列（老库照样迁得过去），
+ * 同时发出可定位告警；**只有补列失败才中断**（保留真报错，不吞成静默通过）。
+ * ⓪b 归属键回填完整性：列已存在但值为 NULL ⇒ creator 行控下这些行对非 bypass 用户
+ * 不可见。迁移层不猜业务归属，放行但必须告警（no-error-masking：允许通过、禁止静默失守）。
+ */
+async function _ensureBuiltinColumns({ backend, source, probe, name, defn, skipped }) {
+  const table = ptable(backend, defn);
+  if (!probe.tables.some((t) => t.name === table)) return;
+  const have = new Set(probe.columns.filter((c) => c.table === table).map((c) => c.name));
+  const missing = [...new Set(builtinFieldNames(defn, backend).map((n) => pname(backend, n)))]
+    .filter((n) => !have.has(n));
+  if (missing.length) {
+    try {
+      for (const stmt of ddl.implicitColumnDDL(backend, defn, have)) {
+        await executeRaw(source, stmt, null, true);
+      }
+    } catch (e) {
+      const reason = `物理表 ${table} 缺内建列 [${missing.join(', ')}]，自动补列失败：${e.message}；`
+        + '请按当前 DDL 手工补列或重建表后重跑迁移';
+      skipped.push({ name, reason });
+      throw new MigrationUnsupported(`MIGRATION_UNSUPPORTED: ${reason}（${_UNSUPPORTED_HINT}）`, skipped);
     }
-    old = {};
-    for (const d of core.schemaFromRows(probe, backend)) {
-      old[d.name] = d;
-      if (d.collection && d.collection !== d.name) old[d.collection] = d;
+    emitFeedback({
+      type: 'warning',
+      code: 'migrationAutoAddBuiltinColumns',
+      layer: 'migrate',
+      message: `物理表 ${table} 缺内建列 [${missing.join(', ')}]，已按当前 DDL 自动补列后继续迁移`,
+      hint: '新补列的存量行为 NULL；归属键列需按业务回填后 creator 行控才可见',
+    });
+    for (const n of missing) have.add(n);
+  }
+  const owner = ownerField(defn);
+  if (owner) {
+    const col = pname(backend, owner);
+    const hit = await executeRaw(
+      source, `SELECT 1 FROM ${table} WHERE ${col} IS NULL LIMIT 1`, null, false);
+    if (hit.rows && hit.rows.length) {
+      emitFeedback({
+        type: 'warning',
+        code: 'migrationOwnerKeyNullRows',
+        layer: 'migrate',
+        message: `物理表 ${table} 的归属键 ${col} 存在 NULL 行：creator 行控下这些行对非 bypass 用户不可见`,
+        hint: '请按业务回填归属键；迁移已继续，未静默拦截',
+      });
     }
   }
+}
+
+/**
+ * ⓪c 归档表补齐（仅 introspect 模式）：主表已存在时 addTable 分支不触发，老库常缺
+ * `<table>_deleted` 附表（remove 报 no such table），或归档表由旧版 DDL 建出、缺
+ * 主表 timestamps 列（归档 INSERT 报 no column named created_at）。此处按当前 def 补建/补列。
+ */
+function _ensureArchiveDDL(stmts, { backend, probe, defn }) {
+  if (defn.archive === false) return;
+  const mainTable = ptable(backend, defn);
+  const archDefn = ddl.archiveDefnOf(defn);
+  const archTable = ptable(backend, archDefn);
+  const has = (n) => probe.tables.some((t) => t.name === n);
+  if (!has(mainTable)) return;
+  if (!has(archTable)) {
+    stmts.unshift(...ddl.archiveDDL(backend, defn));
+  } else {
+    // 内建列补齐（旧版归档表缺 created_at/updated_at/__present）
+    const archHave = new Set(probe.columns.filter((c) => c.table === archTable).map((c) => c.name));
+    stmts.unshift(...ddl.implicitColumnDDL(backend, archDefn, archHave));
+  }
+}
+
+/**
+ * ⑤ 幂等闸（先于 diff）：同 (tenant,env,backend,name) 最新版本行 hash 相同 → unchanged，
+ * 不 diff——introspect 反推类型粒度（如 SQLite INTEGER→number）与用户声明
+ * 粒度（int）不齐，重跑不应进 diff 被误报。latest 一并返回供版本号计算。
+ */
+async function _migrationState({ source, seg, defn }) {
+  const hash = _hashOf(defn);
+  const rows = await crud.query(
+    `${_MIGRATION}($condition:@c0, $sort:@s0){_id, version, hash}`,
+    { c0: seg, s0: { version: -1 } }, { source });
+  return { unchanged: rows.length > 0 && rows[0].hash === hash, hash, latest: rows };
+}
+
+/** version = 该 name 历史最大 version+1（复用 metadef nextVersion 语义）；from = 当前最新版本 */
+function _versionOf(rows) {
+  const version = (rows.length ? Math.max(...rows.map((r) => r.version)) : 0) + 1;
+  return { version, from: rows.length ? rows[0].version : 0 };
+}
+
+/** 单个定义的迁移步骤（主循环体拆出；unchanged 返回 null，成功返回 applied 条目） */
+async function _migrateOne({ backend, source, name, defn, old, probe, oldDefs,
+  tenant, env, skipped }) {
+  const oldDefn = _stripBuiltinFields(backend,
+    old[name] || (defn.collection && old[defn.collection]) || null, defn);
+  // ⓪/⓪b 内建列完整性与归属键回填告警（仅 introspect 模式）
+  if (probe && oldDefs == null) {
+    await _ensureBuiltinColumns({ backend, source, probe, name, defn, skipped });
+  }
+  const seg = { tenant: _segOf(tenant), env: _segOf(env), backend, name };
+  const { unchanged, hash, latest } = await _migrationState({ source, seg, defn });
+  if (unchanged) {
+    skipped.push({ name, reason: 'unchanged' });
+    return null;
+  }
+  // ②③ diff（物理命名空间）：白名单外 → 收集 skipped 并抛 MigrationUnsupported（固定分步建议）
+  const physNew = _alignTypes(backend, oldDefn, _physicalDefn(backend, defn));
+  const plan = ddl.diffDefs(oldDefn, physNew);
+  if (plan.errors.length) {
+    skipped.push({ name, reason: plan.errors });
+    throw new MigrationUnsupported(
+      `MIGRATION_UNSUPPORTED: ${plan.errors.join('；')}（${_UNSUPPORTED_HINT}）`,
+      skipped);
+  }
+  // ④ 方言 SQL（纯文本）
+  const stmts = ddl.generateMigration(backend, oldDefn, physNew);
+  // ⓪c 归档表补齐（仅 introspect 模式）
+  if (probe && oldDefs == null) {
+    _ensureArchiveDDL(stmts, { backend, probe, defn });
+  }
+  const { version, from } = _versionOf(latest);
+  // ⑥ SQL 与版本行同事务：失败整体回滚、无孤儿版本行
+  await runInTransaction(source, async () => {
+    for (const sql of stmts) await executeRaw(source, sql, null, true);
+    await _runInternal(() => crud.insert(_MIGRATION, {
+      _id: migrationId(tenant, env, backend, name, version),
+      ...seg,
+      hash,
+      version,
+      appliedAt: Date.now(),
+      sqls: stmts,
+    }, { source }));
+  });
+  return { name, from, to: version, version };
+}
+
+async function migrate({ backend, source, defs, oldDefs = null, driver = null,
+  tenant = null, env = null } = {}) {
+  _assertArgs(backend, source, defs);
+  const probe = await _ensureVersionTable({ backend, source, driver });
+  const old = _resolveOldDefs(oldDefs, probe, backend);
   const applied = [];
   const skipped = [];
   for (const [name, defn] of Object.entries(defs)) {
-    const oldDefn = _stripBuiltinFields(backend,
-      old[name] || (defn.collection && old[defn.collection]) || null, defn);
-    // ⓪ 物理内建列完整性（仅 introspect 模式）：camelCase 时代的老表缺 `__present` /
-    // `created_by` / `created_at` 等内建列。先按当前 DDL 自动补列（老库照样迁得过去），
-    // 同时发出可定位告警；**只有补列失败才中断**（保留真报错，不吞成静默通过）。
-    if (probe && oldDefs == null) {
-      const table = ptable(backend, defn);
-      if (probe.tables.some((t) => t.name === table)) {
-        const have = new Set(probe.columns.filter((c) => c.table === table).map((c) => c.name));
-        const missing = [...new Set(builtinFieldNames(defn, backend).map((n) => pname(backend, n)))]
-          .filter((n) => !have.has(n));
-        if (missing.length) {
-          try {
-            for (const stmt of ddl.implicitColumnDDL(backend, defn, have)) {
-              await executeRaw(source, stmt, null, true);
-            }
-          } catch (e) {
-            const reason = `物理表 ${table} 缺内建列 [${missing.join(', ')}]，自动补列失败：${e.message}；`
-              + '请按当前 DDL 手工补列或重建表后重跑迁移';
-            skipped.push({ name, reason });
-            throw new MigrationUnsupported(`MIGRATION_UNSUPPORTED: ${reason}（${_UNSUPPORTED_HINT}）`, skipped);
-          }
-          emitFeedback({
-            type: 'warning',
-            code: 'migrationAutoAddBuiltinColumns',
-            layer: 'migrate',
-            message: `物理表 ${table} 缺内建列 [${missing.join(', ')}]，已按当前 DDL 自动补列后继续迁移`,
-            hint: '新补列的存量行为 NULL；归属键列需按业务回填后 creator 行控才可见',
-          });
-          for (const n of missing) have.add(n);
-        }
-        // ⓪b 归属键回填完整性（仅 introspect 模式）：列已存在但值为 NULL ⇒ creator 行控下
-        // 这些行对非 bypass 用户不可见。迁移层不猜业务归属，放行但必须告警
-        // （no-error-masking：允许通过、禁止静默失守）。
-        const owner = ownerField(defn);
-        if (owner) {
-          const col = pname(backend, owner);
-          const hit = await executeRaw(
-            source, `SELECT 1 FROM ${table} WHERE ${col} IS NULL LIMIT 1`, null, false);
-          if (hit.rows && hit.rows.length) {
-            emitFeedback({
-              type: 'warning',
-              code: 'migrationOwnerKeyNullRows',
-              layer: 'migrate',
-              message: `物理表 ${table} 的归属键 ${col} 存在 NULL 行：creator 行控下这些行对非 bypass 用户不可见`,
-              hint: '请按业务回填归属键；迁移已继续，未静默拦截',
-            });
-          }
-        }
-      }
-    }
-    // ⑤ 幂等闸（先于 diff）：同 (tenant,env,backend,name) 最新版本行 hash 相同 → skipped
-    // 'unchanged'，不 diff——introspect 反推类型粒度（如 SQLite INTEGER→number）与用户声明
-    // 粒度（int）不齐，重跑不应进 diff 被误报
-    const hash = _hashOf(defn);
-    const seg = { tenant: tenant == null ? '' : tenant, env: env == null ? '' : env, backend, name };
-    const rows = await crud.query(
-      `${_MIGRATION}($condition:@c0, $sort:@s0){_id, version, hash}`,
-      { c0: seg, s0: { version: -1 } }, { source });
-    if (rows.length && rows[0].hash === hash) {
-      skipped.push({ name, reason: 'unchanged' });
-      continue;
-    }
-    // ②③ diff（物理命名空间）：白名单外 → 收集 skipped 并抛 MigrationUnsupported（固定分步建议）
-    const physNew = _alignTypes(backend, oldDefn, _physicalDefn(backend, defn));
-    const plan = ddl.diffDefs(oldDefn, physNew);
-    if (plan.errors.length) {
-      skipped.push({ name, reason: plan.errors });
-      throw new MigrationUnsupported(
-        `MIGRATION_UNSUPPORTED: ${plan.errors.join('；')}（${_UNSUPPORTED_HINT}）`,
-        skipped);
-    }
-    // ④ 方言 SQL（纯文本）
-    const stmts = ddl.generateMigration(backend, oldDefn, physNew);
-    // ⓪c 归档表补齐（仅 introspect 模式）：主表已存在时 addTable 分支不触发，老库常缺
-    // `<table>_deleted` 附表（remove 报 no such table），或归档表由旧版 DDL 建出、缺
-    // 主表 timestamps 列（归档 INSERT 报 no column named created_at）。此处按当前 def 补建/补列。
-    if (probe && oldDefs == null && defn.archive !== false) {
-      const mainTable = ptable(backend, defn);
-      const archDefn = ddl.archiveDefnOf(defn);
-      const archTable = ptable(backend, archDefn);
-      const has = (n) => probe.tables.some((t) => t.name === n);
-      if (has(mainTable)) {
-        if (!has(archTable)) {
-          stmts.unshift(...ddl.archiveDDL(backend, defn));
-        } else {
-          // 内建列补齐（旧版归档表缺 created_at/updated_at/__present）
-          const archHave = new Set(probe.columns.filter((c) => c.table === archTable).map((c) => c.name));
-          stmts.unshift(...ddl.implicitColumnDDL(backend, archDefn, archHave));
-        }
-      }
-    }
-    // version = 该 name 历史最大 version+1（复用 metadef nextVersion 语义）
-    const version = (rows.length ? Math.max(...rows.map((r) => r.version)) : 0) + 1;
-    // ⑥ SQL 与版本行同事务：失败整体回滚、无孤儿版本行
-    await runInTransaction(source, async () => {
-      for (const sql of stmts) await executeRaw(source, sql, null, true);
-      await _runInternal(() => crud.insert(_MIGRATION, {
-        _id: migrationId(tenant, env, backend, name, version),
-        ...seg,
-        hash,
-        version,
-        appliedAt: Date.now(),
-        sqls: stmts,
-      }, { source }));
-    });
-    applied.push({ name, from: rows.length ? rows[0].version : 0, to: version, version });
+    const entry = await _migrateOne({ backend, source, name, defn, old, probe,
+      oldDefs, tenant, env, skipped });
+    if (entry) applied.push(entry);
   }
   // ⑦ 汇总
   return { applied, skipped };

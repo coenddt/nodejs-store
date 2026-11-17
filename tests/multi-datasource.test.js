@@ -29,7 +29,7 @@ const {
 } = require('./helpers/boot');
 const datasource = require('../src/datasource');
 // 内存 Mongo 桩改用 tests 共享超集版（零语义论证见 helpers/mem-mongo.js 头注释）
-const { MemCursor, MemColl } = require('./helpers/mem-mongo');
+const { MemColl } = require('./helpers/mem-mongo');
 
 /** Mongo db 实形态（collection 为函数）：固定库，无法跨库 */
 class FakeDb {

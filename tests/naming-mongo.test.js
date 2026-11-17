@@ -108,7 +108,7 @@ test('_toLogical: 未注册 collection（无法建逆表）原样返回（不臆
 // ── 集成：Mongo 落库物理集合名 + 逻辑键回读 ──────────────────
 
 // 内存 Mongo 桩改用 tests 共享超集版（零语义论证见 helpers/mem-mongo.js 头注释）
-const { MemCursor: _MemCursor, MemColl: _MemColl } = require('./helpers/mem-mongo');
+const { MemColl: _MemColl } = require('./helpers/mem-mongo');
 
 class _FakeDb {
   constructor(colls) { this.colls = colls || {}; this.accessed = []; }

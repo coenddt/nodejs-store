@@ -490,7 +490,15 @@ describe('ask L1 · 验收矩阵 T1-T12', () => {
   });
 });
 
-// ── llm.js 工厂行为矩阵（py 侧原型实测事实的 node 侧固化） ─────
+/** rejects 断言器：LlmError 且 detail.code 匹配（llm 工厂矩阵共用） */
+function _llmCodeOf(code) {
+  return (e) => {
+    assert.ok(e instanceof LlmError);
+    assert.equal(e.detail.code, code);
+    return true;
+  };
+}
+
 // ── llm.js 工厂行为矩阵（py 侧原型实测事实的 node 侧固化） ─────
 
 describe('llm · OpenAI 兼容工厂（D6）', () => {
@@ -510,12 +518,8 @@ describe('llm · OpenAI 兼容工厂（D6）', () => {
     await withFetch(async () => { fetched += 1; }, async () => {
       const client = llmReg.makeOpenaiCompat(BASE);
       await assert.rejects(
-        () => client([{ role: 'user', content: '随便聊聊今天的天气' }]),
-        (e) => {
-          assert.ok(e instanceof LlmError);
-          assert.equal(e.detail.code, 'llmJsonPromptMissing');
-          return true;
-        },
+        client([{ role: 'user', content: '随便聊聊今天的天气' }]),
+        _llmCodeOf('llmJsonPromptMissing'),
       );
       assert.equal(fetched, 0, '预检失败不得发出网络请求');
     });

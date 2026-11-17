@@ -118,23 +118,20 @@ function snapshotStats(dir) {
   return Object.keys(snap).sort().map((name) => [name, snap[name].length]);
 }
 
-/** 单步：声明式 op → store 调用（两侧同名同义；只做「做什么」，不判期望值） */
-async function step(op, dir) {
+/** 读写类 op 查表：op 名 → store 调用（两侧同名同义；非 IO op 不在表内） */
+const _IO_OPS = {
+  query: (op, dir) => store.query(op.gql, op.params || {}),
+  update: (op) => store.update(op.model, op.where, op.data),
+  updateMany: (op) => store.updateMany(op.model, op.where, op.data),
+  remove: (op) => store.remove(op.model, op.where),
+  count: (op) => store.count(op.model, op.where || null),
+  upsert: (op) => store.upsert(op.model, op.where, op.data),
+  snapshot: (op, dir) => snapshotStats(dir),
+};
+
+/** 事务类 op：txCommit 提交后 count；txRollback 期待回滚（非 parity-rollback 错误原样穿透） */
+async function _stepTx(op) {
   switch (op.op) {
-    case 'query':
-      return store.query(op.gql, op.params || {});
-    case 'update':
-      return store.update(op.model, op.where, op.data);
-    case 'updateMany':
-      return store.updateMany(op.model, op.where, op.data);
-    case 'remove':
-      return store.remove(op.model, op.where);
-    case 'count':
-      return store.count(op.model, op.where || null);
-    case 'upsert':
-      return store.upsert(op.model, op.where, op.data);
-    case 'snapshot':
-      return snapshotStats(dir);
     case 'txCommit':
       return store.transaction('default', async () => {
         await store.insert(op.model, op.doc);
@@ -153,6 +150,13 @@ async function step(op, dir) {
     default:
       throw new Error('未知对拍 op: ' + op.op);
   }
+}
+
+/** 单步：声明式 op → store 调用（两侧同名同义；只做「做什么」，不判期望值） */
+async function step(op, dir) {
+  const io = _IO_OPS[op.op];
+  if (io) return io(op, dir);
+  return _stepTx(op);
 }
 
 async function run() {

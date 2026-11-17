@@ -30,6 +30,28 @@ function _meta(schemaName) {
   return schema.get(schemaName);
 }
 
+/** sourceFields 校验：须为非空数组，且每项为 string 字段（摘要口径要求，见 §4.1） */
+function _checkSourceFields(m, o) {
+  if (!Array.isArray(o.sourceFields) || o.sourceFields.length === 0) {
+    throw new Error('ERR_REINDEX_SOURCE:sourceFields 须为非空数组');
+  }
+  for (const s of o.sourceFields) {
+    const sf = m.fields[s];
+    if (!sf || sf.type !== 'string') {
+      throw new Error(`ERR_REINDEX_SOURCE:${s} 须为 string 字段（摘要口径要求，见 §4.1）`);
+    }
+  }
+}
+
+/** pageSize 归一与校验（缺省 DEFAULT_PAGE；上限 MAX_PAGE） */
+function _pageSizeOf(o) {
+  const pageSize = o.pageSize === undefined ? DEFAULT_PAGE : o.pageSize;
+  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > MAX_PAGE) {
+    throw new Error(`ERR_REINDEX_PAGE:pageSize 须为 1..${MAX_PAGE} 的整数`);
+  }
+  return pageSize;
+}
+
 function _opts(m, opts) {
   const o = opts || {};
   const f = m.fields[o.field];
@@ -40,23 +62,11 @@ function _opts(m, opts) {
   if (!h || h.type !== 'string') {
     throw new Error(`ERR_REINDEX_HASH_FIELD:${o.hashField} 须为 string 字段`);
   }
-  if (!Array.isArray(o.sourceFields) || o.sourceFields.length === 0) {
-    throw new Error('ERR_REINDEX_SOURCE:sourceFields 须为非空数组');
-  }
-  for (const s of o.sourceFields) {
-    const sf = m.fields[s];
-    if (!sf || sf.type !== 'string') {
-      throw new Error(`ERR_REINDEX_SOURCE:${s} 须为 string 字段（摘要口径要求，见 §4.1）`);
-    }
-  }
+  _checkSourceFields(m, o);
   if (typeof o.embed !== 'function') {
     throw new Error('ERR_REINDEX_EMBED:embed 须为函数');
   }
-  const pageSize = o.pageSize === undefined ? DEFAULT_PAGE : o.pageSize;
-  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > MAX_PAGE) {
-    throw new Error(`ERR_REINDEX_PAGE:pageSize 须为 1..${MAX_PAGE} 的整数`);
-  }
-  return { ...o, pageSize };
+  return { ...o, pageSize: _pageSizeOf(o) };
 }
 
 function _text(sourceFields, doc) {
@@ -91,6 +101,38 @@ async function _embedAndWrite(store, m, o, todo, dim) {
   return written;
 }
 
+/** 翻页条件：首页用 filter；续页加 `_id > anchor` 游标（filter 非空则 $and 组合） */
+function _pageCond(filter, anchor) {
+  if (anchor === null) return filter;
+  return Object.keys(filter).length
+    ? { $and: [filter, { _id: { $gt: anchor } }] }
+    : { _id: { $gt: anchor } };
+}
+
+/** 单页划分：hash 未变且非 force → 计 skipped；否则入 todo（pending 累加） */
+function _splitTodo(o, page, out) {
+  const todo = [];
+  for (const r of page) {
+    if (o.force !== true && r[o.hashField] === hashText(o.sourceFields, r)) {
+      out.skipped += 1;
+    } else {
+      todo.push(r);
+    }
+  }
+  out.pending += todo.length;
+  return todo;
+}
+
+/** 锚点推进：末页返回 null（结束信号）；锚点缺失显式报错（投影须含 _id） */
+function _advanceAnchor(page, pageSize) {
+  if (page.length < pageSize) return null;
+  const anchor = page[page.length - 1]._id;
+  if (anchor === null || anchor === undefined) {
+    throw new Error('ERR_REINDEX_ANCHOR:分页锚点缺失（投影须含 _id）');
+  }
+  return anchor;
+}
+
 /** 全量/条件回填。`store` 为宿主门面（Store 实例）。 */
 async function reindexVectors(store, schemaName, opts) {
   const started = Date.now();
@@ -107,27 +149,14 @@ async function reindexVectors(store, schemaName, opts) {
 
   let anchor = null;
   for (;;) {
-    let cond = filter;
-    if (anchor !== null) {
-      cond = Object.keys(filter).length
-        ? { $and: [filter, { _id: { $gt: anchor } }] }
-        : { _id: { $gt: anchor } };
-    }
+    const cond = _pageCond(filter, anchor);
     const gql = `${m.name}($condition:@c,$sort:@s,$limit:@l){ ${proj} }`;
     const rows = await store.query(gql, { c: cond, s: { _id: 1 }, l: o.pageSize }, o.routeOverride);
     const page = Array.isArray(rows) ? rows : [];
     out.pages += 1;
     out.scanned += page.length;
 
-    const todo = [];
-    for (const r of page) {
-      if (o.force !== true && r[o.hashField] === hashText(o.sourceFields, r)) {
-        out.skipped += 1;
-      } else {
-        todo.push(r);
-      }
-    }
-    out.pending += todo.length;
+    const todo = _splitTodo(o, page, out);
 
     if (todo.length && out.dryRun !== true) {
       out.embedded += await _embedAndWrite(store, m, o, todo, dim);
@@ -138,11 +167,8 @@ async function reindexVectors(store, schemaName, opts) {
       });
     }
 
-    if (page.length < o.pageSize) break;
-    anchor = page[page.length - 1]._id;
-    if (anchor === null || anchor === undefined) {
-      throw new Error('ERR_REINDEX_ANCHOR:分页锚点缺失（投影须含 _id）');
-    }
+    anchor = _advanceAnchor(page, o.pageSize);
+    if (anchor === null) break;
   }
 
   out.elapsedMs = Date.now() - started;

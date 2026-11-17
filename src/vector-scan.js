@@ -103,6 +103,13 @@ function _stripScore(node) {
   return node;
 }
 
+/** 残余阶段是否为单键 `$match`（非对象 / 多键 / 非 `$match` → 不入候选） */
+function _isMatchStage(stage) {
+  if (!stage || typeof stage !== 'object' || Array.isArray(stage)) return false;
+  const keys = Object.keys(stage);
+  return keys.length === 1 && keys[0] === '$match';
+}
+
 /**
  * 候选过滤管道：`$vectorSearch.filter` → `$match`，加上残余 `$match`；
  * 其余阶段（`$limit` / `$project` / `$sort` …）一律不进入候选阶段
@@ -115,44 +122,15 @@ function _candidatePipeline(filter, rest) {
     if (f) out.push({ $match: f });
   }
   for (const stage of rest) {
-    if (!stage || typeof stage !== 'object' || Array.isArray(stage)) continue;
-    const keys = Object.keys(stage);
-    if (keys.length !== 1 || keys[0] !== '$match') continue;
+    if (!_isMatchStage(stage)) continue;
     const m = _stripScore(stage.$match);
     if (m) out.push({ $match: m });
   }
   return out;
 }
 
-/**
- * 降级扫描：剥离 → 取候选 → core 精确打分。
- *
- * @param {object} cmd     aggregate 命令：`{ kind:'aggregate', collection, pipeline }`（逻辑名）
- * @param {object} options
- * @param {function} options.exec  以候选命令执行普通 aggregate 的函数（返回行数组）
- * @param {object} [options.core]  提供 `localEval(collections, command)` 的对象（缺省 Registry 单例）
- * @param {number} [options.maxRows=MAX_VECTOR_SCAN_ROWS]
- * @returns {Promise<object[]>} 最终行（含 `_score`）
- */
-async function scan(cmd, { exec, core, maxRows = MAX_VECTOR_SCAN_ROWS } = {}) {
-  if (typeof exec !== 'function') {
-    throw new TypeError('vector-scan.scan 需要 exec(candidateCommand)（返回行数组）');
-  }
-  if (!isVectorCommand(cmd)) {
-    throw new Error('vector-scan.scan 只接受首阶段为 $vectorSearch 的 aggregate 命令');
-  }
-  const pipeline = cmd.pipeline;
-  const spec = pipeline[0].$vectorSearch;
-  if (!spec || typeof spec !== 'object' || typeof spec.path !== 'string' || spec.path === '') {
-    throw new Error('vector-scan.scan: $vectorSearch 缺少 path（向量字段名）');
-  }
-
-  // 1. 剥离 `$vectorSearch` 与紧随的 `$addFields._score`
-  const rest = pipeline.slice(1);
-  if (rest.length > 0 && _isScoreStage(rest[0])) rest.shift();
-  const candidate = _candidatePipeline(spec.filter, rest);
-
-  // 2. 取候选（无 $limit；全字段 → 必然包含向量字段）
+/** 取候选行并校验形状与上限（超限 Err code=vectorScanOverflow，禁静默截断） */
+async function _fetchCandidates(exec, cmd, candidate, maxRows) {
   const rows = await exec({ ...cmd, pipeline: candidate });
   if (!Array.isArray(rows)) {
     throw new Error(`vector-scan.scan: 候选阶段返回非数组（${typeof rows}）`);
@@ -167,6 +145,44 @@ async function scan(cmd, { exec, core, maxRows = MAX_VECTOR_SCAN_ROWS } = {}) {
     err.maxRows = maxRows;
     throw err;
   }
+  return rows;
+}
+
+/**
+ * 降级扫描：剥离 → 取候选 → core 精确打分。
+ *
+ * @param {object} cmd     aggregate 命令：`{ kind:'aggregate', collection, pipeline }`（逻辑名）
+ * @param {object} options
+ * @param {function} options.exec  以候选命令执行普通 aggregate 的函数（返回行数组）
+ * @param {object} [options.core]  提供 `localEval(collections, command)` 的对象（缺省 Registry 单例）
+ * @param {number} [options.maxRows=MAX_VECTOR_SCAN_ROWS]
+ * @returns {Promise<object[]>} 最终行（含 `_score`）
+ */
+/** `$vectorSearch` 形状校验（path 必须为非空字符串字段名） */
+function _checkSpec(spec) {
+  if (!spec || typeof spec !== 'object' || typeof spec.path !== 'string' || spec.path === '') {
+    throw new Error('vector-scan.scan: $vectorSearch 缺少 path（向量字段名）');
+  }
+}
+
+async function scan(cmd, { exec, core, maxRows = MAX_VECTOR_SCAN_ROWS } = {}) {
+  if (typeof exec !== 'function') {
+    throw new TypeError('vector-scan.scan 需要 exec(candidateCommand)（返回行数组）');
+  }
+  if (!isVectorCommand(cmd)) {
+    throw new Error('vector-scan.scan 只接受首阶段为 $vectorSearch 的 aggregate 命令');
+  }
+  const pipeline = cmd.pipeline;
+  const spec = pipeline[0].$vectorSearch;
+  _checkSpec(spec);
+
+  // 1. 剥离 `$vectorSearch` 与紧随的 `$addFields._score`
+  const rest = pipeline.slice(1);
+  if (rest.length > 0 && _isScoreStage(rest[0])) rest.shift();
+  const candidate = _candidatePipeline(spec.filter, rest);
+
+  // 2. 取候选（无 $limit；全字段 → 必然包含向量字段）
+  const rows = await _fetchCandidates(exec, cmd, candidate, maxRows);
 
   // 3. 精确打分：原始完整管道（`$vectorSearch` / `_score` / residual `$match` / `$limit`）
   const out = _registry(core).localEval(

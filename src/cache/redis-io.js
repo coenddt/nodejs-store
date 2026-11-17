@@ -45,6 +45,51 @@ function _key(base, database, collection) {
  * @returns {{load: (database: string|null) => Promise<object>,
  *            save: (database: string|null, changed: string[], collections: object) => Promise<void>}}
  */
+/** SCAN + 数组形状断言；失败 / 非数组显式 Err */
+async function _scanKeys(client, pattern, db) {
+  let keys;
+  try {
+    keys = await client.scan(pattern);
+  } catch (e) {
+    throw new RedisIoError(`Redis SCAN 失败（pattern=${pattern}）: ${_msg(e)}`, { database: db, op: 'scan', cause: e });
+  }
+  if (!Array.isArray(keys)) {
+    throw new RedisIoError(`Redis SCAN 返回值非数组（pattern=${pattern}）`, { database: db, op: 'scan' });
+  }
+  return keys;
+}
+
+/** 单键归一：越界 / 非本库分区 / 空相对键 → null；否则返回去前缀的集合相对键 */
+function _relKeyOf(fullKey, basePrefix, db) {
+  if (typeof fullKey !== 'string') return null;
+  if (basePrefix && !fullKey.startsWith(basePrefix)) return null; // 防 client 越界返回
+  let rel = basePrefix ? fullKey.slice(basePrefix.length) : fullKey;
+  if (db) {
+    const dbPrefix = `${db}/`;
+    if (!rel.startsWith(dbPrefix)) return null; // 同前缀但不属本库分区
+    rel = rel.slice(dbPrefix.length);
+    if (rel.includes('/')) return null;         // 如 db='a' 不命中 'a/b/c'
+  }
+  if (rel === '') return null;
+  return rel;
+}
+
+/** 单键取回 + JSON 解析；GET 失败 / 值非法 JSON 显式 Err；键已失效 → { skip: true } */
+async function _readKey(client, fullKey, db) {
+  let raw;
+  try {
+    raw = await client.get(fullKey);
+  } catch (e) {
+    throw new RedisIoError(`Redis GET 失败（key=${fullKey}）: ${_msg(e)}`, { database: db, op: 'get', cause: e });
+  }
+  if (raw === null || raw === undefined) return { skip: true }; // 键已失效：跳过（非解析失败）
+  try {
+    return { value: JSON.parse(raw) };
+  } catch (e) {
+    throw new RedisIoError(`Redis 值非法 JSON（key=${fullKey}）: ${_msg(e)}`, { database: db, op: 'parse', cause: e });
+  }
+}
+
 function createRedisIo({ client, prefix = 'store' } = {}) {
   if (!client
     || typeof client.scan !== 'function'
@@ -60,39 +105,14 @@ function createRedisIo({ client, prefix = 'store' } = {}) {
     async load(database) {
       const db = database ?? null;
       const pattern = db ? `${base}/${db}/*` : `${base}/*`;
-      let keys;
-      try {
-        keys = await client.scan(pattern);
-      } catch (e) {
-        throw new RedisIoError(`Redis SCAN 失败（pattern=${pattern}）: ${_msg(e)}`, { database: db, op: 'scan', cause: e });
-      }
-      if (!Array.isArray(keys)) {
-        throw new RedisIoError(`Redis SCAN 返回值非数组（pattern=${pattern}）`, { database: db, op: 'scan' });
-      }
+      const keys = await _scanKeys(client, pattern, db);
       const out = {};
       for (const fullKey of keys) {
-        if (typeof fullKey !== 'string') continue;
-        if (basePrefix && !fullKey.startsWith(basePrefix)) continue; // 防 client 越界返回
-        let rel = basePrefix ? fullKey.slice(basePrefix.length) : fullKey;
-        if (db) {
-          const dbPrefix = `${db}/`;
-          if (!rel.startsWith(dbPrefix)) continue; // 同前缀但不属本库分区
-          rel = rel.slice(dbPrefix.length);
-          if (rel.includes('/')) continue;         // 如 db='a' 不命中 'a/b/c'
-        }
-        if (rel === '') continue;
-        let raw;
-        try {
-          raw = await client.get(fullKey);
-        } catch (e) {
-          throw new RedisIoError(`Redis GET 失败（key=${fullKey}）: ${_msg(e)}`, { database: db, op: 'get', cause: e });
-        }
-        if (raw === null || raw === undefined) continue; // 键已失效：跳过（非解析失败）
-        try {
-          out[rel] = JSON.parse(raw);
-        } catch (e) {
-          throw new RedisIoError(`Redis 值非法 JSON（key=${fullKey}）: ${_msg(e)}`, { database: db, op: 'parse', cause: e });
-        }
+        const rel = _relKeyOf(fullKey, basePrefix, db);
+        if (rel === null) continue;
+        const got = await _readKey(client, fullKey, db);
+        if (got.skip) continue;
+        out[rel] = got.value;
       }
       return out;
     },

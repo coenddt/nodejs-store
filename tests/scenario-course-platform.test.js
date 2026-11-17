@@ -35,17 +35,14 @@ const GROUP_LABEL = {
   H: 'H 多后端一致性', J: 'J 根级 $group/$having/关系聚合谓词',
 };
 
-function writeCourseReport(RUNS) {
-  const { iso, outPath } = reportPaths(ROOT, 'course-platform');
-
+/** 报告一：环境与后端可达性表；收集 skip 后端（原因随行）。返回 `{ lines, skipped }` */
+function _reportSection1(RUNS) {
   const L = [];
-  L.push(`# course-platform 场景矩阵 · 多后端对拍报告（${iso}）`);
-  L.push('');
+  const skipped = [];
   L.push('## 一、环境与后端可达性');
   L.push('');
   L.push('| 后端 | 可达 | 断言通过 | 用例总数 | skip 原因 |');
   L.push('|---|---|---|---|---|');
-  const skipped = [];
   for (const kind of BACKENDS) {
     const r = RUNS[kind];
     if (!r) {
@@ -61,9 +58,12 @@ function writeCourseReport(RUNS) {
     L.push(`| \`${kind}\` | 可达 | ${passed}/${r.results.length} | ${r.results.length} | - |`);
   }
   L.push('');
-  L.push('> 本报告只出证据，不修实现。判定规则：SQL 结果集与 Mongo(oracle) 逐行相等，'
-    + '或显式 Err / `unsupported` + feedback 告警；静默不一致判缺陷。');
-  L.push('');
+  return { lines: L, skipped };
+}
+
+/** 报告二：覆盖度表（A~J 组逐组统计） */
+function _reportSection2(RUNS) {
+  const L = [];
   L.push('## 二、覆盖度表（A~J 组）');
   L.push('');
   L.push('| 组 | 用例数 | 后端 | 通过 | 失败 | skip(不可达) |');
@@ -88,8 +88,11 @@ function writeCourseReport(RUNS) {
   L.push('');
   L.push('未覆盖组：**I(联邦/跨源)** —— 原因与既有覆盖见第四节「未覆盖项 / 已知覆盖缺口」。');
   L.push('');
-  L.push('## 三、缺陷清单（按 静默失真 > 越权 > 其它 排序）');
-  L.push('');
+  return L;
+}
+
+/** 失败用例的证据行收集（跨后端扁平化，供缺陷清单渲染） */
+function _collectDefects(RUNS) {
   const defects = [];
   for (const kind of BACKENDS) {
     const r = RUNS[kind];
@@ -101,6 +104,15 @@ function writeCourseReport(RUNS) {
       }
     }
   }
+  return defects;
+}
+
+/** 报告三：缺陷清单（按 静默失真 > 越权 > 其它 排序语义沿用原表顺序） */
+function _reportSection3(RUNS) {
+  const L = [];
+  L.push('## 三、缺陷清单（按 静默失真 > 越权 > 其它 排序）');
+  L.push('');
+  const defects = _collectDefects(RUNS);
   if (!defects.length) {
     L.push('无失败用例。');
   } else {
@@ -112,6 +124,37 @@ function writeCourseReport(RUNS) {
     }
   }
   L.push('');
+  return L;
+}
+
+/** 报告五：复跑命令与环境变量（skipped 尾注由报告一收集） */
+function _reportSection5(skipped) {
+  const L = [];
+  L.push('## 五、复跑命令与环境变量');
+  L.push('');
+  L.push('```powershell');
+  L.push('cd nodejs-store');
+  L.push("$env:LOCAL_CORE='1'; $env:NODE_ENV='test'");
+  L.push('# 本场景（四真实库串行对拍）');
+  L.push('node --test tests/scenario-course-platform.test.js');
+  L.push('# 全量回归（既有 + 新增）');
+  L.push('npm test');
+  L.push('```');
+  L.push('');
+  L.push('- `LOCAL_CORE=1`：从相邻 `rust-store/core-node/dist/` 加载原生核心；'
+    + '**不要**设 `NODE_ENV=production`（会使本地兜底失效，回落 npm 依赖）。');
+  L.push('- 后端可达性可用 `MYSQL_URI` / `PG_URI` / `MONGO_URI` 覆盖；缺省：MySQL '
+    + `\`${harness.MYSQL_URI}\`、PostgreSQL \`${harness.PG_URI}\`、MongoDB `
+    + `\`${harness.MONGO_URI}\`；SQLite 为 better-sqlite3 内存库。`);
+  L.push('- 每个用例前 `reset → seed`（seed 走 `store.insert` 真实写路径），ctx 三态齐备。');
+  if (skipped.length) L.push(`- 本轮 skip 的后端：${skipped.join('；')}`);
+  L.push('');
+  return L;
+}
+
+/** 第四节静态段（未覆盖项三项，原文照录） */
+function _reportSection4() {
+  const L = [];
   L.push('## 四、未覆盖项 / 已知覆盖缺口');
   L.push('');
   L.push('1. **I 组（联邦 / 跨源）** —— 本场景是单源 harness（每后端单个 `default` 源，'
@@ -132,25 +175,24 @@ function writeCourseReport(RUNS) {
   L.push('3. **`D-06`** 在 Py 与 Node 两宿主均只覆盖「依赖不可读字段时 secret 不外泄」，'
     + '未覆盖「计算列因依赖不可读而显式 Err」分支（该分支要求 Host/core 主动拒算）。');
   L.push('');
-  L.push('## 五、复跑命令与环境变量');
+  return L;
+}
+
+function writeCourseReport(RUNS) {
+  const { iso, outPath } = reportPaths(ROOT, 'course-platform');
+
+  const L = [];
+  L.push(`# course-platform 场景矩阵 · 多后端对拍报告（${iso}）`);
   L.push('');
-  L.push('```powershell');
-  L.push('cd nodejs-store');
-  L.push("$env:LOCAL_CORE='1'; $env:NODE_ENV='test'");
-  L.push('# 本场景（四真实库串行对拍）');
-  L.push('node --test tests/scenario-course-platform.test.js');
-  L.push('# 全量回归（既有 + 新增）');
-  L.push('npm test');
-  L.push('```');
+  const s1 = _reportSection1(RUNS);
+  L.push(...s1.lines);
+  L.push('> 本报告只出证据，不修实现。判定规则：SQL 结果集与 Mongo(oracle) 逐行相等，'
+    + '或显式 Err / `unsupported` + feedback 告警；静默不一致判缺陷。');
   L.push('');
-  L.push('- `LOCAL_CORE=1`：从相邻 `rust-store/core-node/dist/` 加载原生核心；'
-    + '**不要**设 `NODE_ENV=production`（会使本地兜底失效，回落 npm 依赖）。');
-  L.push('- 后端可达性可用 `MYSQL_URI` / `PG_URI` / `MONGO_URI` 覆盖；缺省：MySQL '
-    + `\`${harness.MYSQL_URI}\`、PostgreSQL \`${harness.PG_URI}\`、MongoDB `
-    + `\`${harness.MONGO_URI}\`；SQLite 为 better-sqlite3 内存库。`);
-  L.push('- 每个用例前 `reset → seed`（seed 走 `store.insert` 真实写路径），ctx 三态齐备。');
-  if (skipped.length) L.push(`- 本轮 skip 的后端：${skipped.join('；')}`);
-  L.push('');
+  L.push(..._reportSection2(RUNS));
+  L.push(..._reportSection3(RUNS));
+  L.push(..._reportSection4());
+  L.push(..._reportSection5(s1.skipped));
 
   fs.writeFileSync(outPath, `${L.join('\n')}\n`, 'utf8');
   console.log(`\n[报告] 已写入 ${outPath}`);

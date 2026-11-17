@@ -184,7 +184,7 @@ function assertSavepointReleased(state) {
 // ─── #1 成功提交（A8 单一路径 / A1 单源） ────────────────────
 
 test('#1 会话成功提交：opened/committed/released 各 1，rolled_back 0', async () => {
-  const { descriptor, state } = setupSingleSql();
+  const { state } = setupSingleSql();
 
   await store.session(async (s) => {
     await s.insert('SessA', { v: '1' });
@@ -200,7 +200,7 @@ test('#1 会话成功提交：opened/committed/released 各 1，rolled_back 0', 
 // ─── #2 异常回滚（A2） ───────────────────────────────────────
 
 test('#2 会话体异常：整体回滚并原样上抛（A2）', async () => {
-  const { descriptor, state } = setupSingleSql();
+  const { state } = setupSingleSql();
 
   await assert.rejects(
     () => store.session(async (s) => {
@@ -217,7 +217,7 @@ test('#2 会话体异常：整体回滚并原样上抛（A2）', async () => {
 // ─── #3 惰性开事务：空会话不占连接（A3） ─────────────────────
 
 test('#3 空会话惰性开事务：opened 0（A3）', async () => {
-  const { descriptor, state } = setupSingleSql();
+  const { state } = setupSingleSql();
 
   await store.session(async () => {});
   assert.equal(state.opened, 0);
@@ -287,7 +287,7 @@ test('#6 缺 openTransaction：session_not_atomic 恰好告警 1 次（A9）', a
 // ─── #7 executeRaw 落会话连接（A4） ─────────────────────────
 
 test('#7 executeRaw 落在会话事务连接上（A4）', async () => {
-  const { descriptor, state } = setupSingleSql();
+  const { state } = setupSingleSql();
 
   await store.session(async (s) => {
     await s.executeRaw('sess_a', 'SELECT 1', [], true);
@@ -300,7 +300,7 @@ test('#7 executeRaw 落在会话事务连接上（A4）', async () => {
 // ─── #8 会话内 store.transaction 并网（A5） ──────────────────
 
 test('#8 会话内 store.transaction 不另开事务（A5）', async () => {
-  const { descriptor, state } = setupSingleSql();
+  const { state } = setupSingleSql();
   const innerRan = [];
 
   await store.session(async (s) => {
@@ -408,7 +408,7 @@ test('#11 真实 SQLite：提交可见、异常回滚不可见（A1/A2）', asyn
   } finally {
     db.close();
     db2.close();
-    try { fs.unlinkSync(file); } catch (_) { /* 清理失败不掩盖用例结论 */ }
+    try { fs.unlinkSync(file); } catch { /* 清理失败不掩盖用例结论 */ }
   }
 });
 
@@ -455,9 +455,10 @@ test('#14 同源嵌套 transaction：内层失败回滚到保存点、外层提�
   const { descriptor, state } = makeFakeSqlExecutor();
   datasource.setConnections({ sess_a: descriptor });
 
+  const innerBoom = async () => { throw new Error('inner-boom'); };
   await store.transaction('sess_a', async () => {
     await assert.rejects(
-      () => store.transaction('sess_a', async () => { throw new Error('inner-boom'); }),
+      () => store.transaction('sess_a', innerBoom),
       /inner-boom/,
     );
   });
@@ -504,7 +505,7 @@ test('#16 句柄无保存点原语：降级并入外层，同一源只告警一�
           ran.push('inner');
           throw new Error('inner-boom');
         });
-      } catch (_) {
+      } catch {
         ran.push('caught');
       }
     }
@@ -550,7 +551,7 @@ test('#17 真实 SQLite：嵌套 transaction 内层回滚、外层提交', async
   } finally {
     db.close();
     db2.close();
-    try { fs.unlinkSync(file); } catch (_) { /* 清理失败不掩盖用例结论 */ }
+    try { fs.unlinkSync(file); } catch { /* 清理失败不掩盖用例结论 */ }
   }
 });
 
@@ -584,14 +585,14 @@ test('#18 真实 SQLite：嵌套 session 内层回滚、外层提交', async () 
   } finally {
     db.close();
     db2.close();
-    try { fs.unlinkSync(file); } catch (_) { /* 清理失败不掩盖用例结论 */ }
+    try { fs.unlinkSync(file); } catch { /* 清理失败不掩盖用例结论 */ }
   }
 });
 
 // ─── #19 嵌套 session：首次写开保存点、退出释放、共用外层事务 ──
 
 test('#19 嵌套 session：首次写开保存点、退出释放、共用外层事务', async () => {
-  const { descriptor, state } = setupSingleSql();
+  const { state } = setupSingleSql();
 
   await store.session(async (outer) => {
     await outer.insert('SessA', { v: '1' });
@@ -608,15 +609,16 @@ test('#19 嵌套 session：首次写开保存点、退出释放、共用外层�
 // ─── #20 会话内 transaction：作为嵌套作用域（失败只回滚本层） ──
 
 test('#20 会话内 transaction：作为嵌套作用域，失败只回滚本层', async () => {
-  const { descriptor, state } = setupSingleSql();
+  const { state } = setupSingleSql();
 
+  const boomAfterInsert = async () => {
+    await store.insert('SessA', { v: '2' });
+    throw new Error('inner-boom');
+  };
   await store.session(async (s) => {
     await s.insert('SessA', { v: '1' });
     await assert.rejects(
-      () => store.transaction('sess_a', async () => {
-        await store.insert('SessA', { v: '2' });
-        throw new Error('inner-boom');
-      }),
+      () => store.transaction('sess_a', boomAfterInsert),
       /inner-boom/,
     );
     await s.insert('SessA', { v: '3' });

@@ -35,6 +35,32 @@ function _bad(msg) {
   return err;
 }
 
+/** 解析步长段 `a/s` 的 s（非法显式 ERR_CRON）；缺省步长 1 */
+function _parseStep(slash, part) {
+  if (slash.length > 2) throw _bad(`步长段非法：「${part}」`);
+  if (slash.length === 2) {
+    if (!/^\d+$/.test(slash[1]) || Number(slash[1]) < 1) throw _bad(`步长非法：「${part}」`);
+    return Number(slash[1]);
+  }
+  return 1;
+}
+
+/** 解析基段为 [lo, hi]（`*` / `a-b` / `n`）；非法显式 ERR_CRON */
+function _parseBase(base, slash, part, min, max) {
+  if (base === '*') return [min, max];
+  if (base.includes('-')) {
+    const [a, b] = base.split('-');
+    if (!/^\d+$/.test(a) || !/^\d+$/.test(b)) throw _bad(`范围非法：「${part}」`);
+    const lo = Number(a); const hi = Number(b);
+    if (lo > hi) throw _bad(`范围起点大于终点：「${part}」`);
+    return [lo, hi];
+  }
+  if (!/^\d+$/.test(base)) throw _bad(`非法字符：「${part}」`);
+  const lo = Number(base);
+  // `a/s` 等价 `a-max/s`（从 a 起按步长到段末）
+  return [lo, slash.length === 2 ? max : lo];
+}
+
 /** 解析单段为取值集合（`*` | `n` | `a-b` | `*`/s | `a-b`/s | `a`/s；列表 `,`） */
 function _parseField(spec, idx) {
   const [min, max] = _RANGES[idx];
@@ -42,28 +68,8 @@ function _parseField(spec, idx) {
   for (const part of String(spec).split(',')) {
     if (!part) throw _bad(`第 ${idx + 1} 段存在空项：「${spec}」`);
     const slash = part.split('/');
-    if (slash.length > 2) throw _bad(`步长段非法：「${part}」`);
-    let base = slash[0];
-    let step = 1;
-    if (slash.length === 2) {
-      if (!/^\d+$/.test(slash[1]) || Number(slash[1]) < 1) throw _bad(`步长非法：「${part}」`);
-      step = Number(slash[1]);
-    }
-    let lo;
-    let hi;
-    if (base === '*') {
-      lo = min; hi = max;
-    } else if (base.includes('-')) {
-      const [a, b] = base.split('-');
-      if (!/^\d+$/.test(a) || !/^\d+$/.test(b)) throw _bad(`范围非法：「${part}」`);
-      lo = Number(a); hi = Number(b);
-      if (lo > hi) throw _bad(`范围起点大于终点：「${part}」`);
-    } else {
-      if (!/^\d+$/.test(base)) throw _bad(`非法字符：「${part}」`);
-      lo = Number(base);
-      // `a/s` 等价 `a-max/s`（从 a 起按步长到段末）
-      hi = slash.length === 2 ? max : lo;
-    }
+    const step = _parseStep(slash, part);
+    const [lo, hi] = _parseBase(slash[0], slash, part, min, max);
     if (lo < min || hi > max) throw _bad(`超出范围（${min}-${max}）：「${part}」`);
     for (let v = lo; v <= hi; v += step) out.add(idx === 4 && v === 7 ? 0 : v);
   }

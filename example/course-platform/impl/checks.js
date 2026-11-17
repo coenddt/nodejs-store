@@ -10,34 +10,37 @@
 
 const { permission } = require('../../../src');
 
-/** A-18：query_with_count 元数据自洽（items/total/hasMore 与同参 query、count 一致） */
-async function checkPage(h, expect) {
-  const gql = expect.gql;
-  const params = { ...(expect.params || {}) };
-  const page = params.page !== undefined ? params.page : 0;
-  const size = params.pageSize !== undefined ? params.pageSize : 3;
-  const res = await h.store.queryWithCount(gql, params);
-  // 不带分页的 query（返回全部命中；owner 注入下即该 ctx 的全部）
+/** 不带分页的查询参数（剔除 page/pageSize；其余原样保留） */
+function _plainParams(params) {
   const plain = {};
   for (const [k, v] of Object.entries(params)) {
     if (k !== 'page' && k !== 'pageSize') plain[k] = v;
   }
-  const allItems = await h.store.query(gql, plain);
+  return plain;
+}
+
+/** 分页元数据判定：page/pageSize/total/hasMore 任一不符 → 记入 msgs 并返回 false */
+function _checkPageMeta(res, page, size, allCount, msgs) {
   let ok = true;
-  const msgs = [];
   if (res.page !== page || res.pageSize !== size) {
     ok = false;
     msgs.push(`分页元数据不符 page=${res.page} size=${res.pageSize}`);
   }
-  if (res.total !== allItems.length) {
+  if (res.total !== allCount) {
     ok = false;
-    msgs.push(`total=${res.total} 期望 ${allItems.length}`);
+    msgs.push(`total=${res.total} 期望 ${allCount}`);
   }
   const expectHasMore = (page + 1) * size < res.total;
   if (res.hasMore !== expectHasMore) {
     ok = false;
     msgs.push(`hasMore=${res.hasMore} 期望 ${expectHasMore}`);
   }
+  return ok;
+}
+
+/** items 一致性判定：越界项 / 与期望 ids 不符 → 记入 msgs 并返回 false */
+function _checkItemIds(res, allItems, expect, msgs) {
+  let ok = true;
   const itemIds = res.items.map((i) => i._id).sort();
   const allIds = allItems.map((i) => i._id).sort();
   if (!itemIds.every((id) => allIds.includes(id))) {
@@ -51,6 +54,21 @@ async function checkPage(h, expect) {
       msgs.push(`items=${itemIds} 期望 ${expIds}`);
     }
   }
+  return ok;
+}
+
+/** A-18：query_with_count 元数据自洽（items/total/hasMore 与同参 query、count 一致） */
+async function checkPage(h, expect) {
+  const gql = expect.gql;
+  const params = { ...(expect.params || {}) };
+  const page = params.page !== undefined ? params.page : 0;
+  const size = params.pageSize !== undefined ? params.pageSize : 3;
+  const res = await h.store.queryWithCount(gql, params);
+  // 不带分页的 query（返回全部命中；owner 注入下即该 ctx 的全部）
+  const allItems = await h.store.query(gql, _plainParams(params));
+  const msgs = [];
+  let ok = _checkPageMeta(res, page, size, allItems.length, msgs);
+  if (!_checkItemIds(res, allItems, expect, msgs)) ok = false;
   return { ok, note: msgs.join('；') || 'page 元数据自洽' };
 }
 
@@ -81,23 +99,35 @@ async function checkMsTimestamp(h, expect) {
   return { ok: true, note: '时间戳为 ms 数值' };
 }
 
+/** 单行 int 字段校验：非整数值 → 返回错误 note；合规/缺省 → null */
+function _checkIntField(r, i, intField) {
+  if (intField in r && r[intField] !== null) {
+    if (typeof r[intField] !== 'number' || !Number.isInteger(r[intField])) {
+      return `第${i}行 ${intField}=${JSON.stringify(r[intField])} 非 int`;
+    }
+  }
+  return null;
+}
+
+/** 单行 float 字段校验：非数值 → 返回错误 note；合规/缺省 → null */
+function _checkFloatField(r, i, floatField) {
+  if (floatField in r && r[floatField] !== null) {
+    if (typeof r[floatField] !== 'number') {
+      return `第${i}行 ${floatField}=${JSON.stringify(r[floatField])} 非 float`;
+    }
+  }
+  return null;
+}
+
 /** H-04：int/float 类型归一（不得字符串/Decimal） */
 async function checkNumericRows(h, expect) {
   const intField = expect.intField || 'enrolledCount';
   const floatField = expect.floatField || 'price';
   const rows = h.result || [];
   for (let i = 0; i < rows.length; i += 1) {
-    const r = rows[i];
-    if (intField in r && r[intField] !== null) {
-      if (typeof r[intField] !== 'number' || !Number.isInteger(r[intField])) {
-        return { ok: false, note: `第${i}行 ${intField}=${JSON.stringify(r[intField])} 非 int` };
-      }
-    }
-    if (floatField in r && r[floatField] !== null) {
-      if (typeof r[floatField] !== 'number') {
-        return { ok: false, note: `第${i}行 ${floatField}=${JSON.stringify(r[floatField])} 非 float` };
-      }
-    }
+    // 先 int 后 float，与原判定顺序一致（首个错误即返回）
+    const bad = _checkIntField(rows[i], i, intField) || _checkFloatField(rows[i], i, floatField);
+    if (bad) return { ok: false, note: bad };
   }
   return { ok: true, note: '类型归一' };
 }
@@ -165,15 +195,20 @@ async function checkRequireContext(h, expect) {
   return { ok: false, note: '开启 require_context 后无 ctx 竟放行（fail-secure 失效）' };
 }
 
+/** 被裁剪字段允许的形态：缺省 / null / 空数组 / 空对象；非数组非空对象即视为泄漏 */
+function _isTrimmedEmpty(v) {
+  return v === undefined || v === null
+    || (Array.isArray(v) && v.length === 0)
+    || (!Array.isArray(v) && typeof v === 'object' && Object.keys(v).length === 0);
+}
+
 /** E-05/E-11：字段（关系）因权限被裁剪 —— 允许不出现或为空，不得返回数据本身 */
 async function checkRelationTrim(h, expect) {
   const field = expect.field;
   const rows = h.result || [];
   for (let i = 0; i < rows.length; i += 1) {
     const v = rows[i][field];
-    if (field in rows[i] && !(v === undefined || v === null
-      || (Array.isArray(v) && v.length === 0)
-      || (!Array.isArray(v) && typeof v === 'object' && Object.keys(v).length === 0))) {
+    if (field in rows[i] && !_isTrimmedEmpty(v)) {
       return { ok: false, note: `第${i}行泄漏了不可见字段 ${field}=${JSON.stringify(v)}` };
     }
   }
@@ -185,7 +220,7 @@ async function checkWriteOwner(h) {
   permission.setContext({ userId: 'u1', roles: ['student'] });
   try {
     await h.store.update('StudyNote', { _id: 'n2' }, { title: 'hacked' });
-  } catch (e) {
+  } catch {
     return { ok: true, note: '越权 update 被拒（403）' };
   }
   permission.setContext({ userId: 'u2', roles: ['admin'] });

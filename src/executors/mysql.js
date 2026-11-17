@@ -21,7 +21,7 @@ function _plain(row) {
 }
 
 /** 创建执行器描述符（可直接作为 `init(connections)` 的一个 SQL 数据源连接） */
-function create(driver, _options = {}) {
+function create(driver) {
   if (!driver || typeof driver.execute !== 'function') {
     throw new TypeError('mysql 执行器需要 mysql2/promise 的连接或连接池');
   }

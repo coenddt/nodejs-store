@@ -187,12 +187,12 @@ function mysqlConn ({ fail = false, failOn = null } = {}) {
     released: 0,
     began: 0,
     queries: [],
-    async execute (_sql, _params) {
+    async execute () {
       calls += 1;
       if (fail && (failOn === null || calls > failOn)) throw new Error('模拟语句失败');
       return [{ affectedRows: 2 }, []];
     },
-    async query (sql, _params) {
+    async query (sql) {
       this.queries.push(sql);
       return [{ affectedRows: 0 }, []];
     },
@@ -245,7 +245,7 @@ test('executors/mysql: rollback 自身失败不掩盖原始错误', async () => 
 function pgClient ({ rows = [], rowCount = 0 } = {}) {
   return {
     queries: [],
-    async query (sql, _params) {
+    async query (sql) {
       this.queries.push(sql);
       return { rows, rowCount };
     },
@@ -401,7 +401,7 @@ test('executors/sqlite: 真实库回滚到保存点后，保存点之后的写�
   } finally {
     db.close();
     db2.close();
-    try { fs.unlinkSync(file); } catch (_) { /* 清理失败不掩盖用例结论 */ }
+    try { fs.unlinkSync(file); } catch { /* 清理失败不掩盖用例结论 */ }
   }
 });
 

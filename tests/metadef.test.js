@@ -92,8 +92,9 @@ test('D2：版本唯一性由行自然键 _id 在存储层保证', async () => {
     // 并发写同版本的最小复现：绕过「读最新行 +1」直插同版本行 → 唯一键冲突
     const dup = md.buildDefRow(defn, { tenant: 't2', env: 'dev' }, 1);
     dup._id = md.defId('t2', 'dev', 'UniqItem', 1);
+    const insertDup = () => store.insert('__schemaDef', dup);
     await assert.rejects(
-      () => md._runInternal(() => store.insert('__schemaDef', dup)),
+      () => md._runInternal(insertDup),
       (e) => /unique/i.test(String(e && e.message)),
     );
   });

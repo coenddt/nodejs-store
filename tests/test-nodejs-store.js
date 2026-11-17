@@ -54,7 +54,7 @@ test('perm.scopedRoles / runAsInternal', async () => {
 // ---------- crud 行为测试（find 优化 / 两阶段 / 标准批次 / 写路径） ----------
 
 // 内存 Mongo 桩改用 tests 共享超集版（零语义论证见 helpers/mem-mongo.js 头注释）
-const { MemCursor: _MemCursor, MemColl: _MemColl } = require('./helpers/mem-mongo');
+const { MemColl: _MemColl } = require('./helpers/mem-mongo');
 
 class _FakeDb {
   /** 按 collection 名分配独立 coll；未知名自动建空 _MemColl（供 queryOne 空结果等） */

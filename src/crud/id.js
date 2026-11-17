@@ -33,6 +33,30 @@ function _truthy(v) {
   return true;
 }
 
+/** 关系子节点递归入池（数组逐个；空值跳过） */
+function _poolWalkRels(pool, s, node) {
+  for (const [key, val] of Object.entries(node || {})) {
+    const rel = s.relations[key];
+    if (!rel || val === null || val === undefined) continue;
+    if (Array.isArray(val)) {
+      for (const child of val) {
+        if (child !== null && child !== undefined) _poolWalk(pool, rel.model, child);
+      }
+    } else {
+      _poolWalk(pool, rel.model, val);
+    }
+  }
+}
+
+/** 单节点入池：无有效 _id 且 schema 配了 idPrefix ⇒ 取新 ID；随后下钻关系子节点 */
+function _poolWalk(pool, name, node) {
+  const s = _getSchema(name);
+  if (!_truthy(node?._id) && s.idPrefix) {
+    pool.push(_generateId(s));
+  }
+  _poolWalkRels(pool, s, node);
+}
+
 /**
  * 预生成 mutation 的 ID 池：按数据树逐节点判断是否需要新 _id
  * （与 core `needs_new_id` 一致：无有效 _id 且 schema 配了 idPrefix），
@@ -40,24 +64,7 @@ function _truthy(v) {
  */
 function _newIdPool(schemaName, data) {
   const pool = [];
-  const walk = (name, node) => {
-    const s = _getSchema(name);
-    if (!_truthy(node?._id) && s.idPrefix) {
-      pool.push(_generateId(s));
-    }
-    for (const [key, val] of Object.entries(node || {})) {
-      const rel = s.relations[key];
-      if (!rel || val === null || val === undefined) continue;
-      if (Array.isArray(val)) {
-        for (const child of val) {
-          if (child !== null && child !== undefined) walk(rel.model, child);
-        }
-      } else {
-        walk(rel.model, val);
-      }
-    }
-  };
-  walk(schemaName, data);
+  _poolWalk(pool, schemaName, data);
   return pool;
 }
 

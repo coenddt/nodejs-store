@@ -161,20 +161,28 @@ function normRows(rows, normalize) {
   return out;
 }
 
+/** 数组分支：长度一致 + 逐位递归 */
+function _deepEqArr(a, b) {
+  return a.length === b.length && a.every((x, i) => deepEq(x, b[i]));
+}
+
+/** 普通对象分支：键集严格一致 + 逐键递归 */
+function _deepEqObj(a, b) {
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  return ka.every((k) => Object.prototype.hasOwnProperty.call(b, k) && deepEq(a[k], b[k]));
+}
+
 /** 深比较（键集严格一致；数值 0/-0 视为相等，对齐 py 语义） */
 function deepEq(a, b) {
   if (a === b) return true;
-  if (Array.isArray(a) && Array.isArray(b)) {
-    return a.length === b.length && a.every((x, i) => deepEq(x, b[i]));
-  }
+  if (Array.isArray(a) && Array.isArray(b)) return _deepEqArr(a, b);
   if (
     a && b && typeof a === 'object' && typeof b === 'object'
     && !Array.isArray(a) && !Array.isArray(b)
   ) {
-    const ka = Object.keys(a);
-    const kb = Object.keys(b);
-    if (ka.length !== kb.length) return false;
-    return ka.every((k) => Object.prototype.hasOwnProperty.call(b, k) && deepEq(a[k], b[k]));
+    return _deepEqObj(a, b);
   }
   return false;
 }
@@ -187,33 +195,38 @@ function _codes(events) {
   return (events || []).map((e) => e && e.code);
 }
 
+// op → 执行器 `(h, step)` → 结果（两场景 op 分派并集）。await 统一包裹，
+// 同步分支（set_ctx / register_workflow / set_flag）结果原样返回，语义不变。
+const _STEP_OPS = Object.assign(Object.create(null), {
+  query: (h, step) => h.store.query(step.gql, step.params ?? null),
+  query_one: (h, step) => h.store.queryOne(step.gql, step.params ?? null),
+  query_with_count: (h, step) => h.store.queryWithCount(step.gql, step.params ?? null),
+  query_federated: (h, step) => h.store.queryFederated(step.gql, step.params ?? null),
+  count: (h, step) => h.store.count(step.schema, step.filter ?? null),
+  exists: (h, step) => h.store.exists(step.schema, step.condition),
+  insert: (h, step) => h.store.insert(step.schema, step.data),
+  insert_many: (h, step) => h.store.insertMany(step.schema, step.rows),
+  update: (h, step) => h.store.update(step.schema, step.condition, step.data),
+  update_many: (h, step) => h.store.updateMany(step.schema, step.condition, step.data),
+  remove: (h, step) => h.store.remove(step.schema, step.condition),
+  upsert: (h, step) => h.store.upsert(step.schema, step.condition, step.data),
+  mutation: (h, step) => h.store.mutation(step.schema, step.data),
+  set_ctx: (h, step) => (permission.setContext(step.ctx ?? null), null),
+  register_workflow: (h, step) => workflow.register(step.defn),
+  run_workflow: (h, step) => store.runWorkflow(step.name, step.input ?? null,
+    { dryRun: Boolean(step.dryRun) }),
+  set_flag: (h, step) => _setFlag(step.name, step.value),
+});
+
 /** 执行单个 op（两场景 op 分派并集），返回 `{ result, error, events }` */
 async function runStep(h, step) {
   const before = h.eventsAll.length;
-  const op = step.op;
   let error = null;
   let result = null;
   try {
-    if (op === 'query') result = await h.store.query(step.gql, step.params ?? null);
-    else if (op === 'query_one') result = await h.store.queryOne(step.gql, step.params ?? null);
-    else if (op === 'query_with_count') result = await h.store.queryWithCount(step.gql, step.params ?? null);
-    else if (op === 'query_federated') result = await h.store.queryFederated(step.gql, step.params ?? null);
-    else if (op === 'count') result = await h.store.count(step.schema, step.filter ?? null);
-    else if (op === 'exists') result = await h.store.exists(step.schema, step.condition);
-    else if (op === 'insert') result = await h.store.insert(step.schema, step.data);
-    else if (op === 'insert_many') result = await h.store.insertMany(step.schema, step.rows);
-    else if (op === 'update') result = await h.store.update(step.schema, step.condition, step.data);
-    else if (op === 'update_many') result = await h.store.updateMany(step.schema, step.condition, step.data);
-    else if (op === 'remove') result = await h.store.remove(step.schema, step.condition);
-    else if (op === 'upsert') result = await h.store.upsert(step.schema, step.condition, step.data);
-    else if (op === 'mutation') result = await h.store.mutation(step.schema, step.data);
-    else if (op === 'set_ctx') result = (permission.setContext(step.ctx ?? null), null);
-    else if (op === 'register_workflow') result = workflow.register(step.defn);
-    else if (op === 'run_workflow') {
-      result = await store.runWorkflow(step.name, step.input ?? null,
-        { dryRun: Boolean(step.dryRun) });
-    } else if (op === 'set_flag') result = _setFlag(step.name, step.value);
-    else throw new Error(`未知 op: ${op}`);
+    const dispatch = _STEP_OPS[step.op];
+    if (!dispatch) throw new Error(`未知 op: ${step.op}`);
+    result = await dispatch(h, step);
   } catch (e) {
     error = e; // 统一捕获作为「显式报错」证据
   }
@@ -237,6 +250,128 @@ function _matchError(err, expect) {
   return true;
 }
 
+/** error 断言：须抛错且命中 expect.code / PermissionError 状态 */
+function _assertError(err, expect) {
+  if (err === null || err === undefined) return { ok: false, note: '期望抛错但未抛错' };
+  return { ok: _matchError(err, expect), note: `实际错误: ${err.message || err}` };
+}
+
+/** feedback 断言：事件 codes 含 expect.code */
+function _assertFeedback(events, expect) {
+  const codes = _codes(events);
+  return { ok: codes.includes(expect.code), note: `事件 codes: ${JSON.stringify(codes)}` };
+}
+
+/** unsupported 断言（仅 SQL 侧）：不可翻译须显式（err 或事件告警），禁静默返回结果 */
+function _assertUnsupported(isSql, err, events) {
+  if (!isSql) return { ok: true, note: 'mongo 基准支持' };
+  const codes = _codes(events).filter(Boolean);
+  if ((err !== null && err !== undefined) || codes.length) {
+    return { ok: true, note: `显式(err=${err ? err.name : null}, events=${JSON.stringify(codes)})` };
+  }
+  return { ok: false, note: '不可翻译却静默返回了结果（既无错误也无告警）' };
+}
+
+/** run 期望键逐项对比（error → stepIndex → stepStates，短路顺序与原版一致）：差异返回 note，全过返回 null */
+function _runFieldDiff(r, expect) {
+  if ('error' in expect && r.error !== expect.error) {
+    return `error=${JSON.stringify(r.error)} 期望 ${JSON.stringify(expect.error)}`;
+  }
+  if ('stepIndex' in expect && r.stepIndex !== expect.stepIndex) {
+    return `stepIndex=${r.stepIndex} 期望 ${expect.stepIndex}`;
+  }
+  const states = (r.steps || []).map((st) => st.state);
+  if ('stepStates' in expect && JSON.stringify(states) !== JSON.stringify(expect.stepStates)) {
+    return `stepStates=${JSON.stringify(states)} 期望 ${JSON.stringify(expect.stepStates)}`;
+  }
+  return null;
+}
+
+/** run 文档断言：runWorkflow 统一契约不抛错；error 键显式存在时严格相等
+ * （含 null——no-error-masking §二：成功态 error 必须为 null 的正向断言） */
+function _assertRun(h, expect, err) {
+  if (err !== null && err !== undefined) {
+    return { ok: false, note: `run_workflow 不应抛错（统一契约），实际: ${err.message || err}` };
+  }
+  const r = h.result || {};
+  if (r.status !== expect.status) {
+    return { ok: false, note: `status=${r.status} 期望 ${expect.status}（error=${JSON.stringify(r.error)}）` };
+  }
+  const diff = _runFieldDiff(r, expect);
+  if (diff !== null) return { ok: false, note: diff };
+  const states = (r.steps || []).map((st) => st.state);
+  return { ok: true, note: `run=${r.status} states=${JSON.stringify(states)}` };
+}
+
+/** inserted：_id 前缀匹配 + 可选时间戳存在性 */
+function _assertInserted(h, expect) {
+  let ok = Boolean(h.result) && String(h.result._id || '').startsWith(expect.idPrefix);
+  if (expect.hasTimestamps) {
+    ok = ok && typeof h.result.createdAt === 'number' && h.result.createdAt > 0;
+  }
+  return { ok, note: `insert 结果: ${JSON.stringify(h.result)}` };
+}
+
+/** 标量结果断言：count / exists / inserted / updated / removed */
+function _assertScalar(kind, h, expect) {
+  if (kind === 'count') {
+    return { ok: h.result === expect.value, note: `count=${h.result} 期望 ${expect.value}` };
+  }
+  if (kind === 'exists') {
+    return { ok: Boolean(h.result) === Boolean(expect.value), note: `exists=${h.result}` };
+  }
+  if (kind === 'inserted') return _assertInserted(h, expect);
+  if (kind === 'updated') {
+    const val = (h.result || {}).modifiedCount;
+    const exp = expect.modifiedCount;
+    return { ok: exp === undefined || exp === null ? true : val === exp, note: `modifiedCount=${val}` };
+  }
+  const r = h.result || {};
+  return {
+    ok: r.deletedCount === expect.deletedCount && r.archivedCount === expect.archivedCount,
+    note: `remove 结果: ${JSON.stringify(r)}`,
+  };
+}
+
+/** rows（含分页）：与 expect.rows 或 mongo oracle 比对 */
+function _assertRows(h, expect, oracleRows, isSql) {
+  let expected = expect.rows;
+  if (expected === undefined || expected === null) {
+    expected = oracleRows;
+    if ((expected === undefined || expected === null) && isSql) {
+      return { ok: false, note: '缺少期望行集且无 mongo oracle' };
+    }
+  }
+  if ((expected === undefined || expected === null) && !isSql) {
+    return { ok: true, note: 'mongo 基准（无显式期望，仅作 oracle）' };
+  }
+  const act = normRows(h.result, expect.normalize);
+  const exp = normRows(expected, expect.normalize);
+  if (deepEq(act, exp)) return { ok: true, note: `${act.length} 行` };
+  return {
+    ok: false,
+    note: `行集不一致\n  实际: ${JSON.stringify(act)}\n  期望: ${JSON.stringify(exp)}`,
+  };
+}
+
+/** 结果类断言（rows/count/exists/inserted/updated/removed/raw）；执行报错前置检查 */
+async function _assertResult(kind, h, expect, oracleRows, env) {
+  const err = h.error;
+  if (err !== null && err !== undefined) {
+    if (env.isSql && env.policy === 'explicit-or-parity') {
+      return { ok: true, note: `SQL 显式报错（${err.name}）可接受` };
+    }
+    return { ok: false, note: `执行报错: ${err.message || err}` };
+  }
+  if (kind === 'raw') {
+    const fn = env.checks[expect.fn];
+    if (!fn) return { ok: false, note: `未知 raw 断言 ${expect.fn}` };
+    return fn(h, expect);
+  }
+  if (kind === 'rows') return _assertRows(h, expect, oracleRows, env.isSql);
+  return _assertScalar(kind, h, expect);
+}
+
 /**
  * 断言单步，返回 `{ ok, note }`。`isSql` 由 h.backend 判定；`oracleRows` 来自 mongo 相同步骤；
  * `checks` 为场景 raw 断言协程表（expect.kind='raw' 时按 fn 名取协程）。
@@ -250,107 +385,12 @@ async function assertStep(h, step, oracleRows, checks) {
   const err = h.error;
   const events = h.events;
 
-  if (kind === 'error') {
-    if (err === null || err === undefined) return { ok: false, note: '期望抛错但未抛错' };
-    return { ok: _matchError(err, expect), note: `实际错误: ${err.message || err}` };
-  }
-  if (kind === 'feedback') {
-    const codes = _codes(events);
-    return { ok: codes.includes(expect.code), note: `事件 codes: ${JSON.stringify(codes)}` };
-  }
-  if (kind === 'unsupported') {
-    if (!isSql) return { ok: true, note: 'mongo 基准支持' };
-    const codes = _codes(events).filter(Boolean);
-    if ((err !== null && err !== undefined) || codes.length) {
-      return { ok: true, note: `显式(err=${err ? err.name : null}, events=${JSON.stringify(codes)})` };
-    }
-    return { ok: false, note: '不可翻译却静默返回了结果（既无错误也无告警）' };
-  }
-
-  if (kind === 'run') {
-    // run 文档断言：runWorkflow 统一契约不抛错；error 键显式存在时严格相等
-    // （含 null——no-error-masking §二：成功态 error 必须为 null 的正向断言）
-    if (err !== null && err !== undefined) {
-      return { ok: false, note: `run_workflow 不应抛错（统一契约），实际: ${err.message || err}` };
-    }
-    const r = h.result || {};
-    if (r.status !== expect.status) {
-      return { ok: false, note: `status=${r.status} 期望 ${expect.status}（error=${JSON.stringify(r.error)}）` };
-    }
-    if ('error' in expect && r.error !== expect.error) {
-      return { ok: false, note: `error=${JSON.stringify(r.error)} 期望 ${JSON.stringify(expect.error)}` };
-    }
-    if ('stepIndex' in expect && r.stepIndex !== expect.stepIndex) {
-      return { ok: false, note: `stepIndex=${r.stepIndex} 期望 ${expect.stepIndex}` };
-    }
-    const states = (r.steps || []).map((st) => st.state);
-    if ('stepStates' in expect && JSON.stringify(states) !== JSON.stringify(expect.stepStates)) {
-      return { ok: false, note: `stepStates=${JSON.stringify(states)} 期望 ${JSON.stringify(expect.stepStates)}` };
-    }
-    return { ok: true, note: `run=${r.status} states=${JSON.stringify(states)}` };
-  }
-
+  if (kind === 'error') return _assertError(err, expect);
+  if (kind === 'feedback') return _assertFeedback(events, expect);
+  if (kind === 'unsupported') return _assertUnsupported(isSql, err, events);
+  if (kind === 'run') return _assertRun(h, expect, err);
   // 结果类断言（rows/count/exists/inserted/updated/removed/raw）
-  if (err !== null && err !== undefined) {
-    if (isSql && policy === 'explicit-or-parity') {
-      return { ok: true, note: `SQL 显式报错（${err.name}）可接受` };
-    }
-    return { ok: false, note: `执行报错: ${err.message || err}` };
-  }
-
-  if (kind === 'raw') {
-    const fn = checks[expect.fn];
-    if (!fn) return { ok: false, note: `未知 raw 断言 ${expect.fn}` };
-    return fn(h, expect);
-  }
-  if (kind === 'count') {
-    return { ok: h.result === expect.value, note: `count=${h.result} 期望 ${expect.value}` };
-  }
-  if (kind === 'exists') {
-    return { ok: Boolean(h.result) === Boolean(expect.value), note: `exists=${h.result}` };
-  }
-  if (kind === 'inserted') {
-    let ok = Boolean(h.result) && String(h.result._id || '').startsWith(expect.idPrefix);
-    if (expect.hasTimestamps) {
-      ok = ok && typeof h.result.createdAt === 'number' && h.result.createdAt > 0;
-    }
-    return { ok, note: `insert 结果: ${JSON.stringify(h.result)}` };
-  }
-  if (kind === 'updated') {
-    const val = (h.result || {}).modifiedCount;
-    const exp = expect.modifiedCount;
-    return { ok: exp === undefined || exp === null ? true : val === exp, note: `modifiedCount=${val}` };
-  }
-  if (kind === 'removed') {
-    const r = h.result || {};
-    return {
-      ok: r.deletedCount === expect.deletedCount && r.archivedCount === expect.archivedCount,
-      note: `remove 结果: ${JSON.stringify(r)}`,
-    };
-  }
-
-  // rows（含分页）：与 expect.rows 或 mongo oracle 比对
-  if (kind === 'rows') {
-    let expected = expect.rows;
-    if (expected === undefined || expected === null) {
-      expected = oracleRows;
-      if ((expected === undefined || expected === null) && isSql) {
-        return { ok: false, note: '缺少期望行集且无 mongo oracle' };
-      }
-    }
-    if ((expected === undefined || expected === null) && !isSql) {
-      return { ok: true, note: 'mongo 基准（无显式期望，仅作 oracle）' };
-    }
-    const act = normRows(h.result, expect.normalize);
-    const exp = normRows(expected, expect.normalize);
-    if (deepEq(act, exp)) return { ok: true, note: `${act.length} 行` };
-    return {
-      ok: false,
-      note: `行集不一致\n  实际: ${JSON.stringify(act)}\n  期望: ${JSON.stringify(exp)}`,
-    };
-  }
-
-  return { ok: false, note: `未知断言 kind=${kind}` };
+  return _assertResult(kind, h, expect, oracleRows, { isSql, policy, checks });
 }
 
 // ──────────────────────────────────────────────────────────── 工厂 ──
@@ -387,45 +427,54 @@ function createHarness(config) {
     }
   }
 
+  /** sqlite 分支：内存库 + 建表（同步 exec） */
+  function _setupSqlite(extra) {
+    const Database = require('better-sqlite3');
+    const db = new Database(':memory:');
+    for (const stmt of [...loaders.loadDdl('sqlite'), ...extra]) db.exec(stmt);
+    return { driver: db, conn: executors.createConnection('sqlite', db) };
+  }
+
+  /** mysql / postgres 分支共构：建池 → 探活 → 建表（不可达关池返回 {error}） */
+  async function _setupSqlPool(kind, extra) {
+    let pool;
+    let probe;
+    if (kind === 'mysql') {
+      const mysql = require('mysql2/promise');
+      pool = mysql.createPool(config.uris.mysql);
+      probe = await probePool(pool, 'MySQL', config.uris.mysql);
+    } else {
+      const { Pool } = require('pg');
+      pool = new Pool({ connectionString: config.uris.pg, connectionTimeoutMillis: 3000 });
+      probe = await probePool(pool, 'PostgreSQL', config.uris.pg);
+    }
+    if (probe) return probe;
+    for (const stmt of [...loaders.loadDdl(kind), ...extra]) await pool.query(stmt);
+    return { driver: pool, conn: executors.createConnection(kind, pool) };
+  }
+
+  /** mongodb 分支：连接 + ping，不可达关连接返回 {error} */
+  async function _setupMongo() {
+    const { MongoClient } = require('mongodb');
+    const client = new MongoClient(config.uris.mongo, { serverSelectionTimeoutMS: 3000 });
+    try {
+      await client.connect();
+      await client.db().command({ ping: 1 });
+    } catch (e) {
+      await client.close().catch(() => {});
+      return { error: `MongoDB 不可达（${config.uris.mongo}）: ${e.message}` };
+    }
+    const db = client.db();
+    return { driver: db, conn: db, client };
+  }
+
   /** 连接 + 建表；返回 `{ driver, conn, client?, error? }`；不可达时返回 `{ error: 原因 }` */
   async function setupBackend(kind) {
     // 追加 DDL 仅对 SQL 三分支生效（Mongo 无 DDL——原版 builtinDdl 也只在三分支拼接）
     const extra = kind !== 'mongodb' && config.extraDdl ? config.extraDdl(kind) : [];
-    if (kind === 'sqlite') {
-      const Database = require('better-sqlite3');
-      const db = new Database(':memory:');
-      for (const stmt of [...loaders.loadDdl('sqlite'), ...extra]) db.exec(stmt);
-      return { driver: db, conn: executors.createConnection('sqlite', db) };
-    }
-    if (kind === 'mysql') {
-      const mysql = require('mysql2/promise');
-      const pool = mysql.createPool(config.uris.mysql);
-      const probe = await probePool(pool, 'MySQL', config.uris.mysql);
-      if (probe) return probe;
-      for (const stmt of [...loaders.loadDdl('mysql'), ...extra]) await pool.query(stmt);
-      return { driver: pool, conn: executors.createConnection('mysql', pool) };
-    }
-    if (kind === 'postgres') {
-      const { Pool } = require('pg');
-      const pool = new Pool({ connectionString: config.uris.pg, connectionTimeoutMillis: 3000 });
-      const probe = await probePool(pool, 'PostgreSQL', config.uris.pg);
-      if (probe) return probe;
-      for (const stmt of [...loaders.loadDdl('postgres'), ...extra]) await pool.query(stmt);
-      return { driver: pool, conn: executors.createConnection('postgres', pool) };
-    }
-    if (kind === 'mongodb') {
-      const { MongoClient } = require('mongodb');
-      const client = new MongoClient(config.uris.mongo, { serverSelectionTimeoutMS: 3000 });
-      try {
-        await client.connect();
-        await client.db().command({ ping: 1 });
-      } catch (e) {
-        await client.close().catch(() => {});
-        return { error: `MongoDB 不可达（${config.uris.mongo}）: ${e.message}` };
-      }
-      const db = client.db();
-      return { driver: db, conn: db, client };
-    }
+    if (kind === 'sqlite') return _setupSqlite(extra);
+    if (kind === 'mysql' || kind === 'postgres') return _setupSqlPool(kind, extra);
+    if (kind === 'mongodb') return _setupMongo();
     throw new Error(`未知后端 ${kind}`);
   }
 
@@ -465,9 +514,88 @@ function createHarness(config) {
       if (kind === 'mongodb') await (client ? client.close() : Promise.resolve());
       else if (kind === 'sqlite') driver.close();
       else await driver.end();
-    } catch (e) {
+    } catch {
       /* 收尾失败不掩盖测试结论 */
     }
+  }
+
+  /** 单步骤执行+断言：raw 走场景协程（缺省复用上一步结果）；其余 runStep→assertStep。
+   * `oc`：oracle 采集环境 `{ at(c,si), collected[], kind }`（mongo 侧采集 / SQL 侧回取） */
+  async function _execOneStep(h, step, si, c, oc) {
+    let ok;
+    let note;
+    if (step.op === 'raw') {
+      h.events = [];
+      oc.collected.push(null);
+      const handled = config.onRaw ? await config.onRaw(h, step) : undefined;
+      if (handled) {
+        ({ ok, note } = handled);
+      } else {
+        // raw 断言复用上一步的 h.result/h.error（自身不发命令、不产事件）；
+        // SQL 后端从 mongo oracle 按步骤位取回（mongo 侧 raw 步骤恒为 null）
+        ({ ok, note } = await assertStep(h, step, oc.at(c, si), config.checks));
+      }
+    } else {
+      const { result, error, events } = await runStep(h, step);
+      h.result = result;
+      h.error = error;
+      h.events = events;
+      let oracleRows = null;
+      if (oc.kind === 'mongodb') {
+        if ((step.expect || {}).kind === 'rows') {
+          oracleRows = normRows(h.result, (step.expect || {}).normalize);
+        }
+        oc.collected.push(oracleRows);
+      } else {
+        oracleRows = oc.at(c, si);
+      }
+      ({ ok, note } = await assertStep(h, step, oracleRows, config.checks));
+    }
+    return { ok, note };
+  }
+
+  /** withCtx 包裹的步骤循环（用例内 ctx 态生效范围）→ stepsOut */
+  async function _runCaseSteps(h, c, oc) {
+    const stepsOut = [];
+    await withCtx(c.ctx, async () => {
+      for (let si = 0; si < c.steps.length; si += 1) {
+        const step = c.steps[si];
+        const { ok, note } = await _execOneStep(h, step, si, c, oc);
+        const out = {
+          idx: si,
+          ok,
+          note,
+          op: step.op,
+          expectKind: (step.expect || {}).kind,
+        };
+        if (config.stepMeta) Object.assign(out, config.stepMeta(step));
+        stepsOut.push(out);
+      }
+    });
+    return stepsOut;
+  }
+
+  /** 单用例执行：reset→seed→profile/ctx 态切换（finally 复原）；被过滤返回 null */
+  async function _runCase(h, driver, c, oc) {
+    if (config.filterCase && !config.filterCase(c, oc.kind)) return null;
+    if ((c.reset || 'seed') === 'seed') {
+      await reset(oc.kind, driver);
+      await seed();
+    }
+    const savedRequire = store.requireContext();
+    // 档位按用例声明切换（缺省 standard），结束复原
+    const savedProfile = sc.getProfile();
+    sc.setProfile(c.profile || 'standard');
+    h.casePolicy = c.sqlPolicy || null;
+    const collected = [];
+    let stepsOut;
+    try {
+      stepsOut = await _runCaseSteps(h, c, { ...oc, collected });
+    } finally {
+      store.setRequireContext(savedRequire);
+      sc.setProfile(savedProfile);
+    }
+    return { stepsOut, caseOracleSteps: collected };
   }
 
   /**
@@ -510,77 +638,17 @@ function createHarness(config) {
 
     try {
       for (const c of cases) {
-        if (config.filterCase && !config.filterCase(c, kind)) continue;
-        if ((c.reset || 'seed') === 'seed') {
-          await reset(kind, driver);
-          await seed();
-        }
-        const savedRequire = store.requireContext();
-        // 档位按用例声明切换（缺省 standard），结束复原
-        const savedProfile = sc.getProfile();
-        sc.setProfile(c.profile || 'standard');
-        h.casePolicy = c.sqlPolicy || null;
-        const stepsOut = [];
-        const caseOracleSteps = [];
-        try {
-          await withCtx(c.ctx, async () => {
-            for (let si = 0; si < c.steps.length; si += 1) {
-              const step = c.steps[si];
-              let ok;
-              let note;
-              if (step.op === 'raw') {
-                h.events = [];
-                caseOracleSteps.push(null);
-                const handled = config.onRaw ? await config.onRaw(h, step) : undefined;
-                if (handled) {
-                  ({ ok, note } = handled);
-                } else {
-                  // raw 断言复用上一步的 h.result/h.error（自身不发命令、不产事件）；
-                  // SQL 后端从 mongo oracle 按步骤位取回（mongo 侧 raw 步骤恒为 null）
-                  ({ ok, note } = await assertStep(h, step, oracleAt(c, si), config.checks));
-                }
-              } else {
-                const { result, error, events } = await runStep(h, step);
-                h.result = result;
-                h.error = error;
-                h.events = events;
-                let oracleRows = null;
-                if (kind === 'mongodb') {
-                  if ((step.expect || {}).kind === 'rows') {
-                    oracleRows = normRows(h.result, (step.expect || {}).normalize);
-                    caseOracleSteps.push(oracleRows);
-                  } else {
-                    caseOracleSteps.push(null);
-                  }
-                } else {
-                  oracleRows = oracleAt(c, si);
-                }
-                ({ ok, note } = await assertStep(h, step, oracleRows, config.checks));
-              }
-              const out = {
-                idx: si,
-                ok,
-                note,
-                op: step.op,
-                expectKind: (step.expect || {}).kind,
-              };
-              if (config.stepMeta) Object.assign(out, config.stepMeta(step));
-              stepsOut.push(out);
-            }
-          });
-        } finally {
-          store.setRequireContext(savedRequire);
-          sc.setProfile(savedProfile);
-        }
+        const done = await _runCase(h, driver, c, { at: oracleAt, kind });
+        if (!done) continue;
         results.push({
           id: c.id,
           title: c.title || '',
           group: c.group,
           backend: kind,
-          status: stepsOut.every((s) => s.ok) ? 'pass' : 'fail',
-          steps: stepsOut,
+          status: done.stepsOut.every((s) => s.ok) ? 'pass' : 'fail',
+          steps: done.stepsOut,
         });
-        if (kind === 'mongodb') collectedOracle[c.id] = caseOracleSteps;
+        if (kind === 'mongodb') collectedOracle[c.id] = done.caseOracleSteps;
       }
     } finally {
       await teardown(kind, driver, client);

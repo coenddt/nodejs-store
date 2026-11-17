@@ -14,23 +14,36 @@
 let _deps = null;
 function _bindDeps(d) { _deps = d; }
 
+/** cfg 缺省值归一（解构默认值语义集中在此：键缺失或 undefined → 默认；datasource 必填校验） */
+function _normalizeCfg(cfg) {
+  const d = {
+    schemas: [],        // 定义数组（纯 JSON；每项即 register 的入参）
+    fns: {},            // 回调实现 `{ implName: impl(item, ctx) }`（L2 包 store-fns-node，扁平字典）
+    ctx: null,          // 定义层门禁上下文
+    config: null,       // store.config.json 路径或对象；给定时以 store.loadDefs 取代 schemas 逐条 register
+    configBaseDir: null, // config 的相对基准目录（默认 = config 文件所在目录 / cwd）
+    skins: null,        // store-gateway-node 的 opts（null 则不起协议面）
+    reload: null,       // { tenant, env }，透传给 gateway
+    feedback: true,     // 降级/拦截事件默认落 __feedback（A5）
+    tenant: '',         // 反馈事件的 ns 标签
+    env: '',            // 反馈事件的 ns 标签
+  };
+  const merged = { ...d, ...cfg };
+  for (const k of Object.keys(d)) {
+    if (merged[k] === undefined) merged[k] = d[k];
+  }
+  if (!merged.datasource) throw new Error('ERR_BOOTSTRAP:缺 datasource');
+  return merged;
+}
+
 async function createApp(cfg) {
   if (!_deps) throw new Error('ERR_BOOTSTRAP:依赖未注入（应经 nodejs-store 主入口 require createApp）');
   const { init, store } = _deps;
+  // datasource 必填：传给 init 的数据源（Mongo db 实例或 {default: ...} 配置）
   const {
-    datasource,          // 必填：传给 init 的数据源（Mongo db 实例或 {default: ...} 配置）
-    schemas = [],        // 定义数组（纯 JSON；每项即 register 的入参）
-    fns = {},            // 可选：回调实现 `{ implName: impl(item, ctx) }`，来自 L2 包 store-fns-node（扁平字典）
-    ctx = null,          // 可选：定义层门禁上下文
-    config = null,       // 可选：store.config.json 路径或对象；给定时以 store.loadDefs 取代 schemas 逐条 register
-    configBaseDir = null, // 可选：config 的相对基准目录（默认 = config 文件所在目录 / cwd）
-    skins = null,        // 可选：store-gateway-node 的 opts（null 则不起协议面）
-    reload = null,       // 可选：{ tenant, env }，透传给 gateway
-    feedback = true,     // 可选：降级/拦截事件默认落 __feedback（A5）
-    tenant = '',         // 可选：反馈事件的 ns 标签
-    env = '',            // 可选：反馈事件的 ns 标签
-  } = cfg || {};
-  if (!datasource) throw new Error('ERR_BOOTSTRAP:缺 datasource');
+    datasource, schemas, fns, ctx, config, configBaseDir,
+    skins, reload, feedback, tenant, env,
+  } = _normalizeCfg(cfg);
 
   // 装载/注册**先于** init —— 保证「注册先于建索引」（06 §8 待核实 3：init 内即建索引）
   let defns;
@@ -53,7 +66,7 @@ async function createApp(cfg) {
 
   let gateway = null;
   if (skins) {
-     
+
     const { serve } = require('store-gateway-node');
     gateway = await serve(store, { ...skins, reload });
   }

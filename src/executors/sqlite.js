@@ -27,7 +27,7 @@ function _bind(params) {
 }
 
 /** 创建执行器描述符（可直接作为 `init(connections)` 的一个 SQL 数据源连接） */
-function create(db, _options = {}) {
+function create(db) {
   if (!db || typeof db.prepare !== 'function') {
     throw new TypeError('sqlite 执行器需要 better-sqlite3 Database 实例');
   }

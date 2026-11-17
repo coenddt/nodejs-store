@@ -37,6 +37,23 @@ function _dirFor(dir, database) {
   return path.join(dir, database);
 }
 
+/** 读单个集合文件并解析校验（非法 JSON / 非数组一律抛错，禁静默当空集合） */
+function _readDocsFile(full) {
+  const raw = fs.readFileSync(full, 'utf8');
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`本地集合文件非法 JSON: ${full}（${e.message}）`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      `本地集合文件必须是文档数组: ${full}（实为 ${parsed === null ? 'null' : typeof parsed}）`,
+    );
+  }
+  return parsed;
+}
+
 /**
  * 读取整个目录快照。
  * @param {string} dir
@@ -58,19 +75,7 @@ function readSnapshot(dir, database = null) {
     const name = ent.name;
     if (!name.endsWith('.json')) continue; // `.tmp` 中间文件天然被排除
     const full = path.join(target, name);
-    const raw = fs.readFileSync(full, 'utf8');
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (e) {
-      throw new Error(`本地集合文件非法 JSON: ${full}（${e.message}）`);
-    }
-    if (!Array.isArray(parsed)) {
-      throw new Error(
-        `本地集合文件必须是文档数组: ${full}（实为 ${parsed === null ? 'null' : typeof parsed}）`,
-      );
-    }
-    out[name.slice(0, -'.json'.length)] = parsed;
+    out[name.slice(0, -'.json'.length)] = _readDocsFile(full);
   }
   return out;
 }

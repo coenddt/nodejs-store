@@ -42,7 +42,7 @@ function pythonAvailable() {
   try {
     execFileSync('python', ['--version'], { stdio: 'ignore' });
     return true;
-  } catch (err) {
+  } catch {
     return false;
   }
 }

@@ -37,19 +37,19 @@ class MemColl {
     this.docs = docs !== undefined ? docs : [];
   }
 
-  find(_query, _projection) {
+  find() {
     return new MemCursor(this.docs);
   }
 
-  aggregate(_pipeline) {
+  aggregate() {
     return new MemCursor(this.docs);
   }
 
-  async findOne(_query, _projection) {
+  async findOne() {
     return this.docs.length ? { ...this.docs[0] } : null;
   }
 
-  async countDocuments(_filter) {
+  async countDocuments() {
     return this.docs.length;
   }
 
@@ -83,11 +83,11 @@ class MemColl {
     return base;
   }
 
-  async updateMany(_condition, _data) {
+  async updateMany() {
     return { modifiedCount: this.docs.length };
   }
 
-  async deleteMany(_condition) {
+  async deleteMany() {
     const n = this.docs.length;
     this.docs = [];
     return { deletedCount: n };

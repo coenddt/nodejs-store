@@ -43,6 +43,34 @@ const REQUIRED_ROLES = {
  * 解析并校验 `cfg.fields`：未知表 / 未知角色 → 抛错；
  * 必填角色须为非空字符串；可选角色为「非空字符串」或 `null`（`null` = 跳过该列）。
  */
+
+/** 单角色值校验：必填角色须非空字符串；可选角色非空字符串或 null（错误文案逐字不变） */
+function _validateRoleValue(table, role, v) {
+  const isStr = typeof v === 'string' && v !== '';
+  if (REQUIRED_ROLES[table].includes(role)) {
+    if (!isStr) throw new Error(`configureResource: fields.${table}.${role} 为必填角色，须为非空字符串`);
+  } else if (v !== null && !isStr) {
+    throw new Error(`configureResource: fields.${table}.${role} 须为非空字符串或 null`);
+  }
+}
+
+/** 单表解析：形状/未知角色校验 + 映射合并 + 逐角色校验，返回 mapped */
+function _parseTableFields(table, given) {
+  if (given === null || typeof given !== 'object') {
+    throw new Error(`configureResource: fields.${table} 须为对象`);
+  }
+  for (const role of Object.keys(given)) {
+    if (!(role in DEFAULT_FIELDS[table])) {
+      throw new Error(`configureResource: fields.${table} 未知角色: ${role}`);
+    }
+  }
+  const mapped = { ...DEFAULT_FIELDS[table], ...given };
+  for (const role of Object.keys(mapped)) {
+    _validateRoleValue(table, role, mapped[role]);
+  }
+  return mapped;
+}
+
 function _parseFields(raw = {}) {
   if (raw === null || typeof raw !== 'object') {
     throw new Error('configureResource: fields 须为对象');
@@ -52,26 +80,7 @@ function _parseFields(raw = {}) {
   }
   const out = {};
   for (const table of Object.keys(DEFAULT_FIELDS)) {
-    const given = raw[table] === undefined ? {} : raw[table];
-    if (given === null || typeof given !== 'object') {
-      throw new Error(`configureResource: fields.${table} 须为对象`);
-    }
-    for (const role of Object.keys(given)) {
-      if (!(role in DEFAULT_FIELDS[table])) {
-        throw new Error(`configureResource: fields.${table} 未知角色: ${role}`);
-      }
-    }
-    const mapped = { ...DEFAULT_FIELDS[table], ...given };
-    for (const role of Object.keys(mapped)) {
-      const v = mapped[role];
-      const isStr = typeof v === 'string' && v !== '';
-      if (REQUIRED_ROLES[table].includes(role)) {
-        if (!isStr) throw new Error(`configureResource: fields.${table}.${role} 为必填角色，须为非空字符串`);
-      } else if (v !== null && !isStr) {
-        throw new Error(`configureResource: fields.${table}.${role} 须为非空字符串或 null`);
-      }
-    }
-    out[table] = mapped;
+    out[table] = _parseTableFields(table, raw[table] === undefined ? {} : raw[table]);
   }
   return out;
 }
@@ -125,18 +134,8 @@ function _buildPool(sub, { strict }) {
  * 返回 `{"<池名>": <pool Map 拷贝>, ...}` 结构视图；模块级 _pool 仍指向默认池
  * （兼容既有引用；纯命名池未配 "default" 时为空 Map），`poolNames()` 枚举全池。
  */
-function configure(cfg = {}) {
-  if (cfg.providers && cfg.pools) {
-    throw new Error('configureResource: providers 与 pools 互斥（同一 cfg 只允许一种形状），禁静默合并');
-  }
-  _cfg = {
-    schema: { ...DEFAULT_SCHEMA, ...(cfg.schema || {}) },
-    fields: _parseFields(cfg.fields || {}),
-    store: cfg.store || null,
-    providers: Array.isArray(cfg.providers) ? cfg.providers.slice() : [],
-    url: cfg.url || {},
-    sign: typeof cfg.sign === 'function' ? cfg.sign : null,
-  };
+/** 池初始化（副作用落 _pools/_pool）：新形状逐池 strict 构建 / 旧形状等价默认池 */
+function _initPools(cfg) {
   _pools = new Map();
   if (cfg.pools != null) {
     if (typeof cfg.pools !== 'object' || Array.isArray(cfg.pools) || !Object.keys(cfg.pools).length) {
@@ -149,6 +148,21 @@ function configure(cfg = {}) {
     _pools.set('default', _buildPool(cfg, { strict: false }));
   }
   _pool = _pools.get('default') || new Map();
+}
+
+function configure(cfg = {}) {
+  if (cfg.providers && cfg.pools) {
+    throw new Error('configureResource: providers 与 pools 互斥（同一 cfg 只允许一种形状），禁静默合并');
+  }
+  _cfg = {
+    schema: { ...DEFAULT_SCHEMA, ...(cfg.schema || {}) },
+    fields: _parseFields(cfg.fields || {}),
+    store: cfg.store || null,
+    providers: Array.isArray(cfg.providers) ? cfg.providers.slice() : [],
+    url: cfg.url || {},
+    sign: typeof cfg.sign === 'function' ? cfg.sign : null,
+  };
+  _initPools(cfg);
   return Object.fromEntries([..._pools.entries()].map(([k, v]) => [k, new Map(v)]));
 }
 
@@ -218,17 +232,8 @@ const _META_GQL = (schema) => {
   return `${schema}($condition: @c0) { ${[...new Set(cols)].join(', ')} }`;
 };
 
-/** 上传：内容寻址去重 + fan-out 全部 provider + 落元数据 */
-async function put({ bytes, fileName, mime, kind, bind, pool } = {}) {
-  if (bytes == null) throw new Error('resource.put 需要 bytes');
-  const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
-  const crud = _crud();
-  const F = _cfg.fields;
-  const poolSel = _requirePool(pool);
-  const sha1 = _sha1(buf);
-  const resourceId = sha1;
-  const key = native.resourceContentPath(sha1);
-
+/** fan-out 全部 provider 副本：允许部分失败但逐条显式反馈（禁静默）；返回 locations/locationRows */
+async function _putFanout(poolSel, resourceId, key, buf, mime) {
   const locations = [];     // 返回用（canonical 键，API 契约不变）
   const locationRows = [];  // 落库用（按映射列名）
   for (const [backend, p] of poolSel) {
@@ -251,29 +256,57 @@ async function put({ bytes, fileName, mime, kind, bind, pool } = {}) {
       });
     }
   }
+  return { locations, locationRows };
+}
 
+/** Resource 元数据行构造（列按映射；缺列跳过；缺省值文案不变） */
+function _resourceRow(F, spec, buf) {
+  const row = { _id: spec.resourceId };
+  if (F.resource.sha1) row[F.resource.sha1] = spec.sha1;
+  if (F.resource.fileName) row[F.resource.fileName] = spec.fileName || 'unnamed';
+  if (F.resource.mime) row[F.resource.mime] = spec.mime || 'application/octet-stream';
+  if (F.resource.size) row[F.resource.size] = buf.length;
+  if (F.resource.kind) row[F.resource.kind] = spec.kind || 'file';
+  return row;
+}
+
+/** location 行去重落库：按 backend 已有集合过滤后批量插入 */
+async function _putLocations(crud, F, resourceId, locationRows) {
+  if (!locationRows.length) return;
+  const existing = await crud.query(_LOC_GQL(_cfg.schema.location), { c0: { [F.location.resourceId]: resourceId } });
+  const have = new Set(existing.map((r) => r[F.location.backend]));
+  const fresh = locationRows.filter((l) => !have.has(l[F.location.backend]));
+  if (fresh.length) await crud.insertMany(_cfg.schema.location, fresh);
+}
+
+/** 绑定行构造（列按映射；userId null 保留） */
+function _bindingRow(F, resourceId, bind) {
+  const b = {};
+  if (F.binding.resourceId) b[F.binding.resourceId] = resourceId;
+  if (F.binding.businessTable) b[F.binding.businessTable] = bind.businessTable;
+  if (F.binding.businessId) b[F.binding.businessId] = String(bind.businessId);
+  if (F.binding.userId) b[F.binding.userId] = bind.userId != null ? String(bind.userId) : null;
+  return b;
+}
+
+/** 上传：内容寻址去重 + fan-out 全部 provider + 落元数据 */
+async function put({ bytes, fileName, mime, kind, bind, pool } = {}) {
+  if (bytes == null) throw new Error('resource.put 需要 bytes');
+  const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  const crud = _crud();
+  const F = _cfg.fields;
+  const poolSel = _requirePool(pool);
+  const sha1 = _sha1(buf);
+  const resourceId = sha1;
+  const key = native.resourceContentPath(sha1);
+
+  const { locations, locationRows } = await _putFanout(poolSel, resourceId, key, buf, mime);
   if (!(await crud.exists(_cfg.schema.resource, { _id: resourceId }))) {
-    const row = { _id: resourceId };
-    if (F.resource.sha1) row[F.resource.sha1] = sha1;
-    if (F.resource.fileName) row[F.resource.fileName] = fileName || 'unnamed';
-    if (F.resource.mime) row[F.resource.mime] = mime || 'application/octet-stream';
-    if (F.resource.size) row[F.resource.size] = buf.length;
-    if (F.resource.kind) row[F.resource.kind] = kind || 'file';
-    await crud.insert(_cfg.schema.resource, row);
+    await crud.insert(_cfg.schema.resource, _resourceRow(F, { resourceId, sha1, fileName, mime, kind }, buf));
   }
-  if (locationRows.length) {
-    const existing = await crud.query(_LOC_GQL(_cfg.schema.location), { c0: { [F.location.resourceId]: resourceId } });
-    const have = new Set(existing.map((r) => r[F.location.backend]));
-    const fresh = locationRows.filter((l) => !have.has(l[F.location.backend]));
-    if (fresh.length) await crud.insertMany(_cfg.schema.location, fresh);
-  }
+  await _putLocations(crud, F, resourceId, locationRows);
   if (bind) {
-    const b = {};
-    if (F.binding.resourceId) b[F.binding.resourceId] = resourceId;
-    if (F.binding.businessTable) b[F.binding.businessTable] = bind.businessTable;
-    if (F.binding.businessId) b[F.binding.businessId] = String(bind.businessId);
-    if (F.binding.userId) b[F.binding.userId] = bind.userId != null ? String(bind.userId) : null;
-    await crud.insert(_cfg.schema.binding, b);
+    await crud.insert(_cfg.schema.binding, _bindingRow(F, resourceId, bind));
   }
   return { resourceId, sha1, locations };
 }
@@ -287,59 +320,76 @@ async function _loadLocations(resourceId, opts) {
   return { crud, F, poolSel, rows };
 }
 
+/** 副本读取序：显式 order 优先（越界排末尾），同级按 priority 升序 */
+function _openOrder(opts, poolSel, F) {
+  const order = Array.isArray(opts.order) && opts.order.length ? opts.order : Array.from(poolSel.keys());
+  const rank = (b) => { const i = order.indexOf(b); return i < 0 ? Number.MAX_SAFE_INTEGER : i; };
+  const prioOf = (r) => (F.location.priority ? (r[F.location.priority] ?? 0) : 0);
+  const backendOf = (r) => r[F.location.backend];
+  return (rows) => rows.slice().sort((a, b) => (rank(backendOf(a)) - rank(backendOf(b))) || (prioOf(a) - prioOf(b)));
+}
+
+/** 单副本尝试：成功 `{bytes,backend,key}`；跳过 `{skip:true, err?}`（provider 缺失/降级 feedback 已发） */
+async function _openLoc(F, poolSel, opts, loc, resourceId) {
+  const backend = loc[F.location.backend];
+  if (F.location.status && loc[F.location.status] === 'failed') return { skip: true };
+  const p = poolSel.get(backend);
+  if (!p) {
+    _emitFeedback({
+      type: 'resource_location_provider_missing', code: 'resourceLocationProviderMissing',
+      layer: 'resource', backend, resourceId,
+      message: `副本 backend "${backend}" 未配置 provider，跳过（id=${resourceId}）`,
+      hint: '补齐 configure({providers:[...]}) 或清理该副本',
+    });
+    return { skip: true };
+  }
+  const key = loc[F.location.key];
+  try {
+    const bytes = await p.get(key, opts);
+    return { bytes, backend, key };
+  } catch (e) {
+    _emitFeedback({
+      type: 'resource_location_degraded', code: 'resourceLocationDegraded',
+      layer: 'resource', backend, resourceId,
+      message: `资源副本读取失败，降级到下一副本（backend=${backend}, id=${resourceId}）：${(e && e.message) || e}`,
+      hint: '检查该 provider 可用性；该副本可能需要重建',
+    });
+    return { skip: true, err: e };
+  }
+}
+
+/** 字节成功后读元数据（读失败不降级：缺失发 feedback，fileName/mime 回落 null） */
+async function _readMeta(crud, F, resourceId) {
+  const meta = await crud.queryOne(_META_GQL(_cfg.schema.resource), { c0: { _id: resourceId } });
+  if (!meta) {
+    _emitFeedback({
+      type: 'resource_meta_missing', code: 'resourceMetaMissing',
+      layer: 'resource', resourceId,
+      message: `资源元数据缺失（${_cfg.schema.resource} 无 _id=${resourceId} 行）：open 仍返回字节`,
+      hint: '检查资源表是否被外部清理；fileName/mime 将回落调用方兜底值',
+    });
+    return { fileName: null, mime: null };
+  }
+  let fileName = null;
+  let mime = null;
+  if (F.resource.fileName) fileName = meta[F.resource.fileName] ?? null;
+  if (F.resource.mime) mime = meta[F.resource.mime] ?? null;
+  return { fileName, mime };
+}
+
 /** 读：按 provider 配置序（同级按 priority）选路，失败降级到下一副本；成功后附元数据 */
 async function open(resourceId, opts = {}) {
   const { crud, F, poolSel, rows } = await _loadLocations(resourceId, opts);
-  const order = Array.isArray(opts.order) && opts.order.length ? opts.order : Array.from(poolSel.keys());
-  const rank = (b) => { const i = order.indexOf(b); return i < 0 ? Number.MAX_SAFE_INTEGER : i; };
-  const backendOf = (r) => r[F.location.backend];
-  const prioOf = (r) => (F.location.priority ? (r[F.location.priority] ?? 0) : 0);
-  const sorted = rows.slice().sort((a, b) => (rank(backendOf(a)) - rank(backendOf(b))) || (prioOf(a) - prioOf(b)));
+  const sortLocs = _openOrder(opts, poolSel, F);
 
   let lastErr = null;
-  for (const loc of sorted) {
-    const backend = backendOf(loc);
-    if (F.location.status && loc[F.location.status] === 'failed') continue;
-    const p = poolSel.get(backend);
-    if (!p) {
-      _emitFeedback({
-        type: 'resource_location_provider_missing', code: 'resourceLocationProviderMissing',
-        layer: 'resource', backend, resourceId,
-        message: `副本 backend "${backend}" 未配置 provider，跳过（id=${resourceId}）`,
-        hint: '补齐 configure({providers:[...]}) 或清理该副本',
-      });
-      continue;
-    }
-    const key = loc[F.location.key];
-    let bytes;
-    try {
-      bytes = await p.get(key, opts);
-    } catch (e) {
-      lastErr = e;
-      _emitFeedback({
-        type: 'resource_location_degraded', code: 'resourceLocationDegraded',
-        layer: 'resource', backend, resourceId,
-        message: `资源副本读取失败，降级到下一副本（backend=${backend}, id=${resourceId}）：${(e && e.message) || e}`,
-        hint: '检查该 provider 可用性；该副本可能需要重建',
-      });
-      continue;
-    }
+  for (const loc of sortLocs(rows)) {
+    const got = await _openLoc(F, poolSel, opts, loc, resourceId);
+    if (got.err) lastErr = got.err;
+    if (got.skip) continue;
     // 字节成功 → 读元数据（读失败不降级：Resource 未注册/无权限时响亮抛出，语义清晰）
-    const meta = await crud.queryOne(_META_GQL(_cfg.schema.resource), { c0: { _id: resourceId } });
-    let fileName = null;
-    let mime = null;
-    if (meta) {
-      if (F.resource.fileName) fileName = meta[F.resource.fileName] ?? null;
-      if (F.resource.mime) mime = meta[F.resource.mime] ?? null;
-    } else {
-      _emitFeedback({
-        type: 'resource_meta_missing', code: 'resourceMetaMissing',
-        layer: 'resource', resourceId,
-        message: `资源元数据缺失（${_cfg.schema.resource} 无 _id=${resourceId} 行）：open 仍返回字节`,
-        hint: '检查资源表是否被外部清理；fileName/mime 将回落调用方兜底值',
-      });
-    }
-    return { bytes, resourceId, backend, key, fileName, mime };
+    const { fileName, mime } = await _readMeta(crud, F, resourceId);
+    return { bytes: got.bytes, resourceId, backend: got.backend, key: got.key, fileName, mime };
   }
   if (lastErr) throw lastErr; // 有副本行但读取失败：原样重抛（500 透传），禁改语义
   const err = new Error(`${ERR_RESOURCE_NOT_FOUND}资源不存在或无可读副本: ${resourceId}`);

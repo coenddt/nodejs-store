@@ -35,10 +35,76 @@ class HttpAdapterError extends Error {
  * @param {number} [spec.timeoutMs]                超时毫秒（缺省不设）
  * @returns {{ fetch: (params?: object) => Promise<object[]> }}
  */
-function createHttpAdapter(spec) {
+/** spec 形状校验 + fetch 实现解析（注入 fetchImpl 优先，缺省用内置 fetch；无则显式抛错） */
+function _httpFetchImpl(spec) {
   if (!spec || typeof spec.baseUrl !== 'string' || !spec.baseUrl) {
     throw new TypeError('createHttpAdapter 需要 spec.baseUrl');
   }
+  const doFetch = spec.fetchImpl || (typeof fetch === 'function' ? fetch : null);
+  if (!doFetch) {
+    throw new Error('createHttpAdapter 需要 fetch（Node >= 18 内置）或注入 spec.fetchImpl');
+  }
+  return doFetch;
+}
+
+/** 构造请求 init（POST 注入 JSON 体；timeoutMs>0 挂 AbortSignal） */
+function _httpInit(method, headers, params, timeoutMs) {
+  const init = { method, headers: headers || undefined };
+  if (method === 'POST') {
+    init.headers = { 'content-type': 'application/json', ...(headers || {}) };
+    init.body = JSON.stringify(params ?? {});
+  }
+  if (timeoutMs > 0) init.signal = AbortSignal.timeout(timeoutMs);
+  return init;
+}
+
+/** 发请求并断言 2xx；请求失败 / 非 2xx 抛 HttpAdapterError */
+async function _sendAndCheck(doFetch, url, init) {
+  let res;
+  try {
+    res = await doFetch(url, init);
+  } catch (e) {
+    throw new HttpAdapterError(
+      `HTTP 请求失败 ${url}: ${e && e.message ? e.message : e}`,
+      { url },
+    );
+  }
+  if (!res || !(res.status >= 200 && res.status < 300)) {
+    const status = res ? res.status : null;
+    throw new HttpAdapterError(`HTTP ${status} ${url}`, { status, url });
+  }
+  return res;
+}
+
+/** 解析 JSON 响应体；非 JSON 抛 HttpAdapterError */
+async function _parseJson(res, url) {
+  const text = await res.text();
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new HttpAdapterError(
+      `HTTP 响应非 JSON ${url}: ${String(text).slice(0, 200)}`,
+      { status: res.status, url },
+    );
+  }
+  return json;
+}
+
+/** pick 取行 + 数组形状断言 + map 逐行映射（原序保留）；非数组抛 HttpAdapterError */
+function _pickRows(json, pick, map, url, status) {
+  const rows = pick ? pick(json) : json;
+  if (!Array.isArray(rows)) {
+    throw new HttpAdapterError(
+      `HTTP 响应结构非数组 ${url}: pick 返回 ${Array.isArray(rows) ? 'array' : typeof rows}`,
+      { status, url },
+    );
+  }
+  return map ? rows.map((r) => map(r)) : rows;
+}
+
+function createHttpAdapter(spec) {
+  const doFetch = _httpFetchImpl(spec);
   const {
     baseUrl,
     method = 'GET',
@@ -46,58 +112,15 @@ function createHttpAdapter(spec) {
     path: pathFn = null,
     pick = null,
     map = null,
-    fetchImpl = null,
     timeoutMs = 0,
   } = spec;
 
-  const doFetch = fetchImpl || (typeof fetch === 'function' ? fetch : null);
-  if (!doFetch) {
-    throw new Error('createHttpAdapter 需要 fetch（Node >= 18 内置）或注入 spec.fetchImpl');
-  }
-
   async function fetchDocs(params = {}) {
     const url = pathFn ? pathFn(params) : baseUrl;
-    const init = { method, headers: headers || undefined };
-    if (method === 'POST') {
-      init.headers = { 'content-type': 'application/json', ...(headers || {}) };
-      init.body = JSON.stringify(params ?? {});
-    }
-    if (timeoutMs > 0) init.signal = AbortSignal.timeout(timeoutMs);
-
-    let res;
-    try {
-      res = await doFetch(url, init);
-    } catch (e) {
-      throw new HttpAdapterError(
-        `HTTP 请求失败 ${url}: ${e && e.message ? e.message : e}`,
-        { url },
-      );
-    }
-
-    if (!res || !(res.status >= 200 && res.status < 300)) {
-      const status = res ? res.status : null;
-      throw new HttpAdapterError(`HTTP ${status} ${url}`, { status, url });
-    }
-
-    const text = await res.text();
-    let json;
-    try {
-      json = JSON.parse(text);
-    } catch (e) {
-      throw new HttpAdapterError(
-        `HTTP 响应非 JSON ${url}: ${String(text).slice(0, 200)}`,
-        { status: res.status, url },
-      );
-    }
-
-    const rows = pick ? pick(json) : json;
-    if (!Array.isArray(rows)) {
-      throw new HttpAdapterError(
-        `HTTP 响应结构非数组 ${url}: pick 返回 ${Array.isArray(rows) ? 'array' : typeof rows}`,
-        { status: res.status, url },
-      );
-    }
-    return map ? rows.map((r) => map(r)) : rows;
+    const init = _httpInit(method, headers, params, timeoutMs);
+    const res = await _sendAndCheck(doFetch, url, init);
+    const json = await _parseJson(res, url);
+    return _pickRows(json, pick, map, url, res.status);
   }
 
   return { fetch: fetchDocs };

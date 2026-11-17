@@ -85,7 +85,7 @@ const _STUBS = {
 };
 
 // 内存 Mongo 桩改用 tests 共享超集版（零语义论证见 helpers/mem-mongo.js 头注释）
-const { MemCursor: _MemCursor, MemColl: _MemColl } = require('./helpers/mem-mongo');
+const { MemColl: _MemColl } = require('./helpers/mem-mongo');
 
 class _FakeDb {
   constructor(docs) {

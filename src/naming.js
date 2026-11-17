@@ -76,22 +76,22 @@ function trRef(value, rels) {
  * `transformRefs=true` 时同时翻译 `$fieldRef` 字符串值（pipeline / `$expr` 语境）；
  * 普通文档（filter/doc/projection）保持值原样，避免误译字面量。
  */
+/** walk 单键翻译：特殊阶段（`$lookup` / `$vectorSearch`）走专属翻译，其余键与值通用翻译 */
+function _walkKey(k, v, rels, transformRefs) {
+  if (k === '$literal') return [k, v];                             // 字面量不改
+  if (k === '$expr') return [k, walk(v, rels, true)];              // 表达式内字段引用须译
+  if (k === '$lookup' && v && typeof v === 'object') return [k, trLookup(v, rels)];
+  if (k === '$vectorSearch' && v && typeof v === 'object') return [k, trVectorSearch(v, rels)];
+  return [trKey(k, rels), walk(v, rels, transformRefs)];
+}
+
 function walk(node, rels, transformRefs) {
   if (Array.isArray(node)) return node.map((n) => walk(n, rels, transformRefs));
   if (node && typeof node === 'object') {
     const out = {};
     for (const [k, v] of Object.entries(node)) {
-      if (k === '$literal') { out[k] = v; continue; }              // 字面量不改
-      if (k === '$expr') { out[k] = walk(v, rels, true); continue; } // 表达式内字段引用须译
-      if (k === '$lookup' && v && typeof v === 'object') {
-        out[k] = trLookup(v, rels);
-        continue;
-      }
-      if (k === '$vectorSearch' && v && typeof v === 'object') {
-        out[k] = trVectorSearch(v, rels);
-        continue;
-      }
-      out[trKey(k, rels)] = walk(v, rels, transformRefs);
+      const [nk, nv] = _walkKey(k, v, rels, transformRefs);
+      out[nk] = nv;
     }
     return out;
   }
@@ -111,6 +111,13 @@ function trVectorSearch(obj, rels) {
   return out;
 }
 
+/** `$lookup.let`：变量名（内部别名）不译；其值中的字段引用须译 */
+function _lookupLet(v, rels) {
+  const m = {};
+  for (const [vk, vv] of Object.entries(v || {})) m[vk] = walk(vv, rels, true);
+  return m;
+}
+
 /** `$lookup` 阶段：`from`=集合名（译）、`as`=关系名（不译）、`localField`/`foreignField`=关系字段（译） */
 function trLookup(obj, rels) {
   const out = {};
@@ -122,10 +129,7 @@ function trLookup(obj, rels) {
     } else if (k === 'as') {
       out[k] = v;                                     // 关系名不翻译
     } else if (k === 'let') {
-      // 变量名（内部别名）不译；其值中的字段引用须译
-      const m = {};
-      for (const [vk, vv] of Object.entries(v || {})) m[vk] = walk(vv, rels, true);
-      out[k] = m;
+      out[k] = _lookupLet(v, rels);
     } else {
       out[k] = walk(v, rels, true);
     }

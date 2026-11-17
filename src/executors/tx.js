@@ -66,7 +66,7 @@ async function withTransaction(openTransaction, body) {
   } catch (e) {
     try {
       await tx.rollback();
-    } catch (_) {
+    } catch {
       /* rollback 失败不掩盖原始错误 */
     }
     throw e;

@@ -42,41 +42,43 @@ function _scalar(rows) {
 // 函数，不再回指本索引）；此处 re-export 保持对外导出面不变。
 const { openAcquire } = require('./open');
 
+/** insertOne 塑形：autoincrement 主键回读（详见 crud/exec.js 对应分支） */
+function _shapeInsertOne(cmd, out) {
+  const doc = cmd.doc;
+  // 阶段2：autoincrement 主键 —— doc 无 `_id`（core 不注入）→ 从执行包络回读
+  // 自增值（PG/SQLite RETURNING 走 rows；MySQL/SQLite lastInsertRowid 走 insertId）
+  if (doc && !doc._id) {
+    let rid = null;
+    if (out.rows && out.rows[0] && Object.prototype.hasOwnProperty.call(out.rows[0], '_id')) {
+      rid = out.rows[0]._id;
+    } else if (out.insertId !== null && out.insertId !== undefined) {
+      rid = out.insertId;
+    }
+    if (rid !== null && rid !== undefined) return { ...doc, _id: rid };
+  }
+  return doc;
+}
+
+const _firstDoc = (out) => (out.docs && out.docs[0]) || null;
+
+// kind → 塑形器（Object.create(null) 防原型键误命中；未登记 kind 等价原 default 分支）
+// 统一签名 (cmd, out)：读类只用 out；写类（insertOne/insertMany）还要读 cmd（主键回读/计数）
+const _SHAPERS = Object.assign(Object.create(null), {
+  find: (_cmd, out) => out.docs || [],
+  aggregate: (_cmd, out) => out.docs || [],
+  findOne: (_cmd, out) => _firstDoc(out),
+  findOneAndUpdate: (_cmd, out) => _firstDoc(out),
+  countDocuments: (_cmd, out) => _scalar(out.rows),
+  insertOne: (cmd, out) => _shapeInsertOne(cmd, out),
+  insertMany: (cmd) => ({ insertedCount: (cmd.docs || []).length }),
+  updateMany: (_cmd, out) => ({ modifiedCount: out.affectedRows }),
+  deleteMany: (_cmd, out) => ({ deletedCount: out.affectedRows }),
+});
+
 /** 中立包络 → Mongo 驱动等价返回值 */
 function shapeResult(cmd, out) {
-  switch (cmd.kind) {
-    case 'find':
-    case 'aggregate':
-      return out.docs || [];
-    case 'findOne':
-    case 'findOneAndUpdate':
-      return (out.docs && out.docs[0]) || null;
-    case 'countDocuments':
-      return _scalar(out.rows);
-    case 'insertOne': {
-      const doc = cmd.doc;
-      // 阶段2：autoincrement 主键 —— doc 无 `_id`（core 不注入）→ 从执行包络回读
-      // 自增值（PG/SQLite RETURNING 走 rows；MySQL/SQLite lastInsertRowid 走 insertId）
-      if (doc && !doc._id) {
-        let rid = null;
-        if (out.rows && out.rows[0] && Object.prototype.hasOwnProperty.call(out.rows[0], '_id')) {
-          rid = out.rows[0]._id;
-        } else if (out.insertId !== null && out.insertId !== undefined) {
-          rid = out.insertId;
-        }
-        if (rid !== null && rid !== undefined) return { ...doc, _id: rid };
-      }
-      return doc;
-    }
-    case 'insertMany':
-      return { insertedCount: (cmd.docs || []).length };
-    case 'updateMany':
-      return { modifiedCount: out.affectedRows };
-    case 'deleteMany':
-      return { deletedCount: out.affectedRows };
-    default:
-      return out;
-  }
+  const shape = _SHAPERS[cmd.kind];
+  return shape ? shape(cmd, out) : out;
 }
 
 module.exports = { createConnection, openAcquire, shapeResult, mongo, mysql, postgres, sqlite };

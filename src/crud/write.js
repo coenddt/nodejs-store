@@ -176,6 +176,19 @@ async function updateMany(schemaName, condition, data, routeOverride = null) {
  * options.archive === false（漉金Core 接入扩展 02）：本次调用跳过归档副作用（删除照常，
  * 返回结构不变，archivedCount=0）；schema.archive:false 时 core 注册期已不派生归档
  * 模型，planRemove 无 findCommand，天然无归档。 */
+/** 删除前归档段：条件归档 findCommand（命中 docs 代表值、全字段）→ planArchiveDocs 落 `_deleted`；
+ * 未删到（docs 空）不归档，与 update 0 行命中语义一致；返回 `{ docs, archivedCount }`。 */
+async function _archiveBeforeRemove(doArchive, out, ids, schemaName, routeOverride) {
+  if (!(doArchive && out.findCommand)) return { docs: [], archivedCount: 0 };
+  const docs = await (ids !== null ? fillPreIds(out.findCommand, ids) : _exec(out.findCommand));
+  if (docs.length) {
+    const arch = _call(() => getCore().planArchiveDocs(schemaName, docs, _nowFor(schemaName), routeOverride));
+    await _exec(arch.command);
+    return { docs, archivedCount: docs.length };
+  }
+  return { docs, archivedCount: 0 };
+}
+
 async function remove(schemaName, condition, routeOverride = null, options = null) {
   // 归档判定（漉金Core 接入扩展 02）：调用级 options.archive 显式 false → 跳过归档段；
   // schema 级裁决在 core 注册期（archive:false 不派生归档模型 → planRemove 无 findCommand）
@@ -184,8 +197,6 @@ async function remove(schemaName, condition, routeOverride = null, options = nul
     getCore().planRemove(schemaName, condition ?? null, _ctx(), found, doc, routeOverride)));
 
   const doRemove = async () => {
-    let archivedCount = 0;
-    let docs = [];
     // 关系谓词：先执行 deleteCommand.preCommand 取命中 _id（归档 find 与删除共用同一列表）
     const pre = out.deleteCommand && out.deleteCommand.preCommand;
     let ids = null;
@@ -193,14 +204,7 @@ async function remove(schemaName, condition, routeOverride = null, options = nul
       const preRows = await _exec(pre);
       ids = (preRows || []).filter((d) => d && '_id' in d).map((d) => d._id);
     }
-    if (doArchive && out.findCommand) {
-      docs = await (ids !== null ? fillPreIds(out.findCommand, ids) : _exec(out.findCommand));
-      if (docs.length) {
-        const arch = _call(() => getCore().planArchiveDocs(schemaName, docs, _nowFor(schemaName), routeOverride));
-        await _exec(arch.command);
-        archivedCount = docs.length;
-      }
-    }
+    const { docs, archivedCount } = await _archiveBeforeRemove(doArchive, out, ids, schemaName, routeOverride);
 
     const result = await (ids !== null ? fillPreIds(out.deleteCommand, ids) : _exec(out.deleteCommand));
     if (out.triggers && out.triggers.length && docs.length) {

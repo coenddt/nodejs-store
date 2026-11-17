@@ -14,20 +14,26 @@ function _backendOf(connection) {
   return kind === 'mongo' ? 'mongodb' : kind;
 }
 
+/** 单 schema 判定：datasource 归属该 source 且索引项声明了 `options.indexName` */
+function _sourceHasAtlasIndex(meta, source) {
+  if ((meta.datasource || 'default') !== source) return false;
+  for (const ix of meta.indexes || []) {
+    const indexName = ix && ix.options && ix.options.indexName;
+    if (typeof indexName === 'string' && indexName) return true;
+  }
+  return false;
+}
+
 /** 该 source 下是否有 schema 的索引项声明了 `options.indexName`（Atlas 唯一可判据） */
 function _atlasDeclared(source) {
   for (const name of list()) {
     let meta;
     try {
       meta = get(name);
-    } catch (e) {
+    } catch {
       continue; // 未注册（理论不可达）：不参与判定，不静默改判
     }
-    if ((meta.datasource || 'default') !== source) continue;
-    for (const ix of meta.indexes || []) {
-      const indexName = ix && ix.options && ix.options.indexName;
-      if (typeof indexName === 'string' && indexName) return true;
-    }
+    if (_sourceHasAtlasIndex(meta, source)) return true;
   }
   return false;
 }

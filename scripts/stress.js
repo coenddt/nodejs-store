@@ -84,18 +84,22 @@ function summarize(latencies) {
 }
 
 // ─── 主流程 ─────────────────────────────────────────────────
-async function main() {
-  permission.setContext(undefined);
 
-  // 1. 连接四库
+/** 连接四库（Mongo / MySQL / PG / SQLite），返回句柄组 */
+async function _connectBackends() {
   const client = new MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 3000 });
   await client.connect();
-  const mongoDb = client.db();
-  const mPool = mysql.createPool(MYSQL_URI);
-  const pgPool = new Pool({ connectionString: PG_URI });
-  const sqliteDb = new Database(':memory:');
+  return {
+    client,
+    mongoDb: client.db(),
+    mPool: mysql.createPool(MYSQL_URI),
+    pgPool: new Pool({ connectionString: PG_URI }),
+    sqliteDb: new Database(':memory:'),
+  };
+}
 
-  // 2. 建表 / 清数据（幂等）
+/** 建表 / 清数据（幂等） */
+async function _resetTables({ mongoDb, mPool, pgPool, sqliteDb }) {
   await mongoDb.collection(T('stress_users')).deleteMany({});
   await mPool.query(`DROP TABLE IF EXISTS ${T('stress_orders')}`);
   await mPool.query(
@@ -107,8 +111,10 @@ async function main() {
   );
   sqliteDb.exec(`DROP TABLE IF EXISTS ${T('stress_logs')}`);
   sqliteDb.exec(`CREATE TABLE ${T('stress_logs')} (_id TEXT PRIMARY KEY, msg TEXT, level TEXT)`);
+}
 
-  // 3. schema 注册（跨源 relation = 联邦路径）
+/** schema 注册（跨源 relation = 联邦路径） */
+function _registerSchemas() {
   _sc.register({
     name: S('StressUser'), collection: T('stress_users'), idPrefix: 'u_', datasource: 'mongo_e2e', timestamps: false,
     fields: { name: { type: 'string' } },
@@ -129,16 +135,20 @@ async function main() {
     name: S('StressLog'), collection: T('stress_logs'), idPrefix: 'l_', datasource: 'default', timestamps: false,
     fields: { msg: { type: 'string' }, level: { type: 'string' } }, relations: {},
   });
+}
 
-  // 4. init 四源
+/** init 四源 */
+async function _initSources({ mongoDb, mPool, pgPool, sqliteDb }) {
   await init({
     mongo_e2e: mongoDb,
     mysql_e2e: executors.createConnection('mysql', mPool),
     pg_e2e: executors.createConnection('postgres', pgPool),
     default: executors.createConnection('sqlite', sqliteDb),
   });
+}
 
-  // 5. 预热（种子数据）
+/** 预热（种子数据）；返回 orderIds */
+async function _prewarm() {
   const orderIds = [];
   for (let u = 0; u < SEED_USERS; u++) {
     const user = await store.insert(S('StressUser'), { name: `u_${u}` });
@@ -149,13 +159,35 @@ async function main() {
     }
   }
   console.log(`[prewarm] users=${SEED_USERS} orders=${orderIds.length} invoices=${SEED_USERS * SEED_PER_USER} ready`);
+  return orderIds;
+}
 
-  // 6. 冒烟：跨 3 源联邦一次，验证链路
+/** 冒烟：跨 3 源联邦一次，验证链路 */
+async function _smokeFed() {
   const smoke = await store.queryFederated(FED_GQL, FED_PARAMS);
   if (!smoke.length || !smoke[0].orders || !smoke[0].invoices) {
     throw new Error(`联邦冒烟失败: 结果形状异常 ${JSON.stringify(smoke[0] || {}).slice(0, 200)}`);
   }
   console.log(`[smoke] federation ok: ${smoke.length} users, sample orders=${smoke[0].orders.length} invoices=${smoke[0].invoices.length}`);
+}
+
+async function main() {
+  permission.setContext(undefined);
+
+  // 1. 连接四库
+  const backends = await _connectBackends();
+  const { mPool, pgPool, sqliteDb, client } = backends;
+
+  // 2. 建表 / 清数据（幂等）→ 3. schema 注册 → 4. init 四源
+  await _resetTables(backends);
+  _registerSchemas();
+  await _initSources(backends);
+
+  // 5. 预热（种子数据）
+  const orderIds = await _prewarm();
+
+  // 6. 冒烟：跨 3 源联邦一次，验证链路
+  await _smokeFed();
 
   // 7. 并发压测
   const allTimes = [];

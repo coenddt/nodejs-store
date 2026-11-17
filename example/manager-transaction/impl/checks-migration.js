@@ -96,6 +96,32 @@ async function migrate_add_unique_index(h) {
   }
 }
 
+/** SQLite 分支：类型变更必须显式拒绝（MIGRATION_UNSUPPORTED） */
+function _sqliteWidenRejected(ddl, invOld, invNew) {
+  try {
+    ddl.generateMigration('sqlite', invOld, invNew);
+    return { ok: false, note: 'SQLite 类型变更未拒绝' };
+  } catch (e) {
+    if (!String(e.message || e).includes('MIGRATION_UNSUPPORTED')) {
+      return { ok: false, note: `SQLite 拒绝文案缺语义码: ${e.message || e}` };
+    }
+    return { ok: true, note: 'SQLite 显式拒绝类型变更（MIGRATION_UNSUPPORTED）' };
+  }
+}
+
+/** 直连 SQL 插 float 行（绕过 core 契约：stock 在 schema 里仍是 int），返回读回值与原始行 */
+async function _writeFloatRow(h, store) {
+  const floatRow = 'VALUES (\'invT4\', \'p1\', \'w9\', 3.5, 1, \'u1\', \',_id,productId,warehouse,stock,warnLine,\')';
+  const cols = h.backend === 'mysql'
+    ? '(_id, `product_id`, `warehouse`, stock, `warn_line`, `created_by`, __present)'
+    : '(_id, "product_id", "warehouse", stock, "warn_line", "created_by", __present)';
+  const sql = `INSERT INTO inventories ${cols} ${floatRow}`;
+  if (h.backend === 'mysql' || h.backend === 'postgres') await h.driver.query(sql);
+  else h.driver.exec(sql);
+  const rows = await store.query('Inventory($condition:@c){_id, stock}', { c: { _id: 'invT4' } });
+  return { val: rows.length ? rows[0].stock : undefined, rows };
+}
+
 /** T4-03：int→float 放宽（MySQL/PG 生效；SQLite 显式 MIGRATION_UNSUPPORTED） */
 async function migrate_widen(h) {
   const { ddl, store } = require('../../../src');
@@ -109,30 +135,11 @@ async function migrate_widen(h) {
   };
   const invNew = JSON.parse(JSON.stringify(invOld));
   invNew.fields.stock = { type: 'float' };
-  if (h.backend === 'sqlite') {
-    try {
-      ddl.generateMigration('sqlite', invOld, invNew);
-      return { ok: false, note: 'SQLite 类型变更未拒绝' };
-    } catch (e) {
-      if (!String(e.message || e).includes('MIGRATION_UNSUPPORTED')) {
-        return { ok: false, note: `SQLite 拒绝文案缺语义码: ${e.message || e}` };
-      }
-      return { ok: true, note: 'SQLite 显式拒绝类型变更（MIGRATION_UNSUPPORTED）' };
-    }
-  }
+  if (h.backend === 'sqlite') return _sqliteWidenRejected(ddl, invOld, invNew);
   const stmts = ddl.generateMigration(h.backend, invOld, invNew);
   await execStmts(h, stmts);
   try {
-    // 直连 SQL 插 float 行（绕过 core 契约：stock 在 schema 里仍是 int）
-    const floatRow = 'VALUES (\'invT4\', \'p1\', \'w9\', 3.5, 1, \'u1\', \',_id,productId,warehouse,stock,warnLine,\')';
-    const cols = h.backend === 'mysql'
-      ? '(_id, `product_id`, `warehouse`, stock, `warn_line`, `created_by`, __present)'
-      : '(_id, "product_id", "warehouse", stock, "warn_line", "created_by", __present)';
-    const sql = `INSERT INTO inventories ${cols} ${floatRow}`;
-    if (h.backend === 'mysql' || h.backend === 'postgres') await h.driver.query(sql);
-    else h.driver.exec(sql);
-    const rows = await store.query('Inventory($condition:@c){_id, stock}', { c: { _id: 'invT4' } });
-    const val = rows.length ? rows[0].stock : undefined;
+    const { val, rows } = await _writeFloatRow(h, store);
     if (val !== 3.5) return { ok: false, note: `放宽后 float 写读断言失败: ${JSON.stringify(rows)}` };
     return { ok: true, note: `int→float 放宽生效（${h.backend}）` };
   } finally {
@@ -141,7 +148,7 @@ async function migrate_widen(h) {
 }
 
 /** T4-04：破坏性变更显式拒绝（纯函数，sqlite 单后端） */
-async function migrate_destructive(_h) {
+async function migrate_destructive() {
   const { ddl } = require('../../../src');
   const oldDef = JSON.parse(JSON.stringify(orderDef()));
   const dropped = JSON.parse(JSON.stringify(oldDef));
