@@ -10,6 +10,11 @@
  *
  * 与本仓其它端到端用例同规：走 store 统一入口 + 内存 SQLite（无需外部服务）。
  * 运行：node scripts/test.js（默认加载 node_modules 的 rust-store-node 绑定；验本地产物需 LOCAL_CORE=1）。
+ *
+ * D4-4 零语义拆分：`_US` 分隔符与内存 SQLite 骨架（run / runWf）、wfDefn 工厂下沉
+ * ../test-support/metadef-helpers.js；workflow 定义持久化四例下沉
+ * ../test-support/metadef-workflow-cases.js（在原位置 require，test 注册顺序不变）；
+ * 用例名、断言与注释逐字未改。
  */
 
 const { test } = require('node:test');
@@ -18,8 +23,9 @@ const Database = require('better-sqlite3');
 
 const { init, store, executors, ddl } = require('../src');
 const md = require('../src/metadef');
-
-const _US = '\u001f';
+const {
+  _US, run, runWf, wfDefn,
+} = require('../test-support/metadef-helpers');
 
 test('P3：stableStringify 数字与 py 同语义（1.0 → 1）', () => {
   assert.equal(md._stableStringify({ default: 1 }), '{"default":1}');
@@ -42,40 +48,6 @@ test('跨端对拍：stableStringify 与 py 逐字节同 canonical、同 SHA-1',
     assert.equal(crypto.createHash('sha1').update(got, 'utf8').digest('hex'), c.sha1, c.json);
   }
 });
-
-/** 建内存库 + 建内建 `__schemaDef` 表 → init → 执行 body（每个用例独立库） */
-async function run(body) {
-  const db = new Database(':memory:');
-  db.exec(String(ddl.generate('sqlite', ['__schemaDef'])));
-  await init({ default: executors.createConnection('sqlite', db) });
-  try {
-    return await body();
-  } finally {
-    db.close();
-  }
-}
-
-/** 建内存库 + 建内建 `__workflowDef` 表 → init → 执行 body（workflow 定义用） */
-async function runWf(body) {
-  const db = new Database(':memory:');
-  db.exec(String(ddl.generate('sqlite', ['__workflowDef'])));
-  await init({ default: executors.createConnection('sqlite', db) });
-  // B1 前置：wfDefn 默认 gql `Item(){ _id }` 引用 Item，注册期可规划性校验要求其已注册。
-  store.register({
-    name: 'Item', collection: 'items', idPrefix: 'it',
-    fields: { _id: { type: 'string' }, title: { type: 'string' } },
-  });
-  try {
-    return await body();
-  } finally {
-    db.close();
-  }
-}
-
-/** 最小合法 workflow defn（注册期白名单通过；gql 内容不参与注册期校验） */
-function wfDefn(name, gql = 'Item(){ _id }') {
-  return { name, steps: [{ op: 'query', as: 'a', gql }] };
-}
 
 test('defId：自然键 (tenant,env,name,version)（对齐 py def_id）', () => {
   assert.equal(md.defId('t1', 'dev', 'Item', 2), `t1${_US}dev${_US}Item${_US}2`);
@@ -209,68 +181,9 @@ test('N3：纯 JSON defn（fnRef 字符串）正常落库且与入参同形', as
 });
 
 // ─── workflow 定义持久化（kind=workflow，落 __workflowDef；审计 §8 N1）───────
+// 四例在 test-support/metadef-workflow-cases.js；此处 require 使注册顺序与原文件一致。
 
-test('workflow：persist 同名同形幂等 + 异形 version+1 + list version desc', async () => {
-  await runWf(async () => {
-    const o = { tenant: 't6', env: 'dev', kind: 'workflow' };
-    const w1 = wfDefn('WfPersist');
-    const w2 = wfDefn('WfPersist', 'Item(){ _id title }');
-    const r1 = await md.persistDef(store, w1, o);
-    assert.equal(r1.version, 1);
-    const again = await md.persistDef(store, w1, o);
-    assert.equal(again.version, 1); // 同名同形 → 幂等不新增
-    const r2 = await md.persistDef(store, w2, o);
-    assert.equal(r2.version, 2); // 异形 → version+1
-
-    const rows = await md.listDefs(store, { tenant: 't6', env: 'dev', name: 'WfPersist', kind: 'workflow' });
-    assert.deepEqual(rows.map((r) => r.version), [2, 1]); // version desc
-    assert.equal(rows[0]._id, md.defId('t6', 'dev', 'WfPersist', 2)); // 自然键
-  });
-});
-
-test('workflow：loadDefs 取各 name 最新 active', async () => {
-  await runWf(async () => {
-    const o = { tenant: 't7', env: 'dev', kind: 'workflow' };
-    await md.persistDef(store, wfDefn('WfLoad'), o);
-    await md.persistDef(store, wfDefn('WfLoad', 'Item(){ _id title }'), o);
-    await md.persistDef(store, { name: 'WfOther', steps: [{ op: 'fail', message: 'x' }] }, o);
-    const rows = await md.loadDefs(store, o);
-    const byName = Object.fromEntries(rows.map((r) => [r.name, r.version]));
-    assert.deepEqual(byName, { WfLoad: 2, WfOther: 1 });
-  });
-});
-
-test('workflow：restoreDefs(kind=workflow) 重建 workflow 注册表（幂等）', async () => {
-  await runWf(async () => {
-    const o = { tenant: 't8', env: 'dev' };
-    await md.persistDef(store, wfDefn('WfRestore'), { ...o, kind: 'workflow' });
-    assert.equal(store.workflows().includes('WfRestore'), false); // 落库未注册
-
-    const out = await md.restoreDefs(store, { ...o, kind: 'workflow' });
-    assert.equal(out.applied, 1);
-    assert.equal(store.workflows().includes('WfRestore'), true); // 重建后可见
-
-    const out2 = await md.restoreDefs(store, { ...o, kind: 'workflow' });
-    assert.equal(out2.applied, 0); // 同版本幂等
-  });
-});
-
-test('workflow：rollbackTo 追加式 → loadDefs 按历史 defn，本进程重注册', async () => {
-  await runWf(async () => {
-    const o = { tenant: 't10', env: 'dev', kind: 'workflow' };
-    const v1 = wfDefn('WfRb');
-    const v2 = wfDefn('WfRb', 'Item(){ _id title }');
-    await md.persistDef(store, v1, o);
-    await md.persistDef(store, v2, o);
-    const rb = await md.rollbackTo(store, { tenant: 't10', env: 'dev', name: 'WfRb', version: 1, kind: 'workflow' });
-    assert.equal(rb.version, 3); // 追加式：回滚 = 以 v1 defn 追加 v3
-    assert.deepEqual(rb.defn, v1);
-    const latest = await md.loadDefs(store, o);
-    assert.equal(latest[0].version, 3);
-    assert.deepEqual(latest[0].defn, v1);
-    assert.equal(store.getWorkflow('WfRb').steps[0].gql, 'Item(){ _id }'); // 本进程重注册为 v1
-  });
-});
+require('../test-support/metadef-workflow-cases');
 
 test('A3：宿主 restoreDefs 同时重建 schema 与 workflow 两类', async () => {
   const db = new Database(':memory:');
