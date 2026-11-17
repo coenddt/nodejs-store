@@ -120,7 +120,7 @@ function snapshotStats(dir) {
 
 /** 读写类 op 查表：op 名 → store 调用（两侧同名同义；非 IO op 不在表内） */
 const _IO_OPS = {
-  query: (op, dir) => store.query(op.gql, op.params || {}),
+  query: (op) => store.query(op.gql, op.params || {}),
   update: (op) => store.update(op.model, op.where, op.data),
   updateMany: (op) => store.updateMany(op.model, op.where, op.data),
   remove: (op) => store.remove(op.model, op.where),

@@ -19,8 +19,11 @@ const src = require('../../src');
 
 /** 解构 re-export：与各测试文件原 require 写法等价 */
 module.exports = {
+  /** @type {typeof import('node:test').test} */
   test: require('node:test').test,
+  /** @type {typeof import('node:test').before} */
   before: require('node:test').before,
+  /** @type {typeof import('node:assert/strict')} */
   assert: require('node:assert/strict'),
   Database: require('better-sqlite3'),
   src,

@@ -21,6 +21,8 @@
  */
 
 const path = require('path');
+// _initPaths 为 Node 内部 API（未经 @types/node 声明），压测脚本需直接调用
+/** @type {any} */
 const Module = require('module');
 
 // 驱动依赖位于本仓库 node_modules，脚本从 scripts/ 运行时补齐解析路径

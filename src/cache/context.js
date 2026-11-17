@@ -25,7 +25,8 @@ const _selectionStore = new AsyncLocalStorage();
  * @returns {*} `fn` 的返回值
  */
 function runWithSelection(links, fn) {
-  return _selectionStore.run(links ?? null, fn);
+  // AsyncLocalStorage#run 的泛型推导在 checkJs 下过窄（fn 为宽松 Function），按开放形状调用
+  return /** @type {any} */ (_selectionStore).run(links ?? null, fn);
 }
 
 /** 取本次请求的选中链路信息（未记录 ⇒ `null`） */

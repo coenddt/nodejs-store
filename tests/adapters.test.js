@@ -95,7 +95,7 @@ test('adapters/A7: stub → pullInto → 落主链路 → 既有 GQL 命中', as
 
 test('adapters/A9: 非 2xx ⇒ HttpAdapterError（携 status/url）', async () => {
   const adapter = createHttpAdapter({ baseUrl: `${baseUrl}/boom` });
-  await assert.rejects(() => adapter.fetch(), (e) => {
+  await assert.rejects(() => adapter.fetch(), (/** @type {any} */ e) => {
     assert.equal(e.name, 'HttpAdapterError');
     assert.equal(e.status, 500);
     assert.match(e.url, /\/boom$/);
@@ -105,12 +105,12 @@ test('adapters/A9: 非 2xx ⇒ HttpAdapterError（携 status/url）', async () =
 
 test('adapters/A9: 响应体非 JSON ⇒ HttpAdapterError', async () => {
   const adapter = createHttpAdapter({ baseUrl: `${baseUrl}/notjson` });
-  await assert.rejects(() => adapter.fetch(), (e) => e.name === 'HttpAdapterError');
+  await assert.rejects(() => adapter.fetch(), (/** @type {any} */ e) => e.name === 'HttpAdapterError');
 });
 
 test('adapters/A9: pick 结果非数组 ⇒ HttpAdapterError', async () => {
   const adapter = createHttpAdapter({ baseUrl: `${baseUrl}/scalar`, pick: (j) => j.total });
-  await assert.rejects(() => adapter.fetch(), (e) => e.name === 'HttpAdapterError');
+  await assert.rejects(() => adapter.fetch(), (/** @type {any} */ e) => e.name === 'HttpAdapterError');
 });
 
 // ─── A9：成功 0 条 ⇒ pulled:0 且不写（合法结果，与失败可区分） ──────────

@@ -10,10 +10,14 @@
  * 运行：`cd nodejs-store; $env:LOCAL_CORE='1'; node --test tests/fields-computes-same-name.test.js`
  */
 
+const boot = require('./helpers/boot');
 const {
-  test, assert,
+  test,
   src: { init, store, schema: _sc },
-} = require('./helpers/boot');
+} = boot;
+// assert 带断言签名（asserts），checkJs 下要求调用目标有显式类型注解（TS2775）
+/** @type {typeof import('node:assert/strict')} */
+const assert = boot.assert;
 
 const { connect } = require('../src/memory');
 const datasource = require('../src/datasource');

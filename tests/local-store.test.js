@@ -192,7 +192,9 @@ test('local/handle: 方法集逐一对应 execMongo（读用游标 / 写 await �
 
   // listIndexes（local v1 空）/ createIndex（no-op）
   assert.deepEqual(await users.listIndexes().toArray(), []);
-  await users.createIndex({ name: 1 });
+  // local v1 的 createIndex 声明为无参（no-op，索引声明不进本地载体）；此处按 driver 形状传入，
+  // 运行期多余实参被忽略
+  await /** @type {any} */ (users).createIndex({ name: 1 });
 });
 
 test('local/handle: 归档 upsertById 路径（replaceOne 逐条 upsert）', async () => {

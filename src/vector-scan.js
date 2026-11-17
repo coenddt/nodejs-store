@@ -136,6 +136,7 @@ async function _fetchCandidates(exec, cmd, candidate, maxRows) {
     throw new Error(`vector-scan.scan: 候选阶段返回非数组（${typeof rows}）`);
   }
   if (rows.length > maxRows) {
+    /** @type {Error & { code?: string, candidateRows?: number, maxRows?: number }} */
     const err = new Error(
       `vectorScanOverflow：候选行数 ${rows.length} 超过上限 ${maxRows}`
         + '（禁止静默截断，请先缩小过滤条件）',
@@ -165,7 +166,8 @@ function _checkSpec(spec) {
   }
 }
 
-async function scan(cmd, { exec, core, maxRows = MAX_VECTOR_SCAN_ROWS } = {}) {
+// exec / core 为宿主注入的执行器与核心句柄（形状由后端决定），此处按开放形状接收
+async function scan(cmd, /** @type {any} */ { exec, core, maxRows = MAX_VECTOR_SCAN_ROWS } = {}) {
   if (typeof exec !== 'function') {
     throw new TypeError('vector-scan.scan 需要 exec(candidateCommand)（返回行数组）');
   }

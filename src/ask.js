@@ -372,7 +372,7 @@ function _askValidate(question, ctx, maxRetries, llm) {
   }
 }
 
-async function ask(question, { llm, ctx, maxRetries = 3, knowledge = null } = {}) {
+async function ask(question, /** @type {any} */ { llm, ctx, maxRetries = 3, knowledge = null } = {}) {
   _askValidate(question, ctx, maxRetries, llm);
   const client = typeof llm === 'function' ? llm : getLlm(llm);
   const system = _buildSystemPrompt(describeForAi(ctx), _loadKnowledge(knowledge));

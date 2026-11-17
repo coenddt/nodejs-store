@@ -128,7 +128,8 @@ function _emptyContentErr(data, choice, model) {
   });
 }
 
-function makeOpenaiCompat({
+// 入参为宿主透传的开放配置（baseUrl/model/apiKey + 各可选调参），此处按开放形状接收
+function makeOpenaiCompat(/** @type {any} */ {
   baseUrl,
   model,
   apiKey,

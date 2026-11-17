@@ -376,6 +376,7 @@ function assertFnsCovered(defns) {
     }
   }
   if (missing.length) {
+    /** @type {Error & { code?: string }} */
     const err = new Error(`ERR_FN_MISSING:未注入回调实现 ${missing.join(', ')}`);
     err.code = 'ERR_FN_MISSING';
     throw err;

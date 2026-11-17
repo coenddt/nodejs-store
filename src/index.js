@@ -311,6 +311,7 @@ class Store {
    */
   async aggregate(schemaName, pipeline = [], options = null) {
     if (!_allowNativeAggregate) {
+      /** @type {Error & { code?: string }} */
       const err = new Error(
         'ERR_NATIVE_AGGREGATE_DISABLED:原生聚合别名未开启——默认关闭是产品边界，'
         + 'init(connections, { allowNativeAggregate: true }) 显式开启；'
@@ -320,6 +321,7 @@ class Store {
       throw err;
     }
     if (!schema.has(schemaName)) {
+      /** @type {Error & { code?: string }} */
       const err = new Error(`ERR_AGGREGATE_SCHEMA:未知 schema ${schemaName}`);
       err.code = 'ERR_AGGREGATE_SCHEMA';
       throw err;
@@ -437,7 +439,8 @@ class Store {
   // ── Atlas 向量索引（启动/运维调用；不参与请求路径）──
   /** 幂等创建 schema 中声明 options.indexName 的 Atlas 向量索引 */
   ensureVectorIndexes(opts) {
-    return vectorIndex.ensureVectorIndexes(this, opts ?? {});
+    // 底层 vector-index#ensureVectorIndexes 只取 store（第二参历史形态由 JS 忽略）
+    return /** @type {any} */ (vectorIndex.ensureVectorIndexes)(this, opts ?? {});
   }
 
   // ── 向量回填（VR-10；见 reindex.js）──

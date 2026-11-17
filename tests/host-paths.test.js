@@ -333,7 +333,9 @@ test('asyncFn: core 声明但 Host 未登记实现 → 显式报错', async () =
     relations: {},
   });
   const { db } = dbWithPosts();
-  db.colls.hpAsyncOnly = new ScriptedColl([{ _id: '1', a: 1 }]);
+  // 直接把 coll 挂到 mock db 上（colls 映射按键开放，mock 形状按 any 处理）
+  const colls = /** @type {any} */ (db.colls);
+  colls.hpAsyncOnly = new ScriptedColl([{ _id: '1', a: 1 }]);
   _crud.setDb(db);
 
   await assert.rejects(() => _crud.query('HpAsyncOnly{ _id, total }'), /未注册实现/);

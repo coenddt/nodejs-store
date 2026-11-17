@@ -95,7 +95,7 @@ test('D2：版本唯一性由行自然键 _id 在存储层保证', async () => {
     const insertDup = () => store.insert('__schemaDef', dup);
     await assert.rejects(
       () => md._runInternal(insertDup),
-      (e) => /unique/i.test(String(e && e.message)),
+      (/** @type {any} */ e) => /unique/i.test(String(e && e.message)),
     );
   });
 });

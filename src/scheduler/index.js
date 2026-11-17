@@ -30,6 +30,7 @@ const { emit: _emitFeedback } = require('../feedback-core');
 const _RANGES = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]];
 
 function _bad(msg) {
+  /** @type {Error & { code?: string }} */
   const err = new Error(`ERR_CRON:${msg}`);
   err.code = 'ERR_CRON';
   return err;

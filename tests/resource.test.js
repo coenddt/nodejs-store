@@ -104,7 +104,7 @@ test('open：零副本行 → 抛 ERR_RESOURCE_NOT_FOUND: 前缀（spec/03 前�
   const id = '0'.repeat(40);
   await assert.rejects(
     () => resource.open(id),
-    (err) => {
+    (/** @type {any} */ err) => {
       assert.ok(err.message.startsWith(PREFIX), `message 应带稳定前缀，实际=${err.message}`);
       assert.strictEqual(err.message.slice(PREFIX.length), `资源不存在或无可读副本: ${id}`);
       assert.strictEqual(err.resourceId, id);
@@ -125,7 +125,7 @@ test('open：有副本行但 provider 读取失败 → 原样重抛、不带前�
 
     await assert.rejects(
       () => resource.open('a'.repeat(40)),
-      (err) => {
+      (/** @type {any} */ err) => {
         assert.strictEqual(err.message, 'io down');
         assert.ok(!err.message.startsWith('ERR_RESOURCE_NOT_FOUND:'), '不得把 IO 失败伪装成「不存在」');
         return true;

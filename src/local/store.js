@@ -18,6 +18,11 @@ const path = require('node:path');
 
 const _queues = new Map(); // dir -> Promise（写串行化：单进程内互斥）
 
+/** `database` 段是否非法（含 `/`、`\`、`..`，防目录穿越） */
+function _badSegment(v) {
+  return typeof v !== 'string' || v.includes('/') || v.includes('\\') || v.includes('..');
+}
+
 /**
  * 唯一路径拼装点（红线）：`database` 非空 ⇒ `<dir>/<database>`；为空 ⇒ `dir` 本体。
  * 非法 `database`（含 `/`、`\`、`..`，防目录穿越）⇒ 抛错。
@@ -25,10 +30,6 @@ const _queues = new Map(); // dir -> Promise（写串行化：单进程内互斥
  * @param {string|null|undefined} database
  * @returns {string}
  */
-function _badSegment(v) {
-  return typeof v !== 'string' || v.includes('/') || v.includes('\\') || v.includes('..');
-}
-
 function _dirFor(dir, database) {
   if (database === null || database === undefined || database === '') return dir;
   if (_badSegment(database)) {
@@ -69,6 +70,7 @@ function readSnapshot(dir, database = null) {
     if (e && e.code === 'ENOENT') return {};
     throw e;
   }
+  /** @type {Record<string, Array<object>>} */
   const out = {};
   for (const ent of entries) {
     if (!ent.isFile()) continue;

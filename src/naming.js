@@ -17,7 +17,8 @@
  * schema 的逆表递归。
  */
 
-const { translateName } = require('./core');
+// core 为动态加载的原生核心（形状由 rust-store-node 导出决定），此处按开放形状接收
+const { translateName } = /** @type {any} */ (require('./core'));
 const schemaMod = require('./schema');
 
 const MONGO = 'mongodb';

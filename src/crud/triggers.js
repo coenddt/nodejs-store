@@ -47,6 +47,7 @@ function assertTriggerFnsCovered(defns) {
   const missing = [];
   for (const defn of defns || []) _collectMissingRefs(defn, missing);
   if (missing.length) {
+    /** @type {Error & { code?: string }} */
     const err = new Error(`ERR_TRIGGER_FN_MISSING:未注入触发器回调实现 ${missing.join(', ')}`);
     err.code = 'ERR_TRIGGER_FN_MISSING';
     throw err;

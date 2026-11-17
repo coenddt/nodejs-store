@@ -176,7 +176,7 @@ test('generate：object 列老表加列禁止 DEFAULT，文案指明「加列 + 
   };
   assert.throws(
     () => ddl.generateMigration('mysql', OLD, objAdd),
-    (e) => e.message.includes('MIGRATION_UNSUPPORTED') && e.message.includes('加列 + 回填'),
+    (/** @type {any} */ e) => e.message.includes('MIGRATION_UNSUPPORTED') && e.message.includes('加列 + 回填'),
   );
 });
 

@@ -30,6 +30,8 @@ const sqliteExec = require('../src/executors/sqlite');
 // ─── 原生核心加载器：生产禁从相邻仓库加载 + 失败提示 ──────────
 
 test('core loader: 缺原生依赖时显式报错且带可执行提示', () => {
+  // _load 为 Node 内部钩子（未经 @types/node 声明），测试需直接改写以模拟原生模块缺失
+  /** @type {any} */
   const Module = require('node:module');
   const origLoad = Module._load;
   const corePath = require.resolve('../src/core');

@@ -19,7 +19,8 @@
  */
 
 const { emit: _emitFeedback } = require('./feedback-core');
-const { translateName } = require('./core');
+// core 为动态加载的原生核心（形状由 rust-store-node 导出决定），此处按开放形状接收
+const { translateName } = /** @type {any} */ (require('./core'));
 const schema = require('./schema');
 
 const BACKENDS = ['mysql', 'postgres', 'sqlite'];

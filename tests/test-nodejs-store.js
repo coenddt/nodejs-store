@@ -108,7 +108,7 @@ test('crud.queryOne', async () => {
 });
 
 test('crud.queryWithCount 分页元数据', async () => {
-  const [coll] = _crudMock();
+  const [coll] = /** @type {any[]} */ (_crudMock());
   coll.countDocuments = async () => 200;
   const r = await _crud_mod.queryWithCount(
     'CommercialLedger($skip:@s,$limit:@l){unit, income}',
@@ -245,7 +245,9 @@ test('datasource 多源路由 + 索引策略（Mongo 建索引 / SQL 不建）',
     collection(name) {
       if (!this._colls[name]) {
         const coll = new _MemColl(name === 'dsMongoThing' ? [{ _id: '1', a: 7 }] : []);
-        coll.createIndex = async (keys, options) => {
+        // mock 覆盖：以 driver 形状记录调用（_MemColl 的签名只声明无参 no-op）
+        const collAny = /** @type {any} */ (coll);
+        collAny.createIndex = async (keys, options) => {
           created.push({ coll: name, keys, options });
           return 'idx';
         };
@@ -257,6 +259,7 @@ test('datasource 多源路由 + 索引策略（Mongo 建索引 / SQL 不建）',
 
   // SQL 连接：只提供 translate 后的执行器（桩），记录命令
   // 执行器返回中立包络 `{docs, rows, affectedRows}`，由 executors.shapeResult 塑形
+  /** @type {any} */
   let seenPlan = null;
   const sqlConn = {
     kind: 'sqlite',

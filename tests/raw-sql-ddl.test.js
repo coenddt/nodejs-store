@@ -23,6 +23,7 @@ class FakeMongo {}
 // ─── ① executeRaw ──────────────────────────────────────────
 
 test('executeRaw 构建 plan 并返回 rows', async () => {
+  /** @type {any} */
   let captured;
   datasource.setConnections({
     db: {
@@ -38,6 +39,7 @@ test('executeRaw 构建 plan 并返回 rows', async () => {
 });
 
 test('executeRaw isWrite 与 affectedRows', async () => {
+  /** @type {any} */
   let captured;
   datasource.setConnections({
     db: {
@@ -199,6 +201,7 @@ function patchExecMongo(stub) {
 }
 
 test('executeNative 构建聚合命令并返回 rows', async () => {
+  /** @type {any} */
   let captured;
   const restore = patchExecMongo(async (db, cmd, session) => {
     captured = { cmd, session };
@@ -223,6 +226,7 @@ test('executeNative 构建聚合命令并返回 rows', async () => {
 });
 
 test('executeNative pipeline 缺省为空数组', async () => {
+  /** @type {any} */
   let captured;
   const restore = patchExecMongo(async (db, cmd) => { captured = cmd; return []; });
   try {
@@ -338,7 +342,7 @@ test('aggregate 默认关闭：未开启抛 ERR_NATIVE_AGGREGATE_DISABLED', asyn
 
   await assert.rejects(
     () => store.aggregate('Anything', [{ $match: { a: 1 } }]),
-    (e) => e.code === 'ERR_NATIVE_AGGREGATE_DISABLED'
+    (/** @type {any} */ e) => e.code === 'ERR_NATIVE_AGGREGATE_DISABLED'
       && /allowNativeAggregate/.test(e.message),
   );
 });
@@ -352,6 +356,7 @@ test('aggregate 开启后按 schema 解析并转调 executeNative', async () => 
     fields: { a: { type: 'int' } },
     relations: {},
   });
+  /** @type {any} */
   let captured;
   const restore = patchExecMongo(async (db, cmd, session) => {
     captured = { cmd, session };
@@ -381,7 +386,7 @@ test('aggregate 开启后按 schema 解析并转调 executeNative', async () => 
     // 未知 schema 显式报错（fail-explicit，不静默返回空）
     await assert.rejects(
       () => store.aggregate('NoSuchModel', []),
-      (e) => e.code === 'ERR_AGGREGATE_SCHEMA' && /NoSuchModel/.test(e.message),
+      (/** @type {any} */ e) => e.code === 'ERR_AGGREGATE_SCHEMA' && /NoSuchModel/.test(e.message),
     );
   } finally {
     restore();

@@ -15,10 +15,14 @@
  * 运行：node scripts/test.js（scripts/test.js 会置 LOCAL_CORE=1）
  */
 
+const boot = require('./helpers/boot');
 const {
-  test, assert, Database, bootSingleTable,
+  test, Database, bootSingleTable,
   src: { store, permission, schema: _sc },
-} = require('./helpers/boot');
+} = boot;
+// assert 带断言签名（asserts），checkJs 下要求调用目标有显式类型注解（TS2775）
+/** @type {typeof import('node:assert/strict')} */
+const assert = boot.assert;
 const { feedback, text2query, ProfileViolation } = require('../src');
 const { _call } = require('../src/crud');
 const { _guardRouteOverride } = require('../src/crud/query');

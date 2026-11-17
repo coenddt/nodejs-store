@@ -20,7 +20,7 @@ const { createDb } = require('./handle');
  * @param {Function} spec.commitStaged (staged) => void|Promise（commit 落盘：
  *        local 带目录锁写回整目录；memory 整体写回分区）
  * @param {string|null} spec.db 事务绑定的库（null = 单库）
- * @returns {{session, handle, commit, rollback, release}} 与 SQL 执行器事务句柄同形
+ * @returns {Promise<{session, handle, commit, rollback, release}>} 与 SQL 执行器事务句柄同形
  */
 async function stagedOpenTransaction({ loadStaged, commitStaged, db }) {
   let staged = loadStaged();

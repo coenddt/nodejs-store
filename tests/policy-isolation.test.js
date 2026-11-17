@@ -291,9 +291,9 @@ test('policy-isolation A5: 落库 sink 的 tenant/env 取作用域 meta（并发
   try {
     const wait = barrier(2);
     async function worker(tag, tenant, env) {
-    await withScope({ view: viewOf({}), meta: { tenant, env } }, async () => {
-      await emitPairWithBarrier(tag, wait);
-    });
+      await withScope({ view: viewOf({}), meta: { tenant, env } }, async () => {
+        await emitPairWithBarrier(tag, wait);
+      });
     }
     await Promise.all([worker('a', 't1', 'e1'), worker('b', 't2', 'e2')]);
     await feedback.flush();

@@ -339,7 +339,8 @@ async function _migrateOne({ backend, source, name, defn, old, probe, oldDefs,
   return { name, from, to: version, version };
 }
 
-async function migrate({ backend, source, defs, oldDefs = null, driver = null,
+// 入参为宿主透传的开放形状（backend/source/defs + 可选驱动/租户/环境覆盖）
+async function migrate(/** @type {any} */ { backend, source, defs, oldDefs = null, driver = null,
   tenant = null, env = null } = {}) {
   _assertArgs(backend, source, defs);
   const probe = await _ensureVersionTable({ backend, source, driver });

@@ -163,6 +163,7 @@ test('register：定义层门禁（Open 放行 / Closed 拒无 ctx / Closed inte
 const RESOLVE_CTX = { inv: { _id: 'inv1', stock: 100 } };
 const RESOLVE_INPUT = { qty: 30, user: { name: '张三' }, items: [{ id: 'i0' }] };
 // 每条: [expr, strict, val, err]——val/err 二选一（err 非 null 即期望报错文案）
+/** @type {Array<[string, boolean, any, string|null]>} */
 const RESOLVE_CASES = [
   ['{{input.qty}}', false, 30, null],
   ['{{input.user.name}}', false, '张三', null],
@@ -184,7 +185,7 @@ test('parity 占位符解析（整值保类型 / dec / 内嵌 / strict 两态）
   for (const [s, strict, val, err] of RESOLVE_CASES) {
     if (err !== null) {
       assert.throws(() => workflow._resolveStr(s, RESOLVE_INPUT, RESOLVE_CTX, strict),
-        (e) => e.message === err, s);
+        (/** @type {any} */ e) => e.message === err, s);
     } else {
       assert.deepEqual(workflow._resolveStr(s, RESOLVE_INPUT, RESOLVE_CTX, strict), val, s);
     }

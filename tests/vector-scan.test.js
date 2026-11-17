@@ -133,6 +133,7 @@ test('vector-scan: Mongo 替身 —— 原生报 40324 后降级，物理命令�
       toArray: async () => {
         seen.push(pipeline);
         if (pipeline.some((s) => s && s.$vectorSearch)) {
+          /** @type {Error & { code?: number }} */
           const err = new Error("Unrecognized pipeline stage name: '$vectorSearch'");
           err.code = 40324;
           throw err;
@@ -161,6 +162,6 @@ test('vector-scan: 候选超限显式 Err（禁止静默截断）', async () => 
       exec: async () => rows,
       maxRows: 2,
     }),
-    (err) => err.code === 'vectorScanOverflow' && /禁止静默截断/.test(err.message),
+    (/** @type {any} */ err) => err.code === 'vectorScanOverflow' && /禁止静默截断/.test(err.message),
   );
 });

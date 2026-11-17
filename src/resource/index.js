@@ -90,6 +90,9 @@ function _parseFields(raw = {}) {
 // provider get 失败走 lastErr 原样重抛（属 IO/降级故障，仍 500）。
 const ERR_RESOURCE_NOT_FOUND = 'ERR_RESOURCE_NOT_FOUND:';
 
+// 装配期由 configureResource 整体重赋值（形状随配置而变：schema/fields/store/providers/url/sign
+// 及池级覆盖），声明为开放记录以免把首版字面量的窄形状当成契约。
+/** @type {Record<string, any>} */
 let _cfg = {
   schema: { ...DEFAULT_SCHEMA },
   fields: _parseFields({}),
@@ -289,8 +292,12 @@ function _bindingRow(F, resourceId, bind) {
   return b;
 }
 
-/** 上传：内容寻址去重 + fan-out 全部 provider + 落元数据 */
-async function put({ bytes, fileName, mime, kind, bind, pool } = {}) {
+/**
+ * 上传：内容寻址去重 + fan-out 全部 provider + 落元数据
+ *
+ * @param {any} [opts] 上传入参（bytes/fileName/mime/kind/bind/pool，均为宿主透传的开放形状）
+ */
+async function put({ bytes, fileName, mime, kind, bind, pool } = /** @type {any} */ ({})) {
   if (bytes == null) throw new Error('resource.put 需要 bytes');
   const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
   const crud = _crud();
@@ -392,6 +399,7 @@ async function open(resourceId, opts = {}) {
     return { bytes: got.bytes, resourceId, backend: got.backend, key: got.key, fileName, mime };
   }
   if (lastErr) throw lastErr; // 有副本行但读取失败：原样重抛（500 透传），禁改语义
+  /** @type {Error & { resourceId?: string }} */
   const err = new Error(`${ERR_RESOURCE_NOT_FOUND}资源不存在或无可读副本: ${resourceId}`);
   err.resourceId = resourceId;
   throw err;

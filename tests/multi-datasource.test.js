@@ -23,10 +23,14 @@
  * 运行：node scripts/test.js（置 LOCAL_CORE=1 使用仓库内 Rust 核心）
  */
 
+const boot = require('./helpers/boot');
 const {
-  test, before, assert, Database,
+  test, before, Database,
   src: { init, store, executors, permission, schema: _sc },
-} = require('./helpers/boot');
+} = boot;
+// assert 带断言签名（asserts），checkJs 下要求调用目标有显式类型注解（TS2775）
+/** @type {typeof import('node:assert/strict')} */
+const assert = boot.assert;
 const datasource = require('../src/datasource');
 // 内存 Mongo 桩改用 tests 共享超集版（零语义论证见 helpers/mem-mongo.js 头注释）
 const { MemColl } = require('./helpers/mem-mongo');

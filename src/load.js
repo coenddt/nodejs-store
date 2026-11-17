@@ -78,7 +78,7 @@ function planLoad(config, files) {
 /**
  * 运行期装载入口：读配置 → 收集定义 → core 纯规划 → 带定位批量注册。
  *
- * @returns {Array<{defn:any, location:{source:string,database:string|null,schema:string|null}}>}
+ * @returns {Promise<Array<{defn:any, location:{source:string,database:string|null,schema:string|null}}>>}
  *          装载项（主在前、其后从）
  */
 async function loadDefs(opts = {}) {

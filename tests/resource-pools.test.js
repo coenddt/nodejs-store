@@ -42,7 +42,7 @@ test('双池共存：put(pool=...) 各落各的根目录，互不串写', async 
   const got = await resource.open(rSys.resourceId, { pool: 'sys' });
   assert.equal(got.bytes.toString(), 'sys-doc');
   await assert.rejects(() => resource.open(rSys.resourceId, { pool: 'biz' }),
-    (e) => e.code === 'ENOENT');
+    (/** @type {any} */ e) => e.code === 'ENOENT');
   // remove 按池清副本：sys 池清理不影响 biz 池文件
   assert.deepEqual(await resource.remove(rSys.resourceId, { pool: 'sys' }), { removed: ['local'] });
   assert.ok(!list(aRoot).includes(rSys.sha1));

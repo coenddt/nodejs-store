@@ -359,7 +359,7 @@ function validateDefn(defn) {
  *
  * 与 `validateDefn`（纯函数、只做结构白名单）分职：本函数需要 core 注册表，故独立、不入 validateDefn。
  */
-/** 对象分支：收集本层 `params` 槽位键（去前导 @）+ 递归下钻全部值 */
+/** 对象分支：收集本层 `params` 槽位键（去掉前导 at 符）+ 递归下钻全部值 */
 function _collectParamKeysObj(v, out) {
   const p = v.params;
   if (p && typeof p === 'object' && !Array.isArray(p)) {

@@ -60,7 +60,16 @@ function reportPaths(root, name) {
   return { iso, outDir, outPath: path.join(outDir, `${name}-场景矩阵-${iso}.md`) };
 }
 
-/** 一键装配：before 串行跑后端 + describe 断言 + after 落报告（writeReport(runs) 由各文件给报告体） */
+/**
+ * 一键装配：before 串行跑后端 + describe 断言 + after 落报告（writeReport(runs) 由各文件给报告体）
+ *
+ * @param {object} opts
+ * @param {any} opts.harness 后端矩阵（见 scenario-backends）
+ * @param {any} opts.cases 用例表
+ * @param {string} opts.suiteLabel 套件名（报告标题与 skip 文案用）
+ * @param {(kind: string, c: any) => string|null} [opts.extraSkip] 逐用例附加跳过判据（返回文案即跳过；不传 = 不跳过）
+ * @param {(runs: any) => void} opts.writeReport 报告落盘
+ */
 function mountScenarioMatrix({ harness, cases, suiteLabel, extraSkip, writeReport }) {
   const RUNS = {};
   before(async () => {

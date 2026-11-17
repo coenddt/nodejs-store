@@ -90,7 +90,8 @@ async function _readKey(client, fullKey, db) {
   }
 }
 
-function createRedisIo({ client, prefix = 'store' } = {}) {
+// client 为宿主注入的 ioredis 兼容实例（形状由驱动决定），此处按开放形状接收
+function createRedisIo(/** @type {any} */ { client, prefix = 'store' } = {}) {
   if (!client
     || typeof client.scan !== 'function'
     || typeof client.get !== 'function'

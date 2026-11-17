@@ -244,7 +244,8 @@ test('leader_elector 等价：upsert 幂等、CAS 抢占、renewLease 归属条�
       { matched: 1, modified: 1 });
     const bad = await store.renewLease('ClaimJob',
       { _id: 'leader1', claimedBy: 'nX' }, { leaseUntil: 999 });
-    assert.equal(bad.matched, 0, bad);
+    // 第三参只作失败时的现场说明（非字符串），按开放形状传入
+    assert.equal(bad.matched, 0, /** @type {any} */ (bad));
   } finally {
     db.close();
   }

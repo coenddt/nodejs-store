@@ -11,10 +11,14 @@
  * 运行：node scripts/test.js（scripts/test.js 会置 LOCAL_CORE=1）
  */
 
+const boot = require('./helpers/boot');
 const {
-  test, before, assert, Database,
+  test, before, Database,
   src: { init, store, executors, permission, schema: _sc },
-} = require('./helpers/boot');
+} = boot;
+// assert 带断言签名（asserts），checkJs 下要求调用目标有显式类型注解（TS2775）
+/** @type {typeof import('node:assert/strict')} */
+const assert = boot.assert;
 // 后端 e2e 共享断言与 real-backends-e2e 对齐（insert 读回 / introspect 产物）
 const { insertAndReadBackPost, assertWidgetsGadgetsDefs } = require('./helpers/backend-e2e');
 

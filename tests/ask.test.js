@@ -58,7 +58,8 @@ function fakeLlm(...outputs) {
   const fn = async (messages) => {
     fn.calls.push(JSON.parse(JSON.stringify(messages)));
     if (!fn.outputs.length) {
-      throw new assert.AssertionError('假 LLM 输出脚本耗尽（出现了意外的额外轮次）');
+      // Node 的 AssertionError 运行期支持字符串消息；@types/node 的构造签名只声明 options 对象
+      throw new (/** @type {any} */ (assert.AssertionError))('假 LLM 输出脚本耗尽（出现了意外的额外轮次）');
     }
     return fn.outputs.shift();
   };
@@ -308,7 +309,7 @@ describe('ask L1 · 验收矩阵 T1-T12', () => {
     const llm = fakeLlm('坏输出');
     await assert.rejects(
       () => store.ask('列出全部订单', { llm, ctx: CTX_USER, maxRetries: 0 }),
-      (e) => {
+      (/** @type {any} */ e) => {
         assert.equal(e.attempts.length, 1);
         return true;
       },
@@ -353,6 +354,7 @@ describe('ask L1 · 验收矩阵 T1-T12', () => {
       const events = [];
       feedback.setSink((e) => events.push(e));
       const s = store.describeForAi(CTX_ADMIN);
+      /** @type {any} */
       const aku = s.find((m) => m.name === 'AkUser');
       assert.equal(aku.fields.role, 'string');
       // core-node 已导出 readableComputes（rust-store 联动任务合入）：read 白名单计算列
@@ -659,7 +661,7 @@ describe('conformance · 与 py-store 逐字节一致（GQL / 错误前缀 / 事
     permission.setContext(CTX_USER);
     await assert.rejects(
       () => store.query('AkOrder($pipeline:@p0){_id, code}', { p0: [{ $match: {} }] }),
-      (e) => String(e.message).includes('$pipeline 直通已移除'),
+      (/** @type {any} */ e) => String(e.message).includes('$pipeline 直通已移除'),
     );
     // ③ 计划错误类：8c-2 嵌套关系路径（与 py test_t11 同输入；新 core 已带稳定前缀）
     await assert.rejects(
@@ -668,7 +670,7 @@ describe('conformance · 与 py-store 逐字节一致（GQL / 错误前缀 / 事
           agg: { n: { $count: '*' } },
           having: { n: { $gt: 0 } } } },
       }),
-      (e) => e.name === 'ProfileViolation' && e.message.includes('嵌套关系路径'),
+      (/** @type {any} */ e) => e.name === 'ProfileViolation' && e.message.includes('嵌套关系路径'),
     );
   });
 });

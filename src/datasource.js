@@ -543,6 +543,7 @@ function _renderClaimedIds(ids) {
  *
  * 返回 `[stmt0, stmt1]`；非两步化计划返回 null。PG/SQLite 走单条 UPDATE…RETURNING
  * 或 IN(子查询)，不出现该形态。
+ * @returns {[any, any]|null}
  */
 function _claimTwoStep(plan) {
   const stmts = (plan && plan.stmts) || [];

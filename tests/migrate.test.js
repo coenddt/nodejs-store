@@ -173,7 +173,7 @@ test('⑥ 参数校验：oldDefs=null 且缺 driver 显式报错（不静默）'
   await run(async () => {
     await assert.rejects(
       () => store.migrate({ backend: 'sqlite', source: 'default', defs: { Note: noteV1() } }),
-      (e) => /oldDefs 为 null 时需传 driver/.test(e.message),
+      (/** @type {any} */ e) => /oldDefs 为 null 时需传 driver/.test(e.message),
     );
   });
 });

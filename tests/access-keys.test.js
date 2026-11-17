@@ -95,6 +95,10 @@ async function setup() {
   });
 }
 
+/**
+ * 注入权限上下文：默认 viewer / u1，其余清单键（satsRead / tagsWrite …）原样透传给 core
+ * @param {{roles?: string[], userId?: string} & Record<string, any>} [cfg]
+ */
 function setCtx({ roles = ['viewer'], userId = 'u1', ...lists } = {}) {
   permission.setContext({ userId, roles, ...lists });
 }
