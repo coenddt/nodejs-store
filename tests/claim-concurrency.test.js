@@ -11,6 +11,10 @@
  *      无交集**（库内 claimed_by 会被后写覆盖，不能作为重复判定来源）；
  *   3. leader_elector 等价用例：upsert 幂等插入两次仅一行；CAS 抢占 matched=1 /
  *      败者 matched=0；renewLease 归属条件续约。
+ *
+ * D4-4 零语义拆分：环境常量、ClaimJob schema 与 DDL、建库入口（seedJobs / openDb /
+ * makeFileDb）、子进程内联 worker 脚本与 tmp 清理 rmWithRetry 下沉
+ * ../test-support/claim-concurrency-fixtures.js；用例名、断言与注释逐字未改。
  */
 
 const { test } = require('node:test');
@@ -25,40 +29,10 @@ const Database = require('better-sqlite3');
 const { store, executors } = require('../src');
 const { register } = require('../src/schema');
 const { setDb } = require('../src/crud');
-
-const SRC_ROOT = path.join(__dirname, '..');
-const STRESS_SECONDS = process.env.CLAIM_STRESS_FULL === '1' ? 600 : 60;
-const QUEUE_ROWS = 100;
-
-const SCHEMA = {
-  name: 'ClaimJob',
-  collection: 'claim_jobs',
-  timestamps: false,
-  fields: {
-    status: { type: 'string' },
-    claimedBy: { type: 'string' },
-    leaseUntil: { type: 'int' },
-  },
-  relations: {},
-};
-
-const DDL = `CREATE TABLE IF NOT EXISTS claim_jobs (
-  _id TEXT PRIMARY KEY, status TEXT, claimed_by TEXT, lease_until INT,
-  __present TEXT)`;
-
-/** 建库 + DDL + 预置 pending 行（内存库/文件库两形态共用初始化序列） */
-function seedJobs(db, rows) {
-  db.exec(DDL);
-  const ins = db.prepare(
-    'INSERT INTO claim_jobs (_id, status, __present) VALUES (?, ?, ?)');
-  for (let i = 0; i < rows; i++) ins.run(`j${String(i).padStart(3, '0')}`, 'pending', 'Y');
-}
-
-function openDb(rows) {
-  const db = new Database(':memory:');
-  seedJobs(db, rows);
-  return db;
-}
+const {
+  SRC_ROOT, STRESS_SECONDS, QUEUE_ROWS, SCHEMA, WORKER_SRC,
+  openDb, makeFileDb, rmWithRetry,
+} = require('../test-support/claim-concurrency-fixtures');
 
 // ── 用例 1：单进程功能（领取数 = limit、置标落库、防重复） ──────────────────
 
@@ -91,72 +65,6 @@ test('claim 功能：领取数=limit、置标落库、领完为空', async () =>
 
 // ── 用例 2：双进程压测（A2 定论实验；短版 60s / 完整 600s） ─────────────────
 
-// worker 内联脚本（spawn node -e）：独立进程独立连接循环 claim，结果写 jsonl
-const WORKER_SRC = `
-const path = require('node:path');
-const fs = require('node:fs');
-const Database = require(path.join(process.env.SRC_ROOT, 'node_modules', 'better-sqlite3'));
-const { store, executors } = require(path.join(process.env.SRC_ROOT, 'src'));
-const { register } = require(path.join(process.env.SRC_ROOT, 'src', 'schema'));
-const { setDb } = require(path.join(process.env.SRC_ROOT, 'src', 'crud'));
-
-register({
-  name: 'ClaimJob', collection: 'claim_jobs', timestamps: false,
-  fields: {
-    status: { type: 'string' },
-    claimedBy: { type: 'string' },
-    leaseUntil: { type: 'int' },
-  },
-  relations: {},
-});
-const db = new Database(process.env.DB_PATH, { timeout: 10000 });
-setDb(executors.createConnection('sqlite', db));
-const stop = Date.now() + Number(process.env.DURATION_S) * 1000;
-const out = process.env.OUT_PATH;
-(async () => {
-  while (Date.now() < stop) {
-    let rows = [];
-    try {
-      rows = await store.claim('ClaimJob', { status: 'pending' },
-        { claimedBy: process.env.WORKER_ID, status: 'claimed' }, { limit: 1 });
-    } catch (e) {
-      // SQLite 写锁忙（另一 worker 正在写）：显式拦截后重试——统计的是「实际
-      // 领取列表」，被锁跳过不影响正确性判定
-      await new Promise((r) => setTimeout(r, 10));
-      continue;
-    }
-    for (const r of rows) fs.appendFileSync(out, JSON.stringify({ id: r._id }) + '\\n');
-    if (!rows.length) await new Promise((r) => setTimeout(r, 5));
-  }
-  db.close();
-})();
-`;
-
-// Windows：进程退出后句柄短暂残留是 OS 延迟释放行为，rm 重试消化；
-// fs.rmSync 的 maxRetries 只对 recursive 目录路径生效，单文件手工重试。
-// 超限不 fail（断言即结论），但必须告警残留路径——不静默失守。
-function rmWithRetry(target, { tries = 10, delayMs = 200 } = {}) {
-  for (let i = 0; i < tries; i++) {
-    try {
-      fs.rmSync(target, { force: true, recursive: true });
-      return;
-    } catch (e) {
-      if (i === tries - 1) {
-        console.warn(`[cleanup] 临时文件未能删除（句柄仍被占用）: ${target}（${e.code}）`);
-      } else {
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
-      }
-    }
-  }
-}
-
-function makeFileDb(rows) {
-  const dbPath = path.join(os.tmpdir(), `claim_stress_${process.pid}_${Date.now()}.db`);
-  const db = new Database(dbPath);
-  seedJobs(db, rows);
-  db.close();
-  return dbPath;
-}
 
 test(`claim 双进程压测：零重复领取（${STRESS_SECONDS}s × 100 行）`, async () => {
   const dbPath = makeFileDb(QUEUE_ROWS);
