@@ -29,17 +29,22 @@
  * 「一请求一档位视图 / 一 sink」（派生视图见 rust-store 02，作用域形态见 03 §4.4）；
  * 同一进程内并发调用 ask() 各自独立、互不串扰——「宿主须串行化 / 每任务独享进程」
  * 的要求随之解除（fail-open 姿态与 core 判决语义均不变）。
+ *
+ * D4-4 零语义拆分：schema 摘要生成器（组件 A）下沉 ./ask/summary，LLM 输出严格解析
+ * （BadLlmOutput 族）下沉 ./ask/parse，本文件保留编排器与入参校验；导出面
+ * （键名 / 键序 / 语义）与拆分前逐字一致。
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
 
 const crud = require('./crud');
-const feedback = require('./feedback-core');
 const permission = require('./permission');
 const schema = require('./schema');
 const { withScope } = require('./scope');
 const { getLlm } = require('./llm');
+const { describeForAi, _computeSkipSigs } = require('./ask/summary');
+const { BadLlmOutput, _parseLlmOutput } = require('./ask/parse');
 
 // ─── 轨迹载体 ──────────────────────────────────────────────────
 
@@ -77,123 +82,6 @@ class AskExhausted extends Error {
   }
 }
 
-// ─── 组件 A：schema 摘要生成器 ─────────────────────────────────
-
-// 计算列收窄告警去重（同 (model, compute) 只告警一次，对齐 py _COMPUTE_SKIP_SIGS）
-const _computeSkipSigs = new Set();
-
-/** 字段类型字符串（str 形态原样；dict 形态取 type；其余显式 null，不伪造） */
-function _fieldType(fdef) {
-  if (typeof fdef === 'string') return fdef;
-  if (fdef && typeof fdef === 'object') return fdef.type;
-  return null;
-}
-
-function _emitComputeSkipped(model, compute) {
-  const sig = `${model}\u0000${compute}`;
-  if (_computeSkipSigs.has(sig)) return;
-  _computeSkipSigs.add(sig);
-  feedback.emit({
-    type: 'ask_summary_compute_skipped',
-    code: 'askSummaryComputeSkipped',
-    layer: 'host',
-    message: `AI 摘要收窄：模型 ${model} 的计算列 ${compute} 配置了 read 白名单，`
-      + 'core-node 绑定未导出 readableComputes 判决，为不越权暴露已从摘要排除',
-    hint: '去掉该计算列的 read 配置可进摘要；或在 core-node 导出 readableComputes '
-      + '后接入 describeForAi（执行面权限判决始终在 core，此处仅摘要暴露面收窄）',
-    model,
-    compute,
-  });
-}
-
-/**
- * 输出 LLM 可读的 schema 摘要（紧凑 JSON 数组，每模型一条；对齐 py describe_for_ai）。
- *
- * 过滤规则（顺序固定，设计文档 §4.1）：
- *   1. 排除归档表（名称以 `Deleted` 结尾，对齐 store-api 派生路由先例）；
- *   2. 模型级按 core `canRead`；字段/关系按 core 角色可读集（`readableFields` /
- *      `readableRelations`，列级白名单）；计算列按 core `readableComputes` 角色判决——
- *      该判决在 core-node 已导出（rust-store「导出 readableComputes」任务合入后），
- *      旧绑定未导出时按声明 read 白名单**保守收窄**并 emit 告警（宁缺勿泄，
- *      对齐 py 现状；执行面判决始终在 core，收窄只影响摘要暴露面）；
- *      无 ctx → 仅暴露模型名与字段名，不暴露类型细节（防探针）；
- *   3. 不输出 indexes / datasource / database / schema（运维细节不进 prompt）。
- */
-/** 无 ctx 形态：仅模型名与字段名（防探针，不暴露类型细节） */
-function _summaryNoCtx(name, mirror) {
-  return { name, fields: Object.keys(mirror.fields).sort() };
-}
-
-/** 可读字段投影：镜像内取类型；core 补的时间戳字段（不在镜像）类型显式留白 */
-function _readableFields(mirror, readable) {
-  const fields = {};
-  for (const [fname, fdef] of Object.entries(mirror.fields)) {
-    if (readable.has(fname)) fields[fname] = _fieldType(fdef);
-  }
-  for (const fname of [...readable].filter((f) => !(f in mirror.fields)).sort()) {
-    // core 自动补的时间戳字段（createdAt/updatedAt）不在 Host 镜像——类型显式留白
-    fields[fname] = null;
-  }
-  return fields;
-}
-
-/** 可读关系投影 */
-function _readableRelations(mirror, readableRels) {
-  const relations = {};
-  for (const [rname, rdef] of Object.entries(mirror.relations)) {
-    if (readableRels.has(rname)) {
-      relations[rname] = { model: rdef.model, type: rdef.type };
-    }
-  }
-  return relations;
-}
-
-/** 计算列投影（core 角色判决；旧绑定降级收窄 + 告警）；entry 仅收非空 agg/type */
-function _readableComputes(name, mirror, readableComputes) {
-  const computes = {};
-  for (const [cname, cdef] of Object.entries(mirror.computes)) {
-    if (readableComputes !== null) {
-      if (!readableComputes.has(cname)) continue;
-    } else if (cdef.read !== undefined && cdef.read !== null) {
-      _emitComputeSkipped(name, cname);
-      continue;
-    }
-    const entry = {};
-    if (cdef.agg !== undefined && cdef.agg !== null) entry.agg = cdef.agg;
-    if (cdef.type !== undefined && cdef.type !== null) entry.type = cdef.type;
-    computes[cname] = entry;
-  }
-  return computes;
-}
-
-/** 单模型摘要：ctx 缺失 → 无 ctx 形态；模型不可读 → null（排除）；构造顺序 fields→relations→computes 与原版一致 */
-function _modelSummary(name, mirror, ctx) {
-  if (ctx == null) return _summaryNoCtx(name, mirror);
-  if (!permission.canReadSchema(name, ctx)) return null;
-  const readable = new Set(permission.getReadableFields(name, ctx));
-  // 新绑定：core 角色判决；旧绑定（core-node 未导出 readableComputes，如 npm
-  // rust-store-node 2.0.0）：能力探测降级为「配 read 一律收窄 + 告警」（对齐 py 现状）
-  const readableComputes = typeof schema.getCore().readableComputes === 'function'
-    ? new Set(permission.getReadableComputes(name, ctx))
-    : null;
-  return {
-    name,
-    fields: _readableFields(mirror, readable),
-    relations: _readableRelations(mirror, new Set(permission.getReadableRelations(name, ctx))),
-    computes: _readableComputes(name, mirror, readableComputes),
-  };
-}
-
-function describeForAi(ctx = null) {
-  const summaries = [];
-  for (const name of schema.list()) {
-    if (name.endsWith('Deleted')) continue;
-    const summary = _modelSummary(name, schema.get(name), ctx);
-    if (summary !== null) summaries.push(summary);
-  }
-  return summaries;
-}
-
 // ─── 组件 B：ask() 编排器 ──────────────────────────────────────
 
 let _knowledgeCache = null;
@@ -217,61 +105,6 @@ function _buildSystemPrompt(summary, knowledge) {
     + '- 条件值一律参数化：GQL 内用 @key 引用，真实值放 params（键 = 去掉 @ 的引用名）；\n'
     + '  禁止内联值进 GQL 串。\n'
     + '- 禁止输出解释文字、markdown 代码围栏、或除 gql/params 外的任何键。\n';
-}
-
-/** LLM 输出未通过严格解析（携带结构化 detail 供回喂）——内部控制流，不外穿 */
-class BadLlmOutput extends Error {
-  constructor(detail) {
-    super(detail.detail || 'badLlmOutput');
-    this.name = 'BadLlmOutput';
-    this.detail = detail;
-  }
-}
-
-/** BadLlmOutput 工厂（detail + raw 头 500 字符供回喂定位） */
-function _llmFail(raw, detail) {
-  return new BadLlmOutput({
-    code: 'badLlmOutput',
-    message: 'LLM 输出不是合法的 {"gql","params"} 单 JSON 对象',
-    detail,
-    raw: String(raw ?? '').slice(0, 500),
-  });
-}
-
-/** 顶层形状 + 键集合校验：必须为单 JSON 对象且键恰为 gql/params（sorted 后比对，键序无关） */
-function _checkShape(parsed, fail) {
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw fail(`顶层不是 JSON 对象: ${Array.isArray(parsed) ? 'array' : typeof parsed}`);
-  }
-  const keys = Object.keys(parsed).sort();
-  if (keys.length !== 2 || keys[0] !== 'gql' || keys[1] !== 'params') {
-    throw fail(`键集合必须恰为 gql/params，实际: ${keys}`);
-  }
-}
-
-/** 成员校验：gql 非空字符串；params 为 JSON 对象 */
-function _checkMembers(parsed, fail) {
-  const { gql, params } = parsed;
-  if (typeof gql !== 'string' || !gql.trim()) throw fail('gql 必须为非空字符串');
-  if (params === null || typeof params !== 'object' || Array.isArray(params)) {
-    throw fail('params 必须为 JSON 对象');
-  }
-  return { gql, params };
-}
-
-/** 严格 JSON 解析 + 形状校验（D3）；失败抛 BadLlmOutput（禁正则容错提取） */
-function _parseLlmOutput(raw) {
-  const fail = (detail) => _llmFail(raw, detail);
-
-  if (typeof raw !== 'string') throw fail(`输出不是字符串: ${typeof raw}`);
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (e) {
-    throw fail(`JSON 解析失败: ${(e && e.message) || e}`);
-  }
-  _checkShape(parsed, fail);
-  return _checkMembers(parsed, fail);
 }
 
 /**
