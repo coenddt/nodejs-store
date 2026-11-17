@@ -63,7 +63,9 @@ test('⓪ 边界：按指引补列后同一 defn 可正常迁移（检测不是�
     db.exec('ALTER TABLE legacy_notes ADD COLUMN updated_at INTEGER');
     db.exec('ALTER TABLE legacy_notes ADD COLUMN created_by TEXT');
     db.exec('ALTER TABLE legacy_notes ADD COLUMN __present TEXT');
-    await migrateAssertApplied(db, 'LegacyNote', legacyNoteDefn());
+    const r = await migrateAssertApplied(db, 'LegacyNote', legacyNoteDefn());
+    // 用例关注点：补列后仍是「同一 defn」被 applied（检测不是永久阻断，也无改名副作用）
+    assert.equal(r.applied[0].name, 'LegacyNote', '补列后应 applied 同一 defn');
     assertMigrationVersion(db, 'LegacyNote');
   });
 });

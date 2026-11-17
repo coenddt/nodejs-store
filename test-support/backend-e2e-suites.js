@@ -37,6 +37,9 @@ function crudSuite(ctx) {
     if (!ctx.ready) return t.skip(ctx.reason);
     await ctx.reset();
     await insertAndReadBackPost(S);
+    // helper 已断言 _id 前缀 / 条数 / title / views；此处补 status 字段读回原样
+    const rows = await store.query(`${S}{_id, status}`);
+    assert.deepEqual(rows.map((x) => x.status), ['draft'], '写入态 status 应读回原样');
   });
 
   it('count / exists', async (t) => {

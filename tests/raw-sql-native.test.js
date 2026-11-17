@@ -84,6 +84,8 @@ test('executeNative options.session 不可被用户覆盖', async () => {
   });
 
   assertOneCallOnTxSession(fake, captured);
+  // 用例关注点：用户传入的 session 值必须被替换，而不是原样透传
+  assert.notEqual(captured.calls[0].opts.session, 'USER', '用户传入的 session 不得透传');
 });
 
 test('executeNative 对 SQL 源显式报错并指引 executeRaw', async () => {
